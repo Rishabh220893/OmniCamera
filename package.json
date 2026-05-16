@@ -1,0 +1,12 @@
+{
+  "name": "omni-camera",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Multi-camera scene intelligence app for native cameras and CCTV streams.",
+  "scripts": {
+    "start": "python3 -m http.server 5173",
+    "build": "node scripts/build.js",
+    "test": "node --test"
+  }
+}
