@@ -1,0 +1,88 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user preferences, Google Sheets logs sync link, and surveillance configurations",
+      "type": "object",
+      "properties": {
+        "theme": { "type": "string", "enum": ["light", "dark"] },
+        "notificationPrefs": {
+          "type": "object",
+          "properties": {
+            "criticalAlerts": { "type": "boolean" },
+            "systemStatus": { "type": "boolean" },
+            "quietHoursEnabled": { "type": "boolean" },
+            "quietHoursStart": { "type": "string" },
+            "quietHoursEnd": { "type": "string" }
+          }
+        },
+        "googleSheetsId": { "type": "string", "description": "Google spreadsheet integration ID for logs sync" },
+        "cameras": {
+          "type": "array",
+          "description": "User's registered camera configurations list, each optionally carrying a location {lat,lng} and department for the Map view"
+        },
+        "department": { "type": "string", "description": "Owning department, pilot-scale RBAC stand-in" },
+        "role": { "type": "string", "enum": ["operator", "admin"], "description": "Pilot-scale RBAC stand-in, gates watchlist management" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["theme", "updatedAt"]
+    },
+    "Face": {
+      "title": "Known Face",
+      "description": "Stores names for identified faces",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "userId", "createdAt"]
+    },
+    "Log": {
+      "title": "Detection Log",
+      "description": "Summary of detection events",
+      "type": "object",
+      "properties": {
+        "cameraId": { "type": "string" },
+        "cameraName": { "type": "string" },
+        "summary": { "type": "string" },
+        "detectedItems": { "type": "array" },
+        "detectedPlates": { "type": "array", "description": "Vehicle plates read from the frame by the server-side analysis route" },
+        "isWatchlistMatch": { "type": "boolean", "description": "True if any detected plate matched an active watchlist entry" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "userId": { "type": "string" }
+      },
+      "required": ["cameraId", "summary", "timestamp", "userId"]
+    },
+    "Watchlist": {
+      "title": "Watchlist Entry",
+      "description": "A vehicle plate flagged for real-time tracking across all camera nodes",
+      "type": "object",
+      "properties": {
+        "plate": { "type": "string" },
+        "reason": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["plate", "userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User preferences"
+    },
+    "/faces/{faceId}": {
+      "schema": "Face",
+      "description": "Known faces mapping"
+    },
+    "/logs/{logId}": {
+      "schema": "Log",
+      "description": "Event logs"
+    },
+    "/watchlist/{entryId}": {
+      "schema": "Watchlist",
+      "description": "Tracked vehicle plates, writable only by Admin-role users"
+    }
+  }
+}

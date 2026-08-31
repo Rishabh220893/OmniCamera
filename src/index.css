@@ -1,0 +1,139 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Semantic color tokens — resolved per-theme below. Using @theme here
+     registers real Tailwind utilities: bg-surface, text-ink, border-border,
+     bg-accent, text-critical, etc. */
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-critical: var(--critical);
+  --color-critical-soft: var(--critical-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+}
+
+/* ---------- Theme tokens ---------- */
+/* Light is the default, un-stamped state. Dark is opt-in via the in-app
+   toggle, which sets data-theme="dark" on <html>. */
+:root {
+  --surface: #ffffff;
+  --surface-muted: #f6f7f9;
+  --border: #e4e7eb;
+  --ink: #12161c;
+  --ink-muted: #5c6572;
+  --accent: #2f5fdd;
+  --accent-soft: #eef2fe;
+  --critical: #c8392a;
+  --critical-soft: #fdeceb;
+  --warning: #b5690a;
+  --warning-soft: #fdf1e2;
+  --success: #1f8a5f;
+  --success-soft: #e7f6ee;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+}
+
+[data-theme="dark"] {
+  --surface: #12151b;
+  --surface-muted: #1a1e26;
+  --border: #262b34;
+  --ink: #eef1f5;
+  --ink-muted: #9aa3b2;
+  --accent: #6c8cff;
+  --accent-soft: rgba(108, 140, 255, 0.14);
+  --critical: #f2897f;
+  --critical-soft: rgba(242, 137, 127, 0.14);
+  --warning: #f7b155;
+  --warning-soft: rgba(247, 177, 85, 0.14);
+  --success: #37c98a;
+  --success-soft: rgba(55, 201, 138, 0.14);
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-ink font-sans transition-colors duration-200;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  .card {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .panel {
+    background-color: var(--surface-muted);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+  }
+
+  .btn-primary {
+    @apply px-5 py-2.5 rounded-xl font-semibold text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+    background-color: var(--accent);
+    color: #ffffff;
+  }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .btn-secondary {
+    @apply px-5 py-2.5 rounded-xl font-semibold text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+    background-color: var(--surface-muted);
+    color: var(--ink);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { background-color: var(--border); }
+
+  .btn-ghost {
+    @apply px-3 py-2 rounded-lg font-medium text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+    color: var(--ink-muted);
+  }
+  .btn-ghost:hover { background-color: var(--surface-muted); color: var(--ink); }
+
+  .input {
+    @apply w-full rounded-xl px-4 py-3 text-sm outline-none transition-colors;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--ink);
+  }
+  .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .input::placeholder { color: var(--ink-muted); }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wide;
+  }
+  .badge-neutral { background-color: var(--surface-muted); color: var(--ink-muted); }
+  .badge-critical { background-color: var(--critical-soft); color: var(--critical); }
+  .badge-warning { background-color: var(--warning-soft); color: var(--warning); }
+  .badge-success { background-color: var(--success-soft); color: var(--success); }
+  .badge-accent { background-color: var(--accent-soft); color: var(--accent); }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors;
+    color: var(--ink-muted);
+  }
+  .nav-item:hover { background-color: var(--surface-muted); color: var(--ink); }
+  .nav-item.active { background-color: var(--accent-soft); color: var(--accent); }
+}
+
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

@@ -1,0 +1,76 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Pilot-scale RBAC stand-in: role lives on the user's own profile doc,
+    // not a real Firebase custom claim. See Sentinel Mesh roadmap for the
+    // production version (custom claims / OIDC).
+    function isAdmin() {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // User Profile Rules
+    match /users/{userId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Face Rules
+    match /faces/{faceId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Log Rules
+    match /logs/{logId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Watchlist Rules — readable by the owning user (needed for plate
+    // matching), writable only by an Admin-role account.
+    match /watchlist/{entryId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && isAdmin();
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid && isAdmin();
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid && isAdmin();
+    }
+
+    // Central Camera Registry (Sentinel Mesh Model 1 — mandatory foundation).
+    // One document per camera, owned by the registering user. The
+    // API-based onboarding route in server.ts writes here via the Admin
+    // SDK, which bypasses these rules by design — they only govern direct
+    // client access (manual entry, bulk import, edits from the app).
+    match /cameras/{cameraId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid && isAdmin();
+    }
+
+    // Registry Audit Trail — append-only. Every registry mutation writes
+    // one entry; nothing may be edited or deleted once recorded.
+    match /registryAudit/{entryId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid && isAdmin();
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}

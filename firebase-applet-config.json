@@ -1,0 +1,10 @@
+{
+  "projectId": "omni-camera",
+  "appId": "1:207080773813:web:a4c1ea1981bc23bfe746fc",
+  "apiKey": "AIzaSyCuyUujBpEMGSyudmy6Q69dc5JKXAOQL6A",
+  "authDomain": "omni-camera.firebaseapp.com",
+  "storageBucket": "omni-camera.firebasestorage.app",
+  "messagingSenderId": "207080773813",
+  "measurementId": "G-MXZT9HST0K",
+  "firestoreDatabaseId": "(default)"
+}

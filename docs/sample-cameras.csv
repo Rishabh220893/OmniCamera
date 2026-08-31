@@ -1,0 +1,13 @@
+name,department,ownership,cameraType,connectivityStatus,maintenanceStatus,installDate,storageDetails,lat,lng
+MG Road Junction,Traffic Police,Municipal Corporation,ptz,online,operational,2023-06-15,"NVR local, 30-day retention",12.9716,77.5946
+Central Bus Stand Gate 1,Transport Department,State Transport,dome,online,operational,2022-11-02,"Cloud, 14-day retention",12.9767,77.5713
+Central Bus Stand Gate 2,Transport Department,State Transport,dome,degraded,needs_maintenance,2018-03-10,"Cloud, 14-day retention",12.9770,77.5720
+Riverside Market,Municipal Corporation,Municipal Corporation,fixed,online,operational,2023-01-20,"NVR local, 21-day retention",12.9800,77.6050
+City Hospital Entrance,Health Department,City Hospital Trust,bullet,online,operational,2024-02-14,"NVR local, 45-day retention",12.9650,77.5900
+Railway Overbridge,Railway Police,Indian Railways,fixed,offline,needs_maintenance,2017-08-05,"DVR local, 7-day retention",,
+School Zone - Sector 5,Municipal Corporation,Municipal Corporation,fixed,online,operational,2024-05-30,"Cloud, 30-day retention",12.9550,77.5800
+Industrial Gate A,Industrial Estate Authority,Private Contractor,ptz,unknown,operational,2021-09-12,"NVR local, 30-day retention",13.0020,77.5600
+Old Town Square,Heritage Department,Municipal Corporation,dome,offline,decommissioned,2015-01-01,"DVR local, unknown retention",,
+Highway Toll Plaza,Transport Department,National Highways Authority,ptz,online,operational,2023-10-08,"Cloud, 60-day retention",13.0400,77.6200
+Metro Station Exit 3,Transport Department,Metro Rail Corporation,bullet,online,operational,2024-08-01,"Cloud, 30-day retention",12.9900,77.6100
+Warehouse Perimeter,Industrial Estate Authority,Private Contractor,fixed,degraded,needs_maintenance,2019-04-22,"NVR local, 15-day retention",13.0100,77.5750

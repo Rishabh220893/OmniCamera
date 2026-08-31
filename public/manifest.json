@@ -1,0 +1,16 @@
+{
+  "name": "OmniSee AI Vision",
+  "short_name": "OmniSee",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#6366f1",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://img.icons8.com/isometric/512/security-camera.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

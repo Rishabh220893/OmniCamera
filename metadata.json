@@ -1,0 +1,6 @@
+{
+  "name": "OmniSee AI: Enterprise Vision",
+  "description": "Professional-grade AI surveillance dashboard with Material Design, Google Login, face recognition, and Google Sheets integration.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
