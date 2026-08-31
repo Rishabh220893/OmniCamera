@@ -21,9 +21,14 @@ const dbId = config.firestoreDatabaseId && config.firestoreDatabaseId !== "(defa
   ? config.firestoreDatabaseId
   : undefined;
 
-// Use initializeFirestore with long-polling to prevent proxy/iframe/adblocker WebSocket connection blockages
-export const db = dbId 
-  ? initializeFirestore(app, { experimentalForceLongPolling: true }, dbId) 
-  : initializeFirestore(app, { experimentalForceLongPolling: true });
+// Use initializeFirestore with long-polling to prevent proxy/iframe/adblocker WebSocket connection blockages.
+// ignoreUndefinedProperties: the app has many optional fields (camera
+// department/ownership/location/etc.) that come out as JS `undefined` when
+// left blank — Firestore's SDK otherwise rejects the entire write for that,
+// rather than just omitting the field.
+const firestoreSettings = { experimentalForceLongPolling: true, ignoreUndefinedProperties: true };
+export const db = dbId
+  ? initializeFirestore(app, firestoreSettings, dbId)
+  : initializeFirestore(app, firestoreSettings);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
