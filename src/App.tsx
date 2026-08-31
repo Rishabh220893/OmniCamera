@@ -96,6 +96,7 @@ export default function App() {
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [googleSheetsId, setGoogleSheetsId] = useState<string>('');
+  const [streamAccessPassword, setStreamAccessPassword] = useState<string>('');
   const [isSaveLoading, setIsSaveLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
@@ -159,6 +160,7 @@ export default function App() {
             setTheme(data.theme || 'light');
             if (data.notificationPrefs) setNotificationPrefs(data.notificationPrefs);
             setGoogleSheetsId(data.googleSheetsId || '');
+            setStreamAccessPassword(data.streamAccessPassword || '');
             setUserDepartment(data.department || '');
             setUserRole(data.role || 'admin');
             localStorage.setItem(`user-${firebaseUser.uid}-googleSheetsId`, data.googleSheetsId || '');
@@ -168,7 +170,7 @@ export default function App() {
           } else {
             try {
               await setDoc(doc(db, 'users', firebaseUser.uid), {
-                theme: 'light', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '',
+                theme: 'light', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '', streamAccessPassword: '',
                 department: '', role: 'admin', updatedAt: serverTimestamp()
               });
               // Camera seeding happens once in the cameras registry listener
@@ -352,6 +354,8 @@ export default function App() {
     setUser({ uid: 'demo-guest', displayName: 'Offline Demo User', email: 'guest@omni-camera.io', photoURL: null, emailVerified: true } as unknown as FirebaseUser);
     const guestSheetsId = localStorage.getItem('demo-guest-googleSheetsId');
     if (guestSheetsId) setGoogleSheetsId(guestSheetsId);
+    const guestStreamPw = localStorage.getItem('demo-guest-streamAccessPassword');
+    if (guestStreamPw) setStreamAccessPassword(guestStreamPw);
     const guestCams = localStorage.getItem('demo-guest-cameras');
     if (guestCams) {
       try {
@@ -398,13 +402,16 @@ export default function App() {
     localStorage.setItem(keyPrefs, JSON.stringify(notificationPrefs));
 
     if (user.uid === 'demo-guest') {
+      // Guest mode is entirely local by design, so this is the only place
+      // the stream password is persisted at all for that path.
+      localStorage.setItem('demo-guest-streamAccessPassword', streamAccessPassword);
       setTimeout(() => { setIsSaveLoading(false); setSaveSuccess(true); setIsOfflineMode(true); setTimeout(() => setSaveSuccess(null), 3000); }, 600);
       return;
     }
 
     try {
       await setDoc(doc(db, 'users', user.uid), {
-        theme, notificationPrefs, googleSheetsId, department: userDepartment, role: userRole, updatedAt: serverTimestamp()
+        theme, notificationPrefs, googleSheetsId, streamAccessPassword, department: userDepartment, role: userRole, updatedAt: serverTimestamp()
       });
 
       const batch = writeBatch(db);
@@ -847,7 +854,7 @@ export default function App() {
                       isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
                       onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}
                       onCameraError={setCameraError} onFallbackToSimulated={handleFallbackToSimulated}
-                      onChangeTab={setActiveTab}
+                      onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword}
                     />
                   )}
                   {activeTab === 'analytics' && (
@@ -867,6 +874,7 @@ export default function App() {
                       theme={theme} onToggleTheme={handleToggleTheme} notificationPrefs={notificationPrefs} onUpdateNotifyPrefs={updateNotifyPrefs}
                       user={user} onSaveSettings={handleSaveSettings} isSaveLoading={isSaveLoading} saveSuccess={saveSuccess}
                       googleSheetsId={googleSheetsId} onChangeGoogleSheetsId={setGoogleSheetsId}
+                      streamAccessPassword={streamAccessPassword} onChangeStreamAccessPassword={setStreamAccessPassword}
                       cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
                       onAddCamera={addCamera} onRemoveCamera={removeCamera} onUpdateActiveCamera={updateActiveCamera}
                       onOpenSetupGuides={() => setShowDVRGuide(true)} webhookStatus={webhookStatus} onTestWebhook={testWebhook}

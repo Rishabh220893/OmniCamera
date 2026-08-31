@@ -28,6 +28,7 @@ interface MonitorTabProps {
   onCameraError: (msg: string | null) => void;
   onFallbackToSimulated: () => void;
   onChangeTab: (tab: TabId) => void;
+  streamAccessPassword: string;
 }
 
 function formatLastAnalysisTime(lat: unknown): string {
@@ -43,7 +44,7 @@ export default function MonitorTab({
   cameras, activeCameraId, onSelectCamera, onAddCamera, isCapturing, isAnalyzing,
   cameraError, analysisError, logs, viewMode, onChangeViewMode, containerRef,
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
-  onFallbackToSimulated, onChangeTab
+  onFallbackToSimulated, onChangeTab, streamAccessPassword
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
 
@@ -92,6 +93,7 @@ export default function MonitorTab({
                   mediaRefs={mediaRefs}
                   onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
                   onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
+                  streamAccessPassword={streamAccessPassword}
                 />
                 <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
                   <span className="text-[10px] font-bold text-white uppercase tracking-wide">{cam.name}</span>
@@ -119,6 +121,7 @@ export default function MonitorTab({
                 mediaRefs={mediaRefs}
                 onCameraError={onCameraError}
                 onFallbackToSimulated={onFallbackToSimulated}
+                streamAccessPassword={streamAccessPassword}
               />
 
               {cameraError && (

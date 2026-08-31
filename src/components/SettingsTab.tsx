@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Eye, AlertTriangle, Activity, Clock, FolderHeart, ExternalLink, BarChart2,
   Camera, HelpCircle, Plus, Trash2, Settings, ShieldCheck, Users, Truck, RefreshCw, Check,
-  Save, MapPin, Building2, ScanLine, ShieldAlert
+  Save, MapPin, Building2, ScanLine, ShieldAlert, KeyRound, EyeOff
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig, KnownFace, NotificationPrefs, WatchlistEntry } from '../types';
@@ -19,6 +20,8 @@ interface SettingsTabProps {
   saveSuccess: boolean | null;
   googleSheetsId: string;
   onChangeGoogleSheetsId: (v: string) => void;
+  streamAccessPassword: string;
+  onChangeStreamAccessPassword: (v: string) => void;
   cameras: CameraConfig[];
   activeCameraId: string;
   onSelectCamera: (id: string) => void;
@@ -43,7 +46,8 @@ interface SettingsTabProps {
 export default function SettingsTab(props: SettingsTabProps) {
   const {
     theme, onToggleTheme, notificationPrefs, onUpdateNotifyPrefs, user, onSaveSettings,
-    isSaveLoading, saveSuccess, googleSheetsId, onChangeGoogleSheetsId, cameras, activeCameraId,
+    isSaveLoading, saveSuccess, googleSheetsId, onChangeGoogleSheetsId,
+    streamAccessPassword, onChangeStreamAccessPassword, cameras, activeCameraId,
     onSelectCamera, onAddCamera, onRemoveCamera, onUpdateActiveCamera, onOpenSetupGuides,
     webhookStatus, onTestWebhook, knownFaces, onFaceUpload, onRemoveFace,
     watchlist, onAddWatchlistEntry, onRemoveWatchlistEntry,
@@ -51,6 +55,7 @@ export default function SettingsTab(props: SettingsTabProps) {
   } = props;
 
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
+  const [showStreamPassword, setShowStreamPassword] = useState(false);
 
   const handleAddWatchlist = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -234,6 +239,42 @@ export default function SettingsTab(props: SettingsTabProps) {
             }}
             className="input font-mono text-xs"
           />
+        </div>
+      </div>
+
+      {/* Remote stream access password */}
+      <div className="card p-8">
+        <div className="flex items-center gap-4 mb-6">
+          <div className="w-11 h-11 rounded-2xl bg-accent-soft flex items-center justify-center text-accent">
+            <KeyRound className="w-5.5 h-5.5" strokeWidth={1.75} />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-ink">Stream access password</h2>
+            <p className="text-xs text-ink-muted">Sent to password-protected remote feed hosts (applies to every Remote Link Feed node)</p>
+          </div>
+        </div>
+        <div className="p-5 panel space-y-3">
+          <div className="relative">
+            <input
+              type={showStreamPassword ? 'text' : 'password'}
+              placeholder="Access password for your camera CDN"
+              value={streamAccessPassword}
+              onChange={(e) => onChangeStreamAccessPassword(e.target.value)}
+              className="input font-mono text-xs !pr-11"
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              onClick={() => setShowStreamPassword(v => !v)}
+              className="btn-ghost !absolute !right-1.5 !top-1/2 !-translate-y-1/2 !p-1.5"
+              title={showStreamPassword ? 'Hide' : 'Show'}
+            >
+              {showStreamPassword ? <EyeOff className="w-3.5 h-3.5" strokeWidth={1.75} /> : <Eye className="w-3.5 h-3.5" strokeWidth={1.75} />}
+            </button>
+          </div>
+          <p className="text-[10px] text-ink-muted leading-relaxed italic">
+            Remote feeds are relayed through this server (needed for CDNs that don't send CORS headers), so this password is sent to your camera host server-side and never appears in your browser's network requests. Change or clear it here anytime.
+          </p>
         </div>
       </div>
 

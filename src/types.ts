@@ -10,6 +10,11 @@ export interface UserPreferences {
   theme: 'light' | 'dark';
   notificationPrefs: NotificationPrefs;
   googleSheetsId?: string;
+  /** Shared CDN/stream access password sent (HTTP Basic Auth) to
+   *  password-protected remote feed hosts. This is used directly by the
+   *  browser to reach the camera CDN — it is not, and cannot be, proxied
+   *  through the server the way other secrets in this app are. */
+  streamAccessPassword?: string;
   /** Pilot-scale RBAC stand-in — a Firestore field checked by firestore.rules,
    *  not a real custom-claims/OIDC role. See Sentinel Mesh roadmap for the
    *  production version of this. */

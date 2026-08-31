@@ -191,6 +191,66 @@ async function startServer() {
     }
   });
 
+  // HLS proxy — CORS is a browser-enforced policy, so a cross-origin camera
+  // CDN that doesn't send Access-Control-Allow-Origin blocks hls.js (and
+  // even a plain <video> load) outright, before any app code runs. Fetching
+  // server-to-server sidesteps that entirely, and lets the access password
+  // be forwarded without the browser ever seeing the upstream exchange.
+  // Manifests are rewritten so every segment/key URI also routes back
+  // through this proxy, carrying the same auth.
+  app.get('/api/proxy-hls', async (req, res) => {
+    const targetUrl = req.query.url as string;
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined));
+    if (!targetUrl) {
+      res.status(400).send("Parameter 'url' is required");
+      return;
+    }
+
+    try {
+      const headers: Record<string, string> = { 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' };
+      if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+
+      const upstream = await fetch(targetUrl, { headers });
+      if (!upstream.ok) {
+        const bodyText = await upstream.text().catch(() => '');
+        res.status(upstream.status).send(`Upstream error ${upstream.status}${bodyText ? ': ' + bodyText.slice(0, 200) : ''}`);
+        return;
+      }
+
+      const isManifest = targetUrl.toLowerCase().includes('.m3u8');
+      if (isManifest) {
+        const text = await upstream.text();
+        const baseUrl = new URL(targetUrl);
+        const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
+        const proxyLine = (uri: string) => `/api/proxy-hls?url=${encodeURIComponent(new URL(uri, baseUrl).toString())}${passwordQuery}`;
+
+        const rewritten = text.split('\n').map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return line;
+          if (trimmed.startsWith('#')) {
+            // Rewrite URI="..." attributes on tags like EXT-X-KEY / EXT-X-MAP
+            // (a no-op .replace on tags without one, e.g. #EXTINF:10.0,).
+            return trimmed.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${proxyLine(uri)}"`);
+          }
+          return proxyLine(trimmed);
+        }).join('\n');
+
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(200).send(rewritten);
+      } else {
+        const arrayBuffer = await upstream.arrayBuffer();
+        const contentType = upstream.headers.get('content-type') || 'video/mp2t';
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(200).send(Buffer.from(arrayBuffer));
+      }
+    } catch (err: unknown) {
+      console.error('[PROXY HLS] Error:', err);
+      res.status(502).send(err instanceof Error ? err.message : 'Error proxying HLS resource');
+    }
+  });
+
   app.post('/api/sheets/append', async (req, res) => {
     try {
       const { cameraName, summary, timestamp, counts } = req.body;

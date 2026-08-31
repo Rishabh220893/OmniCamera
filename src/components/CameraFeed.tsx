@@ -17,6 +17,9 @@ interface CameraFeedProps {
   mediaRefs?: MutableRefObject<CameraMediaRefs>;
   onCameraError?: (message: string | null) => void;
   onFallbackToSimulated?: () => void;
+  /** Forwarded to the /api/proxy-hls server route, which sends it upstream
+   *  as HTTP Basic Auth (empty username) for password-gated CDN hosts. */
+  streamAccessPassword?: string;
 }
 
 type SimEntity = {
@@ -30,7 +33,7 @@ const SIM_SEED: SimEntity[] = [
   { id: '3', type: 'vehicle', x: -150, y: 120, speed: 2.8, color: '#1f8a5f', label: 'Delivery Truck', dir: 1 }
 ];
 
-export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated }: CameraFeedProps) {
+export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -102,16 +105,35 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     if (!video) return;
     setRemoteError(null);
 
+    // Always routed through our own server, never fetched by the browser
+    // directly — a cross-origin camera CDN without CORS headers blocks
+    // hls.js (and even a plain <video> load) outright otherwise, and this
+    // also keeps the access password off the wire between browser and
+    // camera host entirely.
+    const proxiedUrl = (url: string, extraPasswordQuery: boolean) =>
+      `/api/proxy-hls?url=${encodeURIComponent(url)}${extraPasswordQuery && streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}`;
+
     let hls: Hls | null = null;
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = camera.remoteStreamUrl;
+      // Safari's native HLS has no request-interception hook to attach a
+      // header, so the password (if any) rides as a query param instead —
+      // the proxy rewrites it onto every segment URL it returns too.
+      video.src = proxiedUrl(camera.remoteStreamUrl, true);
     } else if (Hls.isSupported()) {
-      hls = new Hls({ maxLiveSyncPlaybackRate: 1.5 });
-      hls.loadSource(camera.remoteStreamUrl);
+      hls = new Hls({
+        maxLiveSyncPlaybackRate: 1.5,
+        xhrSetup: (xhr) => {
+          if (streamAccessPassword) xhr.setRequestHeader('X-Stream-Password', streamAccessPassword);
+        },
+      });
+      hls.loadSource(proxiedUrl(camera.remoteStreamUrl, false));
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
-          setRemoteError(`HLS playback error (${data.type}): ${data.details}`);
+          const authHint = data.response?.code === 401 || data.response?.code === 403
+            ? ' — check the Stream Access Password in Setup.'
+            : '';
+          setRemoteError(`HLS playback error (${data.type}): ${data.details}${authHint}`);
         }
       });
     } else {
@@ -119,7 +141,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     }
 
     return () => { hls?.destroy(); };
-  }, [isRemote, streamType, camera.remoteStreamUrl]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.
