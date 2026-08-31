@@ -51,6 +51,35 @@ function requireRegistryAuth(req: express.Request, res: express.Response): boole
   return true;
 }
 
+// Gemini model fallback chain — the newest/preview model gives the best
+// results but is also the one most likely to return 503 "high demand"
+// under load. On a retryable error, fall through to progressively more
+// established models rather than failing the whole analysis cycle.
+const VISION_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+const CHAT_MODELS = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+
+function isRetryableGeminiError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /"code":\s*(429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL/i.test(message);
+}
+
+async function generateContentWithFallback(
+  models: string[],
+  params: Omit<Parameters<typeof ai.models.generateContent>[0], 'model'>
+) {
+  let lastError: unknown;
+  for (const model of models) {
+    try {
+      return await ai.models.generateContent({ ...params, model });
+    } catch (err: unknown) {
+      lastError = err;
+      if (!isRetryableGeminiError(err)) throw err;
+      console.warn(`[GEMINI] Model "${model}" unavailable, falling back to next model:`, err instanceof Error ? err.message : err);
+    }
+  }
+  throw lastError;
+}
+
 async function writeRegistryAudit(
   db: Firestore,
   entry: { cameraId: string; cameraName: string; action: 'create' | 'update' | 'delete'; source: 'api'; userId: string }
@@ -299,8 +328,7 @@ async function startServer() {
 
       console.log(`[GEMINI VISION] Analyzing frame for camera: "${camera?.name ?? 'Unknown'}"`);
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+      const response = await generateContentWithFallback(VISION_MODELS, {
         contents: {
           parts: [
             { text: 'KNOWN INDIVIDUALS REFERENCE IMAGES (If provided):' },
@@ -436,8 +464,7 @@ Analyze this context to answer user queries:
         parts: [{ text: prompt }]
       });
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+      const response = await generateContentWithFallback(CHAT_MODELS, {
         contents: contentsList,
         config: {
           systemInstruction,
