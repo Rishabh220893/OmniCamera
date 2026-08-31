@@ -191,6 +191,35 @@ async function startServer() {
     }
   });
 
+  // Some camera CDNs (confirmed against the corp8.cloud grid) gate access
+  // with a plain server-rendered login form (POST /auth/login, field name
+  // "password") rather than a header/query-param scheme, setting a
+  // long-lived session cookie on success. Cache that cookie per-password so
+  // we only log in once, and re-login automatically if a request comes back
+  // redirected (session expired/invalid) instead of served.
+  const sessionCookieCache = new Map<string, string>();
+
+  async function loginForSessionCookie(targetUrl: string, password: string): Promise<string | null> {
+    try {
+      const loginUrl = new URL('/auth/login', targetUrl).toString();
+      const res = await fetch(loginUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' },
+        body: `password=${encodeURIComponent(password)}`,
+        redirect: 'manual',
+      });
+      const setCookie = res.headers.get('set-cookie');
+      const match = setCookie?.match(/([a-zA-Z0-9_]+=[^;]+)/);
+      if (match) {
+        sessionCookieCache.set(password, match[1]);
+        return match[1];
+      }
+    } catch (err) {
+      console.error('[PROXY HLS] Session login failed:', err);
+    }
+    return null;
+  }
+
   // HLS proxy — CORS is a browser-enforced policy, so a cross-origin camera
   // CDN that doesn't send Access-Control-Allow-Origin blocks hls.js (and
   // even a plain <video> load) outright, before any app code runs. Fetching
@@ -207,14 +236,37 @@ async function startServer() {
     }
 
     try {
-      const headers: Record<string, string> = { 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' };
-      if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+      const buildHeaders = (cookie?: string | null): Record<string, string> => {
+        const headers: Record<string, string> = { 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' };
+        if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+        if (cookie) headers['Cookie'] = cookie;
+        return headers;
+      };
 
-      const upstream = await fetch(targetUrl, { headers });
+      let upstream: Response;
+      if (password) {
+        const cachedCookie = sessionCookieCache.get(password) || (await loginForSessionCookie(targetUrl, password));
+        upstream = await fetch(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' });
+        // A redirect with a password set means the session was invalid/expired
+        // (or this is the first request and there was nothing cached) — log
+        // in fresh and retry exactly once before giving up.
+        if (upstream.status >= 300 && upstream.status < 400) {
+          sessionCookieCache.delete(password);
+          const freshCookie = await loginForSessionCookie(targetUrl, password);
+          upstream = await fetch(targetUrl, { headers: buildHeaders(freshCookie), redirect: 'manual' });
+        }
+      } else {
+        upstream = await fetch(targetUrl, { headers: buildHeaders(), redirect: 'manual' });
+      }
+
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
         console.error(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText} (${password ? 'password sent' : 'no password sent'}). Body: ${bodyText.slice(0, 300)}`);
-        res.status(upstream.status).send(`Upstream error ${upstream.status}${bodyText ? ': ' + bodyText.slice(0, 200) : ''}`);
+        res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status).send(
+          upstream.status >= 300 && upstream.status < 400
+            ? 'Upstream redirected to a login page — the stream access password was rejected.'
+            : `Upstream error ${upstream.status}${bodyText ? ': ' + bodyText.slice(0, 200) : ''}`
+        );
         return;
       }
 
