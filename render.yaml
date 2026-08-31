@@ -3,7 +3,10 @@ services:
     name: omnicamera
     runtime: node
     plan: free
-    buildCommand: npm install && npm run build
+    # --include=dev is required: Render sets NODE_ENV=production for the
+    # build step too, which makes plain `npm install` skip devDependencies —
+    # and vite/esbuild (needed to actually build the app) live there.
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
