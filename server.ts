@@ -104,7 +104,9 @@ async function startServer() {
   // process.env.PORT — a hardcoded port fails deployment there.
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-  app.use(express.json());
+  // Default 100kb limit is far too small: a captured frame plus up to 6
+  // base64-encoded known-face reference images easily runs several MB.
+  app.use(express.json({ limit: '25mb' }));
 
   // API routes
   app.post('/api/alerts', (req, res) => {
