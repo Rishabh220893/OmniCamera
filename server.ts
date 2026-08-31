@@ -213,6 +213,7 @@ async function startServer() {
       const upstream = await fetch(targetUrl, { headers });
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
+        console.error(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText} (${password ? 'password sent' : 'no password sent'}). Body: ${bodyText.slice(0, 300)}`);
         res.status(upstream.status).send(`Upstream error ${upstream.status}${bodyText ? ': ' + bodyText.slice(0, 200) : ''}`);
         return;
       }
