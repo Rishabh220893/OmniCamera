@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: omnicamera
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Vision analysis (server-side only — see docs on the client-side key fix).
+      - key: GEMINI_API_KEY
+        sync: false
+      # Optional: Google Sheets log export. Leave unset to keep it disabled (501).
+      - key: GOOGLE_SHEETS_CREDENTIALS
+        sync: false
+      - key: GOOGLE_SHEETS_SPREADSHEET_ID
+        sync: false
+      # Optional: Central Registry API-based onboarding. Leave unset to keep
+      # it disabled (501). See docs/registry-api.md.
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false
+      - key: REGISTRY_API_KEY
+        sync: false
