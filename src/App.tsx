@@ -134,6 +134,17 @@ export default function App() {
     } catch (err) { console.error('Audit log write failed (non-fatal):', err); }
   }, [user]);
 
+  // Long-lived onSnapshot listeners must never throw from their error
+  // callback — an uncaught throw there (which handleFirestoreError does,
+  // by design, for one-shot mutations) just produces a console crash with
+  // no recovery. A rules mismatch or transient outage should degrade to
+  // offline mode, not take the listener down silently.
+  const handleListenerError = useCallback((collectionName: string, error: unknown) => {
+    console.error(`Firestore listener failed for "${collectionName}" (falling back to offline/local state):`, error);
+    setIsOfflineMode(true);
+    setDbError(error instanceof Error ? error.message : String(error));
+  }, []);
+
   // ---------- Auth + user preferences ----------
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -160,14 +171,9 @@ export default function App() {
                 theme: 'light', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '',
                 department: '', role: 'admin', updatedAt: serverTimestamp()
               });
-              const seedRef = await addDoc(collection(db, 'cameras'), {
-                ...defaultCameraFields('Main Entrance'), userId: firebaseUser.uid,
-                createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-              });
-              await addDoc(collection(db, 'registryAudit'), {
-                cameraId: seedRef.id, cameraName: 'Main Entrance', action: 'create', source: 'manual',
-                userId: firebaseUser.uid, performedBy: firebaseUser.email || firebaseUser.uid, timestamp: serverTimestamp()
-              });
+              // Camera seeding happens once in the cameras registry listener
+              // below (it fires for both brand-new users and any existing
+              // account that has zero camera docs) — not duplicated here.
               setIsOfflineMode(false);
               setDbError(null);
             } catch (err) {
@@ -223,7 +229,7 @@ export default function App() {
       const faces: KnownFace[] = [];
       snapshot.forEach(d => { const data = d.data(); faces.push({ id: d.id, name: data.name, imageData: data.imageData }); });
       setKnownFaces(faces);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'faces'));
+    }, (error) => handleListenerError('faces', error));
     return () => unsub();
   }, [user]);
 
@@ -238,13 +244,40 @@ export default function App() {
         entries.push({ id: d.id, plate: data.plate, reason: data.reason || '', addedBy: data.userId, createdAt: data.createdAt?.toDate?.() || new Date() });
       });
       setWatchlist(entries);
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'watchlist'));
+    }, (error) => handleListenerError('watchlist', error));
+    return () => unsub();
+  }, [user]);
+
+  // ---------- Logs ----------
+  useEffect(() => {
+    if (!user || user.uid === 'demo-guest') return;
+    const q = query(collection(db, 'logs'), where('userId', '==', user.uid));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const dbLogs: LogEntry[] = [];
+      snapshot.forEach(d => {
+        const data = d.data({ serverTimestamps: 'estimate' });
+        let ts: Date;
+        if (data.timestamp && typeof data.timestamp.toDate === 'function') ts = data.timestamp.toDate();
+        else if (data.timestamp) { const p = new Date(data.timestamp); ts = isNaN(p.getTime()) ? new Date() : p; }
+        else ts = new Date();
+        dbLogs.push({
+          id: d.id, cameraId: data.cameraId || '', cameraName: data.cameraName || 'Unknown Camera', timestamp: ts,
+          summary: data.summary || '', counts: data.counts || { people: 0, vehicles: 0, other: 0 },
+          isUnusual: data.isUnusual || false, unusualReason: data.unusualReason || undefined, alerts: data.alerts || [],
+          detectedPlates: data.detectedPlates || [], isWatchlistMatch: data.isWatchlistMatch || false,
+        });
+      });
+      dbLogs.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+      setLogs(dbLogs.slice(0, 100));
+    }, (error) => handleListenerError('logs', error));
     return () => unsub();
   }, [user]);
 
   // ---------- Camera registry (Model 1 — central registry, mandatory foundation) ----------
+  const hasSeededCameraRef = useRef(false);
   useEffect(() => {
     if (!user || user.uid === 'demo-guest') return;
+    hasSeededCameraRef.current = false;
     const q = query(collection(db, 'cameras'), where('userId', '==', user.uid));
     const unsub = onSnapshot(q, (snapshot) => {
       const cams: CameraConfig[] = [];
@@ -267,9 +300,22 @@ export default function App() {
       if (cams.length > 0) {
         setCameras(cams);
         if (!cams.find(c => c.id === activeCameraId)) setActiveCameraId(cams[0].id);
+      } else if (!hasSeededCameraRef.current) {
+        // Covers both brand-new accounts and any existing account whose
+        // users/{uid} doc predates the registry migration and therefore
+        // never got a camera document created for it.
+        hasSeededCameraRef.current = true;
+        addDoc(collection(db, 'cameras'), {
+          ...defaultCameraFields('Main Entrance'), userId: user.uid,
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        }).then(ref => logRegistryAudit(ref.id, 'Main Entrance', 'create', 'manual'))
+          .catch(err => console.error('Failed to seed a default camera:', err));
       }
-    }, (error) => handleFirestoreError(error, OperationType.LIST, 'cameras'));
+    }, (error) => handleListenerError('cameras', error));
     return () => unsub();
+    // activeCameraId and logRegistryAudit intentionally omitted: re-subscribing
+    // this listener on every camera switch would be wasteful, and reading a
+    // slightly-stale activeCameraId here self-corrects on the next snapshot.
   }, [user]);
 
   // ---------- Registry audit trail (admin-only) ----------
