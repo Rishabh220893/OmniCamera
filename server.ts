@@ -53,14 +53,21 @@ function requireRegistryAuth(req: express.Request, res: express.Response): boole
 
 // Gemini model fallback chain — the newest/preview model gives the best
 // results but is also the one most likely to return 503 "high demand"
-// under load. On a retryable error, fall through to progressively more
-// established models rather than failing the whole analysis cycle.
-const VISION_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-2.0-flash'];
-const CHAT_MODELS = ['gemini-3.5-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+// under load. On a retryable error, fall through to the next model rather
+// than failing the whole analysis cycle. Google retires model IDs over
+// time (gemini-2.5-flash and gemini-2.0-flash are no longer available to
+// new projects as of this writing — its own 404 response names the
+// current replacement), so this list is deliberately short and should be
+// updated from that error message if it goes stale again rather than
+// guessing at names.
+const VISION_MODELS = ['gemini-3-flash-preview', 'gemini-3.6-flash'];
+const CHAT_MODELS = ['gemini-3.5-flash', 'gemini-3.6-flash'];
 
 function isRetryableGeminiError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
-  return /"code":\s*(429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL/i.test(message);
+  // Capacity/transient errors, and "model no longer exists" (404/NOT_FOUND)
+  // — both are reasons to try the *next* model, not to fail outright.
+  return /"code":\s*(404|429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|NOT_FOUND/i.test(message);
 }
 
 async function generateContentWithFallback(
