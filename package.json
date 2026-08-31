@@ -21,6 +21,7 @@
     "framer-motion": "^12.38.0",
     "google-auth-library": "^10.6.2",
     "googleapis": "^171.4.0",
+    "hls.js": "^1.7.1",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.344.0",
     "motion": "^11.0.0",

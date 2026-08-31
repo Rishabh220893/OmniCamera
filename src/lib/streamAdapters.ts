@@ -1,4 +1,4 @@
-export type StreamType = 'iframe' | 'image' | 'video';
+export type StreamType = 'iframe' | 'image' | 'video' | 'hls' | 'unsupported';
 
 /**
  * Classifies a remote camera URL into the player type needed to render it.
@@ -7,6 +7,21 @@ export type StreamType = 'iframe' | 'image' | 'video';
  */
 export function detectStreamType(url: string): StreamType {
   const lower = url.toLowerCase();
+
+  // RTSP and raw WHEP endpoints can't be loaded as a plain browser media
+  // source — RTSP needs a native decode pipeline (ffmpeg/GStreamer/OpenCV),
+  // and WHEP needs a WebRTC SDP-negotiation client, not just a URL. Flag
+  // them clearly instead of silently rendering a broken player.
+  if (lower.startsWith('rtsp://') || lower.startsWith('rtsps://')) {
+    return 'unsupported';
+  }
+  if (lower.includes('/whep')) {
+    return 'unsupported';
+  }
+
+  if (lower.includes('.m3u8')) {
+    return 'hls';
+  }
 
   if (
     lower.includes('.html') ||
@@ -31,6 +46,18 @@ export function detectStreamType(url: string): StreamType {
   }
 
   return 'video';
+}
+
+/** Human-readable explanation for why a URL was classified 'unsupported'. */
+export function unsupportedReason(url: string): string {
+  const lower = url.toLowerCase();
+  if (lower.startsWith('rtsp://') || lower.startsWith('rtsps://')) {
+    return 'RTSP streams need a native decode pipeline (ffmpeg/GStreamer/OpenCV) — browsers cannot play RTSP directly. Use this camera\'s HLS URL instead, or run a bridge like go2rtc and use its browser-playable output.';
+  }
+  if (lower.includes('/whep')) {
+    return 'WHEP requires a WebRTC signaling handshake, not just a URL — a plain <video> tag cannot load it. Use this camera\'s HLS URL instead for browser playback.';
+  }
+  return 'This stream format is not supported for direct playback.';
 }
 
 /** Best-effort snapshot endpoint for a go2rtc-style iframe player URL. */

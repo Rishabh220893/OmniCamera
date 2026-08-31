@@ -526,7 +526,7 @@ export default function App() {
     const refs = mediaRefs.current;
 
     if (isSimulated) { width = refs.canvas?.width || 640; height = refs.canvas?.height || 360; }
-    else if (isRemote && streamType === 'video') { width = refs.video?.videoWidth || 640; height = refs.video?.videoHeight || 360; }
+    else if (isRemote && (streamType === 'video' || streamType === 'hls')) { width = refs.video?.videoWidth || 640; height = refs.video?.videoHeight || 360; }
     else if (isRemote && streamType === 'image') { width = refs.img?.naturalWidth || 640; height = refs.img?.naturalHeight || 360; }
     else if (!isRemote) { width = refs.video?.videoWidth || 640; height = refs.video?.videoHeight || 360; }
 
@@ -544,8 +544,11 @@ export default function App() {
         if (!refs.canvas) throw new Error('Simulated feed is not ready yet.');
         ctx.drawImage(refs.canvas, 0, 0, width, height);
       } else if (isRemote) {
-        if (streamType === 'video' && refs.video) ctx.drawImage(refs.video, 0, 0, width, height);
+        if ((streamType === 'video' || streamType === 'hls') && refs.video) ctx.drawImage(refs.video, 0, 0, width, height);
         else if (streamType === 'image' && refs.img) ctx.drawImage(refs.img, 0, 0, width, height);
+        else if (streamType === 'unsupported') {
+          throw new Error('RTSP/WHEP URLs cannot be analyzed directly in the browser. Use this camera\'s HLS URL instead.');
+        }
         else if (streamType === 'iframe') {
           const snapshotImgUrl = buildSnapshotUrl(activeCamera.remoteStreamUrl);
           if (!snapshotImgUrl) throw new Error('Failed to parse iframe URL for snapshot extraction.');
@@ -709,6 +712,7 @@ export default function App() {
     const valid = rows.filter(r => r.name?.trim());
     const localCreated: CameraConfig[] = [];
     for (const row of valid) {
+      const hasRemoteFeed = !!row.remoteStreamUrl?.trim();
       const fields: Omit<CameraConfig, 'id'> = {
         ...defaultCameraFields(row.name.trim()),
         department: row.department || undefined,
@@ -719,7 +723,11 @@ export default function App() {
         installDate: row.installDate || undefined,
         storageDetails: row.storageDetails || undefined,
         location: row.lat && row.lng ? { lat: parseFloat(row.lat), lng: parseFloat(row.lng) } : undefined,
-        useSimulatedFeed: true,
+        // A remoteStreamUrl column onboards a real feed directly; otherwise
+        // fall back to the simulated demo feed so the card isn't broken.
+        useRemoteFeed: hasRemoteFeed,
+        remoteStreamUrl: row.remoteStreamUrl?.trim() || '',
+        useSimulatedFeed: !hasRemoteFeed,
         onboardedVia: 'bulk_import',
       };
       if (user.uid === 'demo-guest') {

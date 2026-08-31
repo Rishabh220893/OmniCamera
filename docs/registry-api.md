@@ -85,6 +85,15 @@ curl -X DELETE -H "X-Registry-Api-Key: $KEY" \
 
 The Registry tab in the app also accepts a CSV upload (Admin accounts only) using the same field names as the table above (`lat`/`lng` instead of a nested `location`). See `docs/sample-cameras.csv` for a ready-to-import example — it's the same dataset the "Sample onboarded camera-metadata dataset" deliverable refers to.
 
+An optional `remoteStreamUrl` column onboards a working feed directly — a row with it set is created with `useRemoteFeed: true` and that URL; a row without it is created with the simulated demo feed instead, so the card isn't left broken. Supported URL shapes (see `src/lib/streamAdapters.ts`):
+
+| URL shape | Playback |
+|---|---|
+| `*.m3u8` (HLS) | Decoded via `hls.js` in-browser — the recommended format for this app |
+| A go2rtc-style player page (`.html`, `?mode=webrtc`, `/stream...`) | Embedded as an iframe |
+| `*.mjpeg` / `*.jpg` / `*.png` snapshot URL | Rendered as a plain image, polled per analysis cycle |
+| `rtsp://...` or a raw `.../whep` endpoint | **Not playable directly** — RTSP needs a native decode pipeline (ffmpeg/GStreamer/OpenCV), WHEP needs a WebRTC signaling client. The app shows a clear explanation instead of a blank player; use that camera's HLS URL instead |
+
 ## Errors
 
 | Status | Meaning |

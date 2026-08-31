@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback, MutableRefObject } from 'react';
-import { AlertTriangle, RefreshCw, Video } from 'lucide-react';
+import Hls from 'hls.js';
+import { AlertTriangle, RefreshCw, Video, Info } from 'lucide-react';
 import { CameraConfig, CameraMediaRefs } from '../types';
-import { detectStreamType } from '../lib/streamAdapters';
+import { detectStreamType, unsupportedReason } from '../lib/streamAdapters';
 import { cn } from '../lib/utils';
 
 interface CameraFeedProps {
@@ -36,6 +37,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const entitiesRef = useRef<SimEntity[]>([]);
   const activeStreamRef = useRef<MediaStream | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const isSimulated = !!camera.useSimulatedFeed;
   const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
@@ -89,6 +91,35 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       }
     };
   }, [camera.id, camera.facingMode, isRemote, isSimulated, startCamera]);
+
+  // HLS playback — browsers don't decode .m3u8 natively (except Safari),
+  // so this feeds the same <video> element via MediaSource Extensions.
+  // Frame capture (App.tsx captureAndAnalyze) draws from that same element,
+  // so nothing else needs to know HLS is involved.
+  useEffect(() => {
+    if (!isRemote || streamType !== 'hls') return;
+    const video = videoRef.current;
+    if (!video) return;
+    setRemoteError(null);
+
+    let hls: Hls | null = null;
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = camera.remoteStreamUrl;
+    } else if (Hls.isSupported()) {
+      hls = new Hls({ maxLiveSyncPlaybackRate: 1.5 });
+      hls.loadSource(camera.remoteStreamUrl);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          setRemoteError(`HLS playback error (${data.type}): ${data.details}`);
+        }
+      });
+    } else {
+      setRemoteError('This browser does not support HLS playback.');
+    }
+
+    return () => { hls?.destroy(); };
+  }, [isRemote, streamType, camera.remoteStreamUrl]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.
@@ -183,6 +214,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   }
 
   if (isRemote) {
+    if (streamType === 'unsupported') {
+      return (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-surface-muted gap-3">
+          <Info className="w-6 h-6 text-ink-muted" strokeWidth={1.75} />
+          <p className="text-xs text-ink-muted max-w-sm leading-relaxed">{unsupportedReason(camera.remoteStreamUrl)}</p>
+        </div>
+      );
+    }
     if (streamType === 'iframe') {
       return (
         <iframe
@@ -197,7 +236,17 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     if (streamType === 'image') {
       return <img key={camera.id} ref={remoteImgRef} src={camera.remoteStreamUrl} crossOrigin="anonymous" className="w-full h-full object-cover" alt={camera.name} />;
     }
-    return <video key={camera.id} ref={videoRef} src={camera.remoteStreamUrl} autoPlay playsInline muted crossOrigin="anonymous" className="w-full h-full object-cover" />;
+    if (remoteError && isFocused) {
+      return (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-surface-muted gap-3">
+          <AlertTriangle className="w-6 h-6 text-critical" strokeWidth={1.75} />
+          <p className="text-xs text-critical max-w-sm leading-relaxed">{remoteError}</p>
+        </div>
+      );
+    }
+    // 'hls' and plain 'video' both render into the same element — HLS is
+    // attached via the effect above instead of a bare src for non-Safari browsers.
+    return <video key={camera.id} ref={videoRef} src={streamType === 'hls' ? undefined : camera.remoteStreamUrl} autoPlay playsInline muted crossOrigin="anonymous" className="w-full h-full object-cover" />;
   }
 
   if (localError && isFocused) {
