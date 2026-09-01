@@ -39,6 +39,11 @@ const SIM_SEED: SimEntity[] = [
   { id: '3', type: 'vehicle', x: -150, y: 120, speed: 2.8, color: '#1f8a5f', label: 'Delivery Truck', dir: 1 }
 ];
 
+// Per the grid's own integrator guide: "Reconnect automatically, with
+// backoff (~2s → cap ~30s). Do not reconnect in a tight loop."
+const BASE_RETRY_DELAY_MS = 2_000;
+const MAX_RETRY_DELAY_MS = 30_000;
+
 export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
@@ -48,6 +53,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const [localError, setLocalError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [status, setStatus] = useState<FeedStatus>('connecting');
+  const retryDelayRef = useRef(BASE_RETRY_DELAY_MS);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [retryGeneration, setRetryGeneration] = useState(0);
 
   const isSimulated = !!camera.useSimulatedFeed;
   const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
@@ -128,20 +136,64 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     if (!video) return;
     setRemoteError(null);
     setStatus('connecting');
+    let cancelled = false;
+    let verifyTimer: ReturnType<typeof setInterval> | null = null;
 
-    const handlePlaying = () => setStatus('live');
+    // The integrator guide for this grid is explicit: "attaching mid-stream
+    // can produce decoder messages ... until the first IDR frame arrives.
+    // This is normal and self-corrects." hls.js's own 'playing' event fires
+    // the instant the video starts consuming data — it says nothing about
+    // whether the decoded frame is an actual picture or a corrupt/black one
+    // from exactly that join hiccup. That gap is why the UI could show a
+    // camera as "live" while it was really a frozen black frame. Before
+    // trusting "live", confirm the visible frame is actually changing.
+    const startFrameVerification = () => {
+      if (verifyTimer || cancelled) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = 16; canvas.height = 16;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) { setStatus('live'); return; }
+      let lastSample: Uint8ClampedArray | null = null;
+      verifyTimer = setInterval(() => {
+        let current: Uint8ClampedArray | null = null;
+        try {
+          ctx.drawImage(video, 0, 0, 16, 16);
+          current = ctx.getImageData(0, 0, 16, 16).data;
+        } catch { /* video not ready for this sample yet */ }
+        if (current && lastSample) {
+          let diff = 0;
+          for (let i = 0; i < current.length; i += 4) diff += Math.abs(current[i] - lastSample[i]);
+          if (diff > 40) {
+            setStatus('live');
+            retryDelayRef.current = BASE_RETRY_DELAY_MS; // confirmed genuinely working — reset backoff
+            if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+          }
+        }
+        if (current) lastSample = current;
+      }, 1500);
+    };
+    const handlePlaying = () => startFrameVerification();
     video.addEventListener('playing', handlePlaying);
 
-    // hls.js only reports a fatal error once it exhausts its own retry
-    // budget — with this origin's ~45-50s per-attempt timeouts and 2-3
-    // retries per loading stage, that can take several minutes, during
-    // which the tile just shows an indefinite spinner with no feedback
-    // that anything is wrong. This watchdog gives up from the UI's side
-    // after a fixed window regardless of what hls.js is still attempting
-    // internally, so "stuck" is at least visible instead of silent.
-    const watchdog = setTimeout(() => {
-      setRemoteError('Timed out waiting for the stream to start.');
+    // The guide: "Reconnect automatically, with backoff (~2s → cap ~30s).
+    // Do not reconnect in a tight loop." A manual-only retry button doesn't
+    // meet that, and hls.js only reports a fatal error after exhausting its
+    // own retry budget — which at this origin's ~45-50s per-attempt timeouts
+    // can take minutes — so a watchdog also triggers reconnection if nothing
+    // has actually confirmed live by then.
+    const scheduleReconnect = (message: string) => {
+      if (cancelled) return;
+      setRemoteError(message);
       setStatus('error');
+      if (retryTimerRef.current) return; // a reconnect is already pending
+      retryTimerRef.current = setTimeout(() => {
+        retryTimerRef.current = null;
+        retryDelayRef.current = Math.min(MAX_RETRY_DELAY_MS, retryDelayRef.current * 2);
+        setRetryGeneration((g) => g + 1);
+      }, retryDelayRef.current);
+    };
+    const watchdog = setTimeout(() => {
+      scheduleReconnect('Timed out waiting for a real picture from this stream.');
     }, 90_000);
     const clearWatchdog = () => clearTimeout(watchdog);
     video.addEventListener('playing', clearWatchdog);
@@ -186,13 +238,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       hls.loadSource(proxiedUrl(camera.remoteStreamUrl, false));
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_event, data) => {
+        // Non-fatal errors (including the "Could not find ref with POC" /
+        // RPS-construction warnings the guide calls out as normal on join,
+        // before the first IDR arrives) are deliberately ignored here —
+        // hls.js recovers from those on its own, and escalating them would
+        // do exactly what the guide warns against: "pipelines that abort on
+        // the first decoder error will bounce on those streams."
         if (data.fatal) {
+          clearWatchdog();
           const authHint = data.response?.code === 401 || data.response?.code === 403
             ? ' — check the Stream Access Password in Setup.'
             : '';
-          setRemoteError(`HLS playback error (${data.type}): ${data.details}${authHint}`);
-          setStatus('error');
-          clearWatchdog();
+          scheduleReconnect(`HLS playback error (${data.type}): ${data.details}${authHint}`);
         }
       });
     } else {
@@ -202,12 +259,15 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     }
 
     return () => {
+      cancelled = true;
       clearWatchdog();
+      if (verifyTimer) clearInterval(verifyTimer);
+      if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       video.removeEventListener('playing', handlePlaying);
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
-  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.
