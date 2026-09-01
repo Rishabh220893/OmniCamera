@@ -28,12 +28,10 @@ export default function Sidebar({ activeTab, onChangeTab, onLogout }: SidebarPro
             key={tab.id}
             onClick={() => onChangeTab(tab.id)}
             title={tab.label}
-            className={cn('nav-item !px-3 !py-3 relative', activeTab === tab.id && 'active')}
+            className={cn('nav-item !flex-col !gap-1 !px-2 !py-2.5', activeTab === tab.id && 'active')}
           >
             <tab.icon className="w-5 h-5" strokeWidth={1.75} />
-            <div className="absolute left-full ml-3 px-2 py-1 rounded-md bg-ink text-surface text-[10px] font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity">
-              {tab.label}
-            </div>
+            <span className="text-[8px] font-bold uppercase tracking-wide leading-none">{tab.label}</span>
           </button>
         ))}
       </nav>

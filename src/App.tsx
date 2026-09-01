@@ -23,6 +23,7 @@ import RegistryTab from './components/RegistryTab';
 import GuideTab from './components/GuideTab';
 import ChatWidget from './components/ChatWidget';
 import DvrGuideModal from './components/DvrGuideModal';
+import FirstUseTour from './components/FirstUseTour';
 
 enum OperationType { CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write' }
 
@@ -86,17 +87,18 @@ export default function App() {
   const [auditTrail, setAuditTrail] = useState<RegistryAuditEntry[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>('monitor');
   const [viewMode, setViewMode] = useState<'focus' | 'grid'>('focus');
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [webhookStatus, setWebhookStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [showDVRGuide, setShowDVRGuide] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [user, setUser] = useState<FirebaseUser | null>(null);
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  // Dark by default — a security/NOC monitoring tool reads as more purpose-
+  // built in dark mode, and it's more legible on a projector during a demo.
+  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const [notificationPrefs, setNotificationPrefs] = useState<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [showOnboarding, setShowOnboarding] = useState(true);
+  const [showFirstUseTour, setShowFirstUseTour] = useState(false);
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [googleSheetsId, setGoogleSheetsId] = useState<string>('');
@@ -110,6 +112,11 @@ export default function App() {
   const [userDepartment, setUserDepartment] = useState('');
   const [userRole, setUserRole] = useState<'operator' | 'admin'>('admin');
   const [routePlate, setRoutePlate] = useState<string | null>(null);
+  const [highlightLogId, setHighlightLogId] = useState<string | null>(null);
+  const handleJumpToLog = useCallback((logId: string) => {
+    setHighlightLogId(logId);
+    setActiveTab('analytics');
+  }, []);
 
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
@@ -119,12 +126,36 @@ export default function App() {
   ]);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const captureTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const mediaRefs = useRef<CameraMediaRefs>({ video: null, img: null, canvas: null });
+  const mediaRefs = useRef<Map<string, CameraMediaRefs>>(new Map());
+  const inFlightAnalysisRef = useRef<Set<string>>(new Set());
+  const lastAnalysisAttemptRef = useRef<Map<string, number>>(new Map());
+  const camerasRef = useRef<CameraConfig[]>(cameras);
+  useEffect(() => { camerasRef.current = cameras; }, [cameras]);
 
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const isAdmin = userRole === 'admin';
+
+  // ---------- Multi-camera analysis selection ----------
+  // The active/focused camera is always analyzed; grid-view checkboxes let
+  // the user run additional cameras alongside it instead of being limited
+  // to one feed's summary at a time.
+  const [extraAnalysisCameraIds, setExtraAnalysisCameraIds] = useState<Set<string>>(new Set());
+  const toggleAnalysisCamera = useCallback((id: string) => {
+    setExtraAnalysisCameraIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const analysisCameraIds = useMemo(() => {
+    const s = new Set(extraAnalysisCameraIds);
+    s.add(activeCameraId);
+    return s;
+  }, [extraAnalysisCameraIds, activeCameraId]);
+  const [analyzingCameraIds, setAnalyzingCameraIds] = useState<Set<string>>(new Set());
+  const [analysisErrors, setAnalysisErrors] = useState<Map<string, string>>(new Map());
+  const isAnalyzing = analyzingCameraIds.has(activeCameraId);
+  const analysisError = analysisErrors.get(activeCameraId) || null;
 
   const updateActiveCamera = useCallback((updates: Partial<CameraConfig>) => {
     setCameras(prev => prev.map(c => c.id === activeCameraId ? { ...c, ...updates } : c));
@@ -157,11 +188,12 @@ export default function App() {
       if (firebaseUser) {
         setUser(firebaseUser);
         setIsAuthenticated(true);
+        if (localStorage.getItem('omni-first-tour') !== 'true') setShowFirstUseTour(true);
         try {
           const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
           if (userDoc.exists()) {
             const data = userDoc.data() as UserPreferences;
-            setTheme(data.theme || 'light');
+            setTheme(data.theme || 'dark');
             if (data.notificationPrefs) setNotificationPrefs(data.notificationPrefs);
             setGoogleSheetsId(data.googleSheetsId || '');
             setStreamAccessPassword(data.streamAccessPassword || '');
@@ -174,7 +206,7 @@ export default function App() {
           } else {
             try {
               await setDoc(doc(db, 'users', firebaseUser.uid), {
-                theme: 'light', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '', streamAccessPassword: '',
+                theme: 'dark', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '', streamAccessPassword: '',
                 department: '', role: 'admin', updatedAt: serverTimestamp()
               });
               // Camera seeding happens once in the cameras registry listener
@@ -212,7 +244,7 @@ export default function App() {
       } else {
         setUser(null);
         setIsAuthenticated(false);
-        setTheme('light');
+        setTheme('dark');
         setGoogleSheetsId('');
         setUserDepartment('');
         setUserRole('admin');
@@ -371,6 +403,7 @@ export default function App() {
     const guestPrefs = localStorage.getItem('demo-guest-notificationPrefs');
     if (guestPrefs) { try { setNotificationPrefs(JSON.parse(guestPrefs)); } catch (e) { console.error(e); } }
     setIsAuthenticated(true);
+    if (localStorage.getItem('omni-first-tour') !== 'true') setShowFirstUseTour(true);
   };
 
   const handleToggleTheme = async () => {
@@ -392,6 +425,7 @@ export default function App() {
   };
 
   const handleCompleteOnboarding = () => { localStorage.setItem('omni-onboarding', 'true'); setShowOnboarding(false); };
+  const handleDismissFirstUseTour = () => { localStorage.setItem('omni-first-tour', 'true'); setShowFirstUseTour(false); };
   const handleLogout = async () => { await signOut(auth); setActiveTab('monitor'); };
 
   const handleSaveSettings = async () => {
@@ -523,19 +557,33 @@ export default function App() {
   const handleFallbackToSimulated = useCallback(() => updateActiveCamera({ useSimulatedFeed: true, useRemoteFeed: false }), [updateActiveCamera]);
 
   // ---------- Frame capture + analysis ----------
-  const captureAndAnalyze = useCallback(async () => {
-    const isSimulated = !!activeCamera.useSimulatedFeed;
-    const isRemote = !!activeCamera.useRemoteFeed && !!activeCamera.remoteStreamUrl;
-    const streamType = isRemote ? detectStreamType(activeCamera.remoteStreamUrl) : null;
+  // Parameterized by camera (rather than closing over a single activeCamera)
+  // so multiple cameras — the focused one plus any grid-view checkboxes —
+  // can run their own capture/analysis cycles concurrently.
+  const captureAndAnalyzeCamera = useCallback(async (camera: CameraConfig) => {
+    if (inFlightAnalysisRef.current.has(camera.id)) return;
+    const refs = mediaRefs.current.get(camera.id);
+    if (!refs) return; // this camera's feed hasn't reported its DOM refs yet
 
-    if (!canvasRef.current || isAnalyzing) return;
-    setIsAnalyzing(true);
-    setAnalysisError(null);
-    const canvas = canvasRef.current;
+    const isSimulated = !!camera.useSimulatedFeed;
+    const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
+    const streamType = isRemote ? detectStreamType(camera.remoteStreamUrl) : null;
 
+    inFlightAnalysisRef.current.add(camera.id);
+    setAnalyzingCameraIds(prev => new Set(prev).add(camera.id));
+    setAnalysisErrors(prev => { if (!prev.has(camera.id)) return prev; const next = new Map(prev); next.delete(camera.id); return next; });
+
+    const finish = () => {
+      inFlightAnalysisRef.current.delete(camera.id);
+      setAnalyzingCameraIds(prev => { if (!prev.has(camera.id)) return prev; const next = new Set(prev); next.delete(camera.id); return next; });
+    };
+
+    // A private scratch canvas per call — never attached to the DOM. Reusing
+    // one shared canvas (the old design) would race when two cameras' cycles
+    // overlap, since drawImage/toDataURL on a shared element isn't atomic.
+    const canvas = document.createElement('canvas');
     const MAX_DIMENSION = 1024;
     let width = 640, height = 360;
-    const refs = mediaRefs.current;
 
     if (isSimulated) { width = refs.canvas?.width || 640; height = refs.canvas?.height || 360; }
     else if (isRemote && (streamType === 'video' || streamType === 'hls')) { width = refs.video?.videoWidth || 640; height = refs.video?.videoHeight || 360; }
@@ -549,7 +597,7 @@ export default function App() {
     }
     canvas.width = width; canvas.height = height;
     const ctx = canvas.getContext('2d');
-    if (!ctx) { setIsAnalyzing(false); return; }
+    if (!ctx) { finish(); return; }
 
     try {
       if (isSimulated) {
@@ -562,7 +610,7 @@ export default function App() {
           throw new Error('RTSP/WHEP URLs cannot be analyzed directly in the browser. Use this camera\'s HLS URL instead.');
         }
         else if (streamType === 'iframe') {
-          const snapshotImgUrl = buildSnapshotUrl(activeCamera.remoteStreamUrl);
+          const snapshotImgUrl = buildSnapshotUrl(camera.remoteStreamUrl);
           if (!snapshotImgUrl) throw new Error('Failed to parse iframe URL for snapshot extraction.');
           const proxiedUrl = `/api/proxy-frame?url=${encodeURIComponent(snapshotImgUrl)}`;
           const res = await fetch(proxiedUrl);
@@ -588,7 +636,7 @@ export default function App() {
       }
 
       const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-      if (!base64Image) { setIsAnalyzing(false); return; }
+      if (!base64Image) { finish(); return; }
 
       const analyzeResponse = await fetch('/api/gemini/analyze-frame', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -597,9 +645,9 @@ export default function App() {
           knownFaces: knownFaces.slice(0, 6).map(f => ({ name: f.name, imageData: f.imageData })),
           watchlist: watchlist.map(w => w.plate),
           camera: {
-            name: activeCamera.name, sensitivity: activeCamera.sensitivity,
-            peopleThreshold: activeCamera.peopleThreshold, vehicleThreshold: activeCamera.vehicleThreshold,
-            suspiciousRules: activeCamera.suspiciousRules
+            name: camera.name, sensitivity: camera.sensitivity,
+            peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold,
+            suspiciousRules: camera.suspiciousRules
           }
         })
       });
@@ -619,9 +667,9 @@ export default function App() {
       if (isWatchlistMatch) alerts.unshift(`Watchlist match: ${watchlistMatches.join(', ')}`);
 
       const newEntry: LogEntry = {
-        id: Math.random().toString(36).substr(2, 9), cameraId: activeCamera.id, cameraName: activeCamera.name, timestamp: new Date(),
+        id: Math.random().toString(36).substr(2, 9), cameraId: camera.id, cameraName: camera.name, timestamp: new Date(),
         summary: summaryWithExtra, counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment,
-        isUnusual: isWatchlistMatch || data.isUnusual || (data.people_identified?.includes('Unknown Person') && activeCamera.sensitivity > 3),
+        isUnusual: isWatchlistMatch || data.isUnusual || (data.people_identified?.includes('Unknown Person') && camera.sensitivity > 3),
         unusualReason: data.isUnusualReason || (data.people_identified?.includes('Unknown Person') ? 'Unknown identity detected near camera' : undefined),
         alerts, detectedPlates, isWatchlistMatch
       };
@@ -630,42 +678,57 @@ export default function App() {
         setLogs(prev => [newEntry, ...prev].slice(0, 100));
       } else {
         addDoc(collection(db, 'logs'), {
-          cameraId: activeCamera.id, cameraName: activeCamera.name, summary: summaryWithExtra,
+          cameraId: camera.id, cameraName: camera.name, summary: summaryWithExtra,
           detectedItems: data.people_identified || [], timestamp: new Date(), userId: user.uid,
           counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment, isUnusual: newEntry.isUnusual,
           unusualReason: newEntry.unusualReason || '', alerts, detectedPlates, isWatchlistMatch
         }).catch(err => { console.error('Firestore log write failed, falling back to local state:', err); setLogs(prev => [newEntry, ...prev].slice(0, 100)); });
       }
 
-      setCameras(prev => prev.map(c => c.id === activeCamera.id ? { ...c, lastAnalysisTime: new Date() } : c));
+      setCameras(prev => prev.map(c => c.id === camera.id ? { ...c, lastAnalysisTime: new Date() } : c));
 
-      const payload = { camera_id: activeCamera.id, camera_name: activeCamera.name, alert: newEntry.summary, timestamp: newEntry.timestamp, data: { ...newEntry, raw_ai_data: data } };
+      const payload = { camera_id: camera.id, camera_name: camera.name, alert: newEntry.summary, timestamp: newEntry.timestamp, data: { ...newEntry, raw_ai_data: data } };
       fetch('/api/alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(err => console.error('Internal sync failed:', err));
 
-      if (activeCamera.webhookUrl) {
-        fetch('/api/proxy-webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: activeCamera.webhookUrl, payload }) })
+      if (camera.webhookUrl) {
+        fetch('/api/proxy-webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: camera.webhookUrl, payload }) })
           .then(res => res.json())
-          .then(d => { if (!d.success) console.error(`[WEBHOOK] Proxy sync reported failure for ${activeCamera.name}:`, d.error); })
+          .then(d => { if (!d.success) console.error(`[WEBHOOK] Proxy sync reported failure for ${camera.name}:`, d.error); })
           .catch(err => console.error('External webhook proxy sync failed:', err));
       }
 
       fetch('/api/sheets/append', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cameraId: activeCamera.id, cameraName: activeCamera.name, summary: newEntry.summary, timestamp: newEntry.timestamp.toISOString(), counts: newEntry.counts })
+        body: JSON.stringify({ cameraId: camera.id, cameraName: camera.name, summary: newEntry.summary, timestamp: newEntry.timestamp.toISOString(), counts: newEntry.counts })
       }).catch(err => console.error('Sheets sync failed:', err));
     } catch (err: unknown) {
-      console.error('Frame analysis failed:', err);
-      setAnalysisError(err instanceof Error ? err.message : String(err));
-    } finally { setIsAnalyzing(false); }
-  }, [activeCamera, isAnalyzing, knownFaces, watchlist, user]);
+      console.error(`Frame analysis failed for "${camera.name}":`, err);
+      setAnalysisErrors(prev => new Map(prev).set(camera.id, err instanceof Error ? err.message : String(err)));
+    } finally { finish(); }
+  }, [knownFaces, watchlist, user]);
 
+  // One shared 1s tick checks every selected camera's own interval setting
+  // rather than juggling a separate setInterval per camera — simpler, and
+  // avoids re-deriving N timers whenever the camera list changes.
   useEffect(() => {
-    if (isCapturing) {
-      captureAndAnalyze();
-      captureTimerRef.current = setInterval(captureAndAnalyze, activeCamera.interval * 1000);
-    } else if (captureTimerRef.current) clearInterval(captureTimerRef.current);
-    return () => { if (captureTimerRef.current) clearInterval(captureTimerRef.current); };
-  }, [isCapturing, captureAndAnalyze, activeCamera.interval]);
+    if (!isCapturing) return;
+    const tick = () => {
+      const now = Date.now();
+      for (const id of analysisCameraIds) {
+        const camera = camerasRef.current.find(c => c.id === id);
+        if (!camera) continue;
+        const last = lastAnalysisAttemptRef.current.get(id) || 0;
+        const intervalMs = Math.max(5, camera.interval) * 1000;
+        if (now - last >= intervalMs) {
+          lastAnalysisAttemptRef.current.set(id, now);
+          captureAndAnalyzeCamera(camera);
+        }
+      }
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [isCapturing, analysisCameraIds, captureAndAnalyzeCamera]);
 
   const exportData = () => {
     const csvHeader = 'Timestamp,Node,Summary,People,Vehicles,Other,IsUnusual,Plates,Alerts\n';
@@ -811,6 +874,13 @@ export default function App() {
 
   const gapReport = useMemo(() => computeGapAnalysis(cameras), [cameras]);
 
+  // Tailwind's @theme aliases (e.g. --color-surface: var(--surface)) are
+  // resolved once at :root — overriding --surface on a descendant element
+  // never propagates back through that alias, so data-theme has to live on
+  // <html> itself (as index.css's own comment says) for dark mode to
+  // actually repaint anything, not just on this component's root div.
+  useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
+
   const handleSelectCameraFromRegistry = (id: string) => { setActiveCameraId(id); setActiveTab('monitor'); };
   const handleJumpToSetup = () => setActiveTab('settings');
 
@@ -827,11 +897,16 @@ export default function App() {
           <AuthScreen loginError={loginError} isSigningIn={isSigningIn} onGoogleLogin={handleGoogleLogin} onGuestBypass={handleGuestBypass} />
         ) : (
           <div className="flex flex-col lg:flex-row h-screen">
-            <canvas ref={canvasRef} className="hidden" />
             <Sidebar activeTab={activeTab} onChangeTab={setActiveTab} onLogout={handleLogout} />
 
             <div className="lg:pl-20 min-h-screen flex flex-col w-full">
-              <Header isCapturing={isCapturing} onToggleCapturing={() => setIsCapturing(!isCapturing)} user={user} onLogout={handleLogout} />
+              <Header
+                isCapturing={isCapturing} onToggleCapturing={() => setIsCapturing(!isCapturing)} user={user} onLogout={handleLogout}
+                camerasOnline={cameras.filter(c => c.connectivityStatus !== 'offline' && c.connectivityStatus !== 'degraded').length}
+                camerasTotal={cameras.length}
+                alertsToday={logs.filter(l => l.alerts.length > 0 && l.timestamp.toDateString() === new Date().toDateString()).length}
+                geminiHealthy={analysisErrors.size === 0}
+              />
 
               <main className="flex-1 p-6 lg:p-10">
                 {isOfflineMode && (
@@ -865,11 +940,13 @@ export default function App() {
                     onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}
                     onCameraError={setCameraError} onFallbackToSimulated={handleFallbackToSimulated}
                     onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword}
+                    analysisCameraIds={analysisCameraIds} analyzingCameraIds={analyzingCameraIds}
+                    onToggleAnalysisCamera={toggleAnalysisCamera} onJumpToLog={handleJumpToLog}
                   />
                 </div>
                 <AnimatePresence mode="wait">
                   {activeTab === 'analytics' && (
-                    <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} />
+                    <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
                   )}
                   {activeTab === 'map' && (
                     <RegistryTab
@@ -917,6 +994,7 @@ export default function App() {
             />
 
             <MobileNav activeTab={activeTab} onChangeTab={setActiveTab} />
+            {showFirstUseTour && <FirstUseTour onDismiss={handleDismissFirstUseTour} />}
           </div>
         )}
       </AnimatePresence>

@@ -8,6 +8,10 @@ import { CameraConfig, LogEntry } from '../types';
 interface CameraTrendChartProps {
   camera: CameraConfig;
   logs: LogEntry[];
+  /** Lets a click on a chart point jump straight to that reading in the
+   *  Analytics log table instead of leaving the chart and table as two
+   *  disconnected views of the same data. */
+  onPointClick?: (logId: string) => void;
 }
 
 // Wider containers can fit more points before labels/lines get cramped —
@@ -28,7 +32,7 @@ function usePointsPerPage(ref: React.RefObject<HTMLDivElement>): number {
   return points;
 }
 
-export default function CameraTrendChart({ camera, logs }: CameraTrendChartProps) {
+export default function CameraTrendChart({ camera, logs, onPointClick }: CameraTrendChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const pointsPerPage = usePointsPerPage(containerRef);
   const [pageOffset, setPageOffset] = useState(0);
@@ -48,6 +52,7 @@ export default function CameraTrendChart({ camera, logs }: CameraTrendChartProps
   const visible = cameraLogs.slice(windowStart, windowEnd);
 
   const chartData = visible.map((log) => ({
+    id: log.id,
     time: log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     people: log.counts.people,
     vehicles: log.counts.vehicles,
@@ -62,7 +67,7 @@ export default function CameraTrendChart({ camera, logs }: CameraTrendChartProps
         <div>
           <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">People &amp; vehicle trend — {camera.name}</h3>
           <p className="text-[11px] text-ink-muted mt-0.5">
-            {total === 0 ? 'No analysis yet for this node.' : `Showing ${visible.length} of ${total} readings`}
+            {total === 0 ? 'No analysis yet for this node.' : `Showing ${visible.length} of ${total} readings${onPointClick ? ' — click a point to open it in the log table' : ''}`}
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -92,7 +97,14 @@ export default function CameraTrendChart({ camera, logs }: CameraTrendChartProps
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 4, right: 12, left: -12, bottom: 0 }}>
+            <LineChart
+              data={chartData} margin={{ top: 4, right: 12, left: -12, bottom: 0 }}
+              className={onPointClick ? 'cursor-pointer' : undefined}
+              onClick={(state: { activePayload?: { payload: { id: string } }[] }) => {
+                const id = state?.activePayload?.[0]?.payload?.id;
+                if (id) onPointClick?.(id);
+              }}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" vertical={false} />
               <XAxis dataKey="time" stroke="var(--color-ink-muted)" fontSize={9} tickLine={false} axisLine={false} />
               <YAxis stroke="var(--color-ink-muted)" fontSize={9} tickLine={false} axisLine={false} allowDecimals={false} />

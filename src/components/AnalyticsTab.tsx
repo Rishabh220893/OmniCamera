@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area
@@ -15,9 +15,14 @@ interface AnalyticsTabProps {
   onExport: () => void;
   onShowRoute: (plate: string) => void;
   activeRoutePlate: string | null;
+  /** Set when a chart point elsewhere was clicked — jumps to and briefly
+   *  highlights that specific reading instead of leaving the chart and this
+   *  table as two disconnected views of the same data. */
+  highlightLogId?: string | null;
+  onHighlightHandled?: () => void;
 }
 
-export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate }: AnalyticsTabProps) {
+export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate, highlightLogId, onHighlightHandled }: AnalyticsTabProps) {
   const [plateQuery, setPlateQuery] = useState('');
   const [page, setPage] = useState(0);
   const totalPages = Math.max(1, Math.ceil(logs.length / ROWS_PER_PAGE));
@@ -26,6 +31,18 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
   // on every new row would make browsing older pages impossible.
   const safePage = Math.min(page, totalPages - 1);
   const pageLogs = logs.slice(safePage * ROWS_PER_PAGE, safePage * ROWS_PER_PAGE + ROWS_PER_PAGE);
+
+  useEffect(() => {
+    if (!highlightLogId) return;
+    const idx = logs.findIndex(l => l.id === highlightLogId);
+    if (idx === -1) return;
+    setPage(Math.floor(idx / ROWS_PER_PAGE));
+    const scrollTimer = setTimeout(() => {
+      document.getElementById(`log-row-${highlightLogId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 50);
+    const clearTimer = setTimeout(() => onHighlightHandled?.(), 3000);
+    return () => { clearTimeout(scrollTimer); clearTimeout(clearTimer); };
+  }, [highlightLogId, logs, onHighlightHandled]);
 
   const statsData = [...logs].reverse().map(log => ({
     time: log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -174,7 +191,14 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
             </thead>
             <tbody className="divide-y divide-border">
               {pageLogs.map((log) => (
-                <tr key={log.id} className={cn('hover:bg-surface-muted transition-colors', log.isWatchlistMatch && 'bg-critical-soft/40')}>
+                <tr
+                  key={log.id} id={`log-row-${log.id}`}
+                  className={cn(
+                    'hover:bg-surface-muted transition-colors',
+                    log.isWatchlistMatch && 'bg-critical-soft/40',
+                    log.id === highlightLogId && 'bg-accent-soft ring-2 ring-inset ring-accent'
+                  )}
+                >
                   <td className="px-8 py-5 text-xs font-bold text-ink whitespace-nowrap">{log.cameraName}</td>
                   <td className="px-8 py-5 text-xs font-mono text-ink-muted whitespace-nowrap">{log.timestamp.toLocaleString()}</td>
                   <td className="px-8 py-5 min-w-[280px]">

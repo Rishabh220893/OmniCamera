@@ -1,13 +1,94 @@
-import { MutableRefObject } from 'react';
+import { MutableRefObject, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2
 } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { cn, sentimentEmoji } from '../lib/utils';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
-import CameraFeed from './CameraFeed';
+import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
+
+interface GridTileProps {
+  camera: CameraConfig;
+  isActive: boolean;
+  isSelectedForAnalysis: boolean;
+  isCapturing: boolean;
+  isAnalyzing: boolean;
+  latestLog?: LogEntry;
+  mediaRefs: MutableRefObject<Map<string, CameraMediaRefs>>;
+  onCameraError?: (msg: string | null) => void;
+  onFallbackToSimulated?: () => void;
+  streamAccessPassword: string;
+  onSelect: () => void;
+  onToggleAnalysis: () => void;
+}
+
+// A grid tile owns its own connecting/live/error status — nothing else in
+// the app needs to react to one specific tile's connection state, so this
+// stays local instead of lifted into shared state.
+function GridTile({
+  camera, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
+  mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onSelect, onToggleAnalysis
+}: GridTileProps) {
+  const [status, setStatus] = useState<FeedStatus>('connecting');
+
+  return (
+    <button
+      onClick={onSelect}
+      className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left group', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
+    >
+      <CameraFeed
+        camera={camera}
+        isFocused={false}
+        isCapturing={isCapturing}
+        reportRefs={isSelectedForAnalysis}
+        mediaRefs={mediaRefs}
+        onCameraError={onCameraError}
+        onFallbackToSimulated={onFallbackToSimulated}
+        streamAccessPassword={streamAccessPassword}
+        onStatusChange={setStatus}
+      />
+
+      {status === 'connecting' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted animate-pulse">
+          <Loader2 className="w-5 h-5 text-ink-muted animate-spin" strokeWidth={1.75} />
+          <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Connecting…</span>
+        </div>
+      )}
+      {status === 'error' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
+          <AlertTriangle className="w-5 h-5 text-critical" strokeWidth={1.75} />
+          <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Reconnecting…</span>
+        </div>
+      )}
+
+      <label
+        onClick={(e) => e.stopPropagation()}
+        title="Include this camera in AI analysis"
+        className="absolute top-2.5 left-2.5 w-6 h-6 rounded-md bg-black/55 backdrop-blur-md flex items-center justify-center cursor-pointer"
+      >
+        <input
+          type="checkbox"
+          checked={isSelectedForAnalysis}
+          onChange={onToggleAnalysis}
+          className="w-3.5 h-3.5 accent-accent cursor-pointer"
+        />
+      </label>
+
+      <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
+        {latestLog && <span className="text-sm leading-none drop-shadow" title={latestLog.sentiment || 'neutral'}>{sentimentEmoji(latestLog.sentiment)}</span>}
+        {status === 'live' && (isCapturing && isSelectedForAnalysis) && (
+          <span className={cn('w-2 h-2 rounded-full bg-success', isAnalyzing ? 'animate-pulse' : '')} title="Live — analysis active" />
+        )}
+      </div>
+
+      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
+        <span className="text-[10px] font-bold text-white uppercase tracking-wide">{camera.name}</span>
+      </div>
+    </button>
+  );
+}
 
 interface MonitorTabProps {
   cameras: CameraConfig[];
@@ -25,11 +106,17 @@ interface MonitorTabProps {
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
   onToggleCameraFacing: () => void;
-  mediaRefs: MutableRefObject<CameraMediaRefs>;
+  mediaRefs: MutableRefObject<Map<string, CameraMediaRefs>>;
   onCameraError: (msg: string | null) => void;
   onFallbackToSimulated: () => void;
   onChangeTab: (tab: TabId) => void;
   streamAccessPassword: string;
+  /** Cameras currently running the capture/analysis loop — always includes
+   *  the active camera; grid-view checkboxes add more on top of it. */
+  analysisCameraIds: Set<string>;
+  analyzingCameraIds: Set<string>;
+  onToggleAnalysisCamera: (id: string) => void;
+  onJumpToLog: (logId: string) => void;
 }
 
 function formatLastAnalysisTime(lat: unknown): string {
@@ -45,9 +132,29 @@ export default function MonitorTab({
   cameras, activeCameraId, onSelectCamera, onAddCamera, isCapturing, isAnalyzing,
   cameraError, analysisError, logs, viewMode, onChangeViewMode, containerRef,
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
-  onFallbackToSimulated, onChangeTab, streamAccessPassword
+  onFallbackToSimulated, onChangeTab, streamAccessPassword,
+  analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
+  const [gridFilter, setGridFilter] = useState('');
+  const filteredCameras = useMemo(() => {
+    const q = gridFilter.trim().toLowerCase();
+    if (!q) return cameras;
+    return cameras.filter(c => c.name.toLowerCase().includes(q) || c.location?.toString().toLowerCase().includes(q) || c.department?.toLowerCase().includes(q));
+  }, [cameras, gridFilter]);
+  const latestLogByCamera = useMemo(() => {
+    const map = new Map<string, LogEntry>();
+    for (const log of logs) if (!map.has(log.cameraId)) map.set(log.cameraId, log);
+    return map;
+  }, [logs]);
+
+  // Watchlist hits float to the top regardless of age — a rare, severe event
+  // shouldn't scroll off-screen under a run of routine suspicious-activity
+  // alerts. Within each tier, newest first (logs already arrive that way).
+  const alertItems = useMemo(() => {
+    const items = logs.flatMap(log => log.alerts.map((alert, idx) => ({ log, alert, key: `${log.id}-${idx}` })));
+    return items.sort((a, b) => (a.log.isWatchlistMatch === b.log.isWatchlistMatch ? 0 : a.log.isWatchlistMatch ? -1 : 1));
+  }, [logs]);
 
   return (
     <motion.div
@@ -68,6 +175,17 @@ export default function MonitorTab({
             ))}
             <button onClick={onAddCamera} className="btn-ghost !p-2 border border-dashed border-border !rounded-lg"><Settings2 className="w-4 h-4" strokeWidth={1.75} /></button>
           </div>
+          {viewMode === 'grid' && (
+            <div className="relative w-full sm:w-64 order-last sm:order-none">
+              <Search className="w-3.5 h-3.5 text-ink-muted absolute left-3 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
+              <input
+                value={gridFilter}
+                onChange={(e) => setGridFilter(e.target.value)}
+                placeholder="Filter by camera name or location"
+                className="input !py-2 !pl-8 text-xs"
+              />
+            </div>
+          )}
           <div className="ml-auto flex items-center gap-1 panel !p-1">
             <button onClick={() => onChangeViewMode('focus')} className={cn('btn-ghost !p-2 !rounded-lg', viewMode === 'focus' && 'bg-surface !text-ink shadow-sm')} title="Focused view">
               <Rows3 className="w-4 h-4" strokeWidth={1.75} />
@@ -79,32 +197,29 @@ export default function MonitorTab({
         </div>
 
         {viewMode === 'grid' ? (
+          filteredCameras.length === 0 ? (
+            <div className="card p-10 text-center text-xs text-ink-muted">No cameras match "{gridFilter}".</div>
+          ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {cameras.map(cam => (
-              <button
+            {filteredCameras.map(cam => (
+              <GridTile
                 key={cam.id}
-                onClick={() => onSelectCamera(cam.id)}
-                className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left', cam.id === activeCameraId ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
-              >
-                <CameraFeed
-                  camera={cam}
-                  isFocused={false}
-                  isCapturing={isCapturing}
-                  reportRefs={cam.id === activeCameraId}
-                  mediaRefs={mediaRefs}
-                  onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
-                  onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
-                  streamAccessPassword={streamAccessPassword}
-                />
-                <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
-                  <span className="text-[10px] font-bold text-white uppercase tracking-wide">{cam.name}</span>
-                </div>
-                {isCapturing && cam.id === activeCameraId && (
-                  <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-success animate-pulse" />
-                )}
-              </button>
+                camera={cam}
+                isActive={cam.id === activeCameraId}
+                isSelectedForAnalysis={analysisCameraIds.has(cam.id)}
+                isCapturing={isCapturing}
+                isAnalyzing={analyzingCameraIds.has(cam.id)}
+                latestLog={latestLogByCamera.get(cam.id)}
+                mediaRefs={mediaRefs}
+                onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
+                onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
+                streamAccessPassword={streamAccessPassword}
+                onSelect={() => onSelectCamera(cam.id)}
+                onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
+              />
             ))}
           </div>
+          )
         ) : (
           <div
             ref={containerRef}
@@ -195,7 +310,7 @@ export default function MonitorTab({
           </div>
         </div>
 
-        <CameraTrendChart camera={activeCamera} logs={logs} />
+        <CameraTrendChart camera={activeCamera} logs={logs} onPointClick={onJumpToLog} />
       </div>
 
       <div className="space-y-6 flex flex-col h-full">
@@ -211,13 +326,20 @@ export default function MonitorTab({
                 onClick={() => onSelectCamera(cam.id)}
                 className={cn('w-full p-3.5 rounded-2xl border text-left flex items-center gap-3', activeCameraId === cam.id ? 'bg-accent border-accent text-white' : 'bg-surface border-border')}
               >
-                <div className={cn('w-1.5 h-1.5 rounded-full', isCapturing && activeCameraId === cam.id ? 'bg-white animate-pulse' : 'bg-ink-muted/40')} />
-                <div className="flex flex-col">
-                  <span className={cn('text-xs font-bold', activeCameraId === cam.id ? 'text-white' : 'text-ink')}>{cam.name}</span>
+                <div className={cn('w-1.5 h-1.5 rounded-full shrink-0', isCapturing && analysisCameraIds.has(cam.id) ? (activeCameraId === cam.id ? 'bg-white' : 'bg-success') + ' animate-pulse' : 'bg-ink-muted/40')} />
+                <div className="flex flex-col flex-1 min-w-0">
+                  <span className={cn('text-xs font-bold truncate', activeCameraId === cam.id ? 'text-white' : 'text-ink')}>{cam.name}</span>
                   <span className={cn('text-[9px] font-medium', activeCameraId === cam.id ? 'text-white/70' : 'text-ink-muted')}>
                     {cam.useRemoteFeed ? 'RTSP / IP feed' : cam.useSimulatedFeed ? 'Simulated' : 'Local device'}
                   </span>
                 </div>
+                <label
+                  onClick={(e) => e.stopPropagation()}
+                  title="Include in AI analysis"
+                  className={cn('w-5 h-5 rounded-md flex items-center justify-center cursor-pointer shrink-0', activeCameraId === cam.id ? 'bg-white/15' : 'bg-surface-muted')}
+                >
+                  <input type="checkbox" checked={analysisCameraIds.has(cam.id)} onChange={() => onToggleAnalysisCamera(cam.id)} className="w-3 h-3 accent-accent cursor-pointer" />
+                </label>
               </button>
             ))}
           </div>
@@ -229,17 +351,21 @@ export default function MonitorTab({
             <Bell className="w-4 h-4 text-ink-muted" strokeWidth={1.75} />
           </div>
           <div className="flex-1 p-5 space-y-3 overflow-y-auto custom-scrollbar">
-            {logs.filter(l => l.alerts.length > 0).length === 0 ? (
+            {alertItems.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-ink-muted px-6 text-center">
                 <ShieldCheck className="w-9 h-9 mb-3 opacity-20" strokeWidth={1.5} />
                 <p className="text-xs font-semibold">No critical events detected</p>
               </div>
             ) : (
-              logs.map(log => log.alerts.map((alert, idx) => (
+              alertItems.map(({ log, alert, key }, i) => (
                 <motion.div
                   initial={{ x: 12, opacity: 0 }} animate={{ x: 0, opacity: 1 }}
-                  key={`${log.id}-${idx}`}
-                  className={cn('p-3.5 rounded-xl flex items-start gap-3', log.isWatchlistMatch ? 'bg-critical-soft' : 'bg-warning-soft')}
+                  key={key}
+                  className={cn(
+                    'p-3.5 rounded-xl flex items-start gap-3 border',
+                    log.isWatchlistMatch ? 'bg-critical-soft border-critical/30' : 'bg-warning-soft border-transparent',
+                    i === 0 && log.isWatchlistMatch && 'animate-pulse'
+                  )}
                 >
                   <div className={cn('p-1.5 rounded-lg shrink-0', log.isWatchlistMatch ? 'bg-critical/15' : 'bg-warning/15')}>
                     <AlertTriangle className={cn('w-3.5 h-3.5', log.isWatchlistMatch ? 'text-critical' : 'text-warning')} strokeWidth={1.75} />
@@ -253,7 +379,7 @@ export default function MonitorTab({
                     <p className="text-xs font-semibold leading-tight text-ink">{alert}</p>
                   </div>
                 </motion.div>
-              )))
+              ))
             )}
           </div>
           <div className="p-5 bg-surface-muted border-t border-border">

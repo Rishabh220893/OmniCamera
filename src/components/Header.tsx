@@ -1,4 +1,4 @@
-import { RefreshCw, Camera, LogOut } from 'lucide-react';
+import { RefreshCw, Camera, LogOut, Video, AlertTriangle, Sparkles } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { User as FirebaseUser } from 'firebase/auth';
 
@@ -7,11 +7,16 @@ interface HeaderProps {
   onToggleCapturing: () => void;
   user: FirebaseUser | null;
   onLogout: () => void;
+  camerasOnline: number;
+  camerasTotal: number;
+  alertsToday: number;
+  geminiHealthy: boolean;
 }
 
-export default function Header({ isCapturing, onToggleCapturing, user, onLogout }: HeaderProps) {
+export default function Header({ isCapturing, onToggleCapturing, user, onLogout, camerasOnline, camerasTotal, alertsToday, geminiHealthy }: HeaderProps) {
   return (
-    <header className="h-20 flex items-center justify-between px-6 bg-surface/90 backdrop-blur-xl border-b border-border sticky top-0 z-40">
+    <header className="flex flex-col bg-surface/90 backdrop-blur-xl border-b border-border sticky top-0 z-40">
+      <div className="h-20 flex items-center justify-between px-6">
       <div className="flex flex-col">
         <h1 className="text-lg font-bold tracking-tight text-ink">OmniSee Pro</h1>
         <p className="text-[10px] text-ink-muted font-semibold uppercase tracking-[0.14em]">AI Vision Surveillance</p>
@@ -59,6 +64,24 @@ export default function Header({ isCapturing, onToggleCapturing, user, onLogout 
               </button>
             </>
           )}
+        </div>
+      </div>
+      </div>
+
+      {/* One-glance system status — answers "is everything OK right now?"
+          without having to scan every camera tile individually. */}
+      <div className="flex items-center gap-5 px-6 pb-3 -mt-1 overflow-x-auto">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Video className={cn('w-3.5 h-3.5', camerasOnline === camerasTotal && camerasTotal > 0 ? 'text-success' : 'text-warning')} strokeWidth={1.75} />
+          <span className="text-[10px] font-semibold text-ink-muted whitespace-nowrap">{camerasOnline}/{camerasTotal} online</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <AlertTriangle className={cn('w-3.5 h-3.5', alertsToday > 0 ? 'text-warning' : 'text-ink-muted')} strokeWidth={1.75} />
+          <span className="text-[10px] font-semibold text-ink-muted whitespace-nowrap">{alertsToday} alert{alertsToday !== 1 ? 's' : ''} today</span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Sparkles className={cn('w-3.5 h-3.5', geminiHealthy ? 'text-success' : 'text-critical')} strokeWidth={1.75} />
+          <span className="text-[10px] font-semibold text-ink-muted whitespace-nowrap">Gemini {geminiHealthy ? 'responding normally' : 'reporting errors'}</span>
         </div>
       </div>
     </header>

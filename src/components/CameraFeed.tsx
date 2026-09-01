@@ -5,21 +5,27 @@ import { CameraConfig, CameraMediaRefs } from '../types';
 import { detectStreamType, unsupportedReason } from '../lib/streamAdapters';
 import { cn } from '../lib/utils';
 
+export type FeedStatus = 'connecting' | 'live' | 'error';
+
 interface CameraFeedProps {
   camera: CameraConfig;
   /** Renders bounding-box labels and the larger simulated-feed detail; false = compact grid tile. */
   isFocused: boolean;
   isCapturing: boolean;
-  /** True only for the camera currently targeted by the analysis loop — independent
-   *  of isFocused, since grid mode has no single "focused" tile but analysis still
-   *  needs one camera's live DOM node to capture from. */
+  /** True for every camera currently targeted by the analysis loop —
+   *  independent of isFocused, since grid mode has no single "focused" tile
+   *  but analysis still needs each selected camera's live DOM node. */
   reportRefs?: boolean;
-  mediaRefs?: MutableRefObject<CameraMediaRefs>;
+  mediaRefs?: MutableRefObject<Map<string, CameraMediaRefs>>;
   onCameraError?: (message: string | null) => void;
   onFallbackToSimulated?: () => void;
   /** Forwarded to the /api/proxy-hls server route, which sends it upstream
    *  as HTTP Basic Auth (empty username) for password-gated CDN hosts. */
   streamAccessPassword?: string;
+  /** Lets a grid tile show a real connecting/live/error indicator instead of
+   *  either playing video or nothing — a blank tile during a slow upstream
+   *  connection otherwise reads as broken rather than working. */
+  onStatusChange?: (status: FeedStatus) => void;
 }
 
 type SimEntity = {
@@ -33,7 +39,7 @@ const SIM_SEED: SimEntity[] = [
   { id: '3', type: 'vehicle', x: -150, y: 120, speed: 2.8, color: '#1f8a5f', label: 'Delivery Truck', dir: 1 }
 ];
 
-export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword }: CameraFeedProps) {
+export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -41,15 +47,29 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const activeStreamRef = useRef<MediaStream | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [status, setStatus] = useState<FeedStatus>('connecting');
 
   const isSimulated = !!camera.useSimulatedFeed;
   const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
   const streamType = isRemote ? detectStreamType(camera.remoteStreamUrl) : null;
 
-  // Report live DOM refs upward only while this instance is the analysis target.
+  useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
+  // A simulated feed "connects" instantly — it's a local canvas animation,
+  // never a real network round-trip.
+  useEffect(() => { if (isSimulated) setStatus('live'); }, [isSimulated]);
+  // 'unsupported' can never play; 'iframe' has no cross-origin load signal
+  // to hook into, so it's treated as live on a best-effort basis.
+  useEffect(() => {
+    if (streamType === 'unsupported') setStatus('error');
+    else if (streamType === 'iframe') setStatus('live');
+  }, [streamType]);
+
+  // Report live DOM refs upward only while this instance is an analysis
+  // target, keyed by camera id so multiple cameras can report concurrently.
   useEffect(() => {
     if (!mediaRefs || !reportRefs) return;
-    mediaRefs.current = { video: videoRef.current, img: remoteImgRef.current, canvas: simCanvasRef.current };
+    mediaRefs.current.set(camera.id, { video: videoRef.current, img: remoteImgRef.current, canvas: simCanvasRef.current });
+    return () => { mediaRefs.current.delete(camera.id); };
   });
 
   // Local webcam lifecycle
@@ -61,6 +81,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       }
       return;
     }
+    setStatus('connecting');
     try {
       if (activeStreamRef.current) activeStreamRef.current.getTracks().forEach(t => t.stop());
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -70,6 +91,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       if (videoRef.current) videoRef.current.srcObject = stream;
       setLocalError(null);
       onCameraError?.(null);
+      setStatus('live');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown camera error';
       const lower = msg.toLowerCase();
@@ -81,6 +103,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       } else {
         setLocalError(msg);
         onCameraError?.(msg);
+        setStatus('error');
       }
     }
   }, [camera.facingMode, isRemote, isSimulated, onCameraError, onFallbackToSimulated]);
@@ -104,6 +127,10 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     const video = videoRef.current;
     if (!video) return;
     setRemoteError(null);
+    setStatus('connecting');
+
+    const handlePlaying = () => setStatus('live');
+    video.addEventListener('playing', handlePlaying);
 
     // Always routed through our own server, never fetched by the browser
     // directly — a cross-origin camera CDN without CORS headers blocks
@@ -146,13 +173,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
             ? ' — check the Stream Access Password in Setup.'
             : '';
           setRemoteError(`HLS playback error (${data.type}): ${data.details}${authHint}`);
+          setStatus('error');
         }
       });
     } else {
       setRemoteError('This browser does not support HLS playback.');
+      setStatus('error');
     }
 
-    return () => { hls?.destroy(); };
+    return () => {
+      video.removeEventListener('playing', handlePlaying);
+      hls?.destroy();
+    };
   }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
@@ -268,7 +300,13 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       );
     }
     if (streamType === 'image') {
-      return <img key={camera.id} ref={remoteImgRef} src={camera.remoteStreamUrl} crossOrigin="anonymous" className="w-full h-full object-cover" alt={camera.name} />;
+      return (
+        <img
+          key={camera.id} ref={remoteImgRef} src={camera.remoteStreamUrl} crossOrigin="anonymous"
+          className="w-full h-full object-cover" alt={camera.name}
+          onLoad={() => setStatus('live')} onError={() => setStatus('error')}
+        />
+      );
     }
     if (remoteError && isFocused) {
       return (
@@ -280,7 +318,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     }
     // 'hls' and plain 'video' both render into the same element — HLS is
     // attached via the effect above instead of a bare src for non-Safari browsers.
-    return <video key={camera.id} ref={videoRef} src={streamType === 'hls' ? undefined : camera.remoteStreamUrl} autoPlay playsInline muted crossOrigin="anonymous" className="w-full h-full object-cover" />;
+    return (
+      <video
+        key={camera.id} ref={videoRef} src={streamType === 'hls' ? undefined : camera.remoteStreamUrl}
+        autoPlay playsInline muted crossOrigin="anonymous" className="w-full h-full object-cover"
+        onPlaying={() => setStatus('live')}
+        onError={() => { if (streamType !== 'hls') setStatus('error'); }}
+      />
+    );
   }
 
   if (localError && isFocused) {
