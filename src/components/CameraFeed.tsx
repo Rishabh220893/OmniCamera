@@ -154,6 +154,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) { setStatus('live'); return; }
       let lastSample: Uint8ClampedArray | null = null;
+      let staleCycles = 0;
+      let everConfirmedLive = false;
+      // Runs for the connection's whole lifetime, not just once at attach —
+      // a HAR capture showed segments succeeding but taking ~30s to
+      // download 6s of video, which starves playback just as surely as an
+      // outright failure once the initial buffer runs dry. Without an
+      // ongoing check, a feed that verified live and later froze would
+      // stay marked "live" forever.
       verifyTimer = setInterval(() => {
         let current: Uint8ClampedArray | null = null;
         try {
@@ -164,9 +172,15 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           let diff = 0;
           for (let i = 0; i < current.length; i += 4) diff += Math.abs(current[i] - lastSample[i]);
           if (diff > 40) {
+            staleCycles = 0;
+            if (!everConfirmedLive) { everConfirmedLive = true; retryDelayRef.current = BASE_RETRY_DELAY_MS; }
             setStatus('live');
-            retryDelayRef.current = BASE_RETRY_DELAY_MS; // confirmed genuinely working — reset backoff
-            if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+          } else if (everConfirmedLive) {
+            staleCycles += 1;
+            if (staleCycles >= 4) { // ~6s with no visible change after having been genuinely live
+              if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+              scheduleReconnect('Stream stalled — no new frames arriving.');
+            }
           }
         }
         if (current) lastSample = current;

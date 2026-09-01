@@ -6,6 +6,15 @@ import { GoogleGenAI } from '@google/genai';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 
+// A distinctive custom UA on every upstream request to this camera grid
+// (fronted by Cloudflare) is a textbook bot-throttling trigger — real
+// browsers requesting the same paths don't get the ~30s-per-6s-segment
+// throughput this proxy was measured at, and a plain RTSP client bypassing
+// Cloudflare's HTTP layer entirely loaded the same camera in ~5s. Blending
+// in as an ordinary browser is worth trying before assuming the origin
+// itself just can't serve fast enough.
+const UPSTREAM_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
@@ -229,7 +238,7 @@ async function startServer() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'OmniSee-AI-Vision-Server/1.0'
+          'User-Agent': UPSTREAM_USER_AGENT
         },
         body: JSON.stringify(payload)
       });
@@ -262,7 +271,7 @@ async function startServer() {
         method: 'GET',
         headers: {
           'ngrok-skip-browser-warning': 'true',
-          'User-Agent': 'OmniSee-AI-Vision-Server/1.0'
+          'User-Agent': UPSTREAM_USER_AGENT
         }
       });
 
@@ -313,7 +322,7 @@ async function startServer() {
       const loginUrl = new URL('/auth/login', targetUrl).toString();
       const res = await fetchUpstream(loginUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' },
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UPSTREAM_USER_AGENT },
         body: `password=${encodeURIComponent(password)}`,
         redirect: 'manual',
       }, { timeoutMs: 20_000, retries: 1 });
@@ -346,7 +355,7 @@ async function startServer() {
 
     try {
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
-        const headers: Record<string, string> = { 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' };
+        const headers: Record<string, string> = { 'User-Agent': UPSTREAM_USER_AGENT };
         if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
         if (cookie) headers['Cookie'] = cookie;
         return headers;
@@ -486,7 +495,7 @@ async function startServer() {
     try {
       const base = `https://${targetHost}`;
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
-        const headers: Record<string, string> = { 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' };
+        const headers: Record<string, string> = { 'User-Agent': UPSTREAM_USER_AGENT };
         if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
         if (cookie) headers['Cookie'] = cookie;
         return headers;
