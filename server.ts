@@ -469,6 +469,59 @@ async function startServer() {
     }
   });
 
+  // The grid's own integrator guide: "Start from the catalogue rather than
+  // hard-coding endpoints... camera ids and the set of available cameras
+  // can change; the catalogue is the contract, the URL pattern is not."
+  // It also carries each camera's own live status — reported failures for
+  // a camera the origin itself already lists as down are expected, not a
+  // proxy bug, and this is the only way to tell the difference.
+  app.get('/api/camera-catalogue', async (req, res) => {
+    const targetHost = req.query.host as string;
+    const password = req.query.password as string | undefined;
+    if (!targetHost) {
+      res.status(400).send("Parameter 'host' is required");
+      return;
+    }
+
+    try {
+      const base = `https://${targetHost}`;
+      const buildHeaders = (cookie?: string | null): Record<string, string> => {
+        const headers: Record<string, string> = { 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' };
+        if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+        if (cookie) headers['Cookie'] = cookie;
+        return headers;
+      };
+
+      const cacheKey = password ? `${targetHost}|${password}` : null;
+      const fetchCatalogue = async (path: string) => {
+        const cookie = password
+          ? sessionCookieCache.get(cacheKey!) || (await loginForSessionCookie(`${base}${path}`, password))
+          : null;
+        return fetchUpstream(`${base}${path}`, { headers: buildHeaders(cookie), redirect: 'manual' }, { timeoutMs: 20_000, retries: 0 });
+      };
+
+      // Two documented names for the same idea across the two guide
+      // revisions we were given (/api/ingest, cameras.json) — try the
+      // grid-specific one first, fall back to the generic one.
+      let upstream = await fetchCatalogue('/cameras.json');
+      if (upstream.status >= 300 && upstream.status < 400) upstream = await fetchCatalogue('/api/ingest');
+
+      if (!upstream.ok) {
+        res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status)
+          .send('Could not load the camera catalogue — the stream access password may be wrong.');
+        return;
+      }
+
+      const data = await upstream.text();
+      res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).send(data);
+    } catch (err: unknown) {
+      console.error('[CAMERA CATALOGUE] Error:', err);
+      res.status(502).send(err instanceof Error ? err.message : 'Error fetching camera catalogue');
+    }
+  });
+
   app.post('/api/sheets/append', async (req, res) => {
     try {
       const { cameraName, summary, timestamp, counts } = req.body;
