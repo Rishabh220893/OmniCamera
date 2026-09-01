@@ -2,7 +2,7 @@ import { MutableRefObject, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Play
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
@@ -22,6 +22,14 @@ interface GridTileProps {
   streamAccessPassword: string;
   onSelect: () => void;
   onToggleAnalysis: () => void;
+  /** Whether this tile is allowed to actually open a connection. Mounting
+   *  every camera's HLS player at once — 8, 30, however many — hammers a
+   *  shared origin with that many simultaneous manifest+segment fetches;
+   *  a HAR capture with 8 cameras showed every single one timing out where
+   *  a handful at a time succeeded. Tiles beyond the concurrency cap show a
+   *  static placeholder until the viewer explicitly asks to load them. */
+  shouldConnect: boolean;
+  onRequestLoad: () => void;
 }
 
 // A grid tile owns its own connecting/live/error status — nothing else in
@@ -29,34 +37,56 @@ interface GridTileProps {
 // stays local instead of lifted into shared state.
 function GridTile({
   camera, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
-  mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onSelect, onToggleAnalysis
+  mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onSelect, onToggleAnalysis,
+  shouldConnect, onRequestLoad
 }: GridTileProps) {
   const [status, setStatus] = useState<FeedStatus>('connecting');
 
   return (
-    <button
+    // A plain div, not <button> — this tile hosts a real nested <button>
+    // (the load-placeholder) and a <label><input> (the checkbox), and
+    // nesting interactive elements inside a <button> is invalid HTML that
+    // browsers silently "fix" by restructuring the DOM, breaking clicks in
+    // unpredictable ways. role/tabIndex/onKeyDown keep it keyboard-operable.
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
-      className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left group', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
+      className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left group cursor-pointer', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
     >
-      <CameraFeed
-        camera={camera}
-        isFocused={false}
-        isCapturing={isCapturing}
-        reportRefs={isSelectedForAnalysis}
-        mediaRefs={mediaRefs}
-        onCameraError={onCameraError}
-        onFallbackToSimulated={onFallbackToSimulated}
-        streamAccessPassword={streamAccessPassword}
-        onStatusChange={setStatus}
-      />
+      {shouldConnect ? (
+        <CameraFeed
+          camera={camera}
+          isFocused={false}
+          isCapturing={isCapturing}
+          reportRefs={isSelectedForAnalysis}
+          mediaRefs={mediaRefs}
+          onCameraError={onCameraError}
+          onFallbackToSimulated={onFallbackToSimulated}
+          streamAccessPassword={streamAccessPassword}
+          onStatusChange={setStatus}
+        />
+      ) : (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
+          <button
+            onClick={(e) => { e.stopPropagation(); onRequestLoad(); }}
+            className="w-9 h-9 rounded-full bg-black/40 flex items-center justify-center text-white hover:bg-black/55"
+            title="Load this feed"
+          >
+            <Play className="w-4 h-4 ml-0.5" strokeWidth={1.75} />
+          </button>
+          <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Click to load</span>
+        </div>
+      )}
 
-      {status === 'connecting' && (
+      {shouldConnect && status === 'connecting' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted animate-pulse">
           <Loader2 className="w-5 h-5 text-ink-muted animate-spin" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Connecting…</span>
         </div>
       )}
-      {status === 'error' && (
+      {shouldConnect && status === 'error' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
           <AlertTriangle className="w-5 h-5 text-critical" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Reconnecting…</span>
@@ -86,7 +116,7 @@ function GridTile({
       <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
         <span className="text-[10px] font-bold text-white uppercase tracking-wide">{camera.name}</span>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -156,6 +186,28 @@ export default function MonitorTab({
     return items.sort((a, b) => (a.log.isWatchlistMatch === b.log.isWatchlistMatch ? 0 : a.log.isWatchlistMatch ? -1 : 1));
   }, [logs]);
 
+  // Grid view used to mount every camera's HLS player at once — fine for a
+  // handful, but a capture with 8 simultaneous connections showed literally
+  // every single one time out against this grid's shared origin. Capping
+  // concurrent connections (roughly matching a browser's own per-origin
+  // limit anyway) and lazy-loading the rest fixes that without giving up
+  // the ability to watch many cameras — just not all at once, unrequested.
+  const MAX_CONCURRENT_GRID_CONNECTIONS = 6;
+  const [manuallyLoadedIds, setManuallyLoadedIds] = useState<Set<string>>(new Set());
+  const requestLoad = (id: string) => setManuallyLoadedIds(prev => new Set(prev).add(id));
+  // Cameras already wanted (focused, or checked for analysis) always get a
+  // slot; remaining slots fill in display order.
+  const autoConnectIds = useMemo(() => {
+    const ids = new Set<string>();
+    ids.add(activeCameraId);
+    for (const id of analysisCameraIds) ids.add(id);
+    for (const cam of filteredCameras) {
+      if (ids.size >= MAX_CONCURRENT_GRID_CONNECTIONS) break;
+      ids.add(cam.id);
+    }
+    return ids;
+  }, [filteredCameras, activeCameraId, analysisCameraIds]);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
@@ -216,6 +268,8 @@ export default function MonitorTab({
                 streamAccessPassword={streamAccessPassword}
                 onSelect={() => onSelectCamera(cam.id)}
                 onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
+                shouldConnect={autoConnectIds.has(cam.id) || manuallyLoadedIds.has(cam.id)}
+                onRequestLoad={() => requestLoad(cam.id)}
               />
             ))}
           </div>
@@ -321,10 +375,16 @@ export default function MonitorTab({
           </div>
           <div className="space-y-2">
             {cameras.map(cam => (
-              <button
+              // A div, not <button> — it hosts a nested <label><input> for
+              // the analysis checkbox, and interactive-in-interactive is
+              // invalid HTML (see the matching note on GridTile above).
+              <div
                 key={cam.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => onSelectCamera(cam.id)}
-                className={cn('w-full p-3.5 rounded-2xl border text-left flex items-center gap-3', activeCameraId === cam.id ? 'bg-accent border-accent text-white' : 'bg-surface border-border')}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectCamera(cam.id); } }}
+                className={cn('w-full p-3.5 rounded-2xl border text-left flex items-center gap-3 cursor-pointer', activeCameraId === cam.id ? 'bg-accent border-accent text-white' : 'bg-surface border-border')}
               >
                 <div className={cn('w-1.5 h-1.5 rounded-full shrink-0', isCapturing && analysisCameraIds.has(cam.id) ? (activeCameraId === cam.id ? 'bg-white' : 'bg-success') + ' animate-pulse' : 'bg-ink-muted/40')} />
                 <div className="flex flex-col flex-1 min-w-0">
@@ -340,7 +400,7 @@ export default function MonitorTab({
                 >
                   <input type="checkbox" checked={analysisCameraIds.has(cam.id)} onChange={() => onToggleAnalysisCamera(cam.id)} className="w-3 h-3 accent-accent cursor-pointer" />
                 </label>
-              </button>
+              </div>
             ))}
           </div>
         </div>
