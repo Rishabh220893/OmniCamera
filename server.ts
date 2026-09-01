@@ -365,6 +365,19 @@ async function startServer() {
           return;
         }
         const arrayBuffer = await upstream.arrayBuffer();
+        // Our own code defaults a missing content-type to 'video/mp2t' above,
+        // which lets a tiny error/placeholder body slide past the check just
+        // done — a real multi-second .ts segment is virtually always many KB.
+        // (AES-128 key files legitimately are this small — a 16-byte key —
+        // so they're exempted by URL.)
+        const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
+        if (!isKeyFile && arrayBuffer.byteLength < 500) {
+          if (cacheKey) sessionCookieCache.delete(cacheKey);
+          const preview = Buffer.from(arrayBuffer).toString('utf8').slice(0, 200);
+          console.error(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but body is only ${arrayBuffer.byteLength} bytes (expected a real media segment). Content: ${preview}`);
+          res.status(502).send(`Upstream returned a 2xx status but the segment body was only ${arrayBuffer.byteLength} bytes — likely an expired session or error response, not real video data.`);
+          return;
+        }
         res.setHeader('Content-Type', contentType);
         res.setHeader('Cache-Control', 'no-store');
         res.status(200).send(Buffer.from(arrayBuffer));
