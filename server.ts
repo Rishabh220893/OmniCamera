@@ -108,7 +108,7 @@ async function generateContentWithFallback(
 // camera queued behind this proxy is waiting on, so the whole grid stalls
 // behind a single bad camera. A short timeout plus a couple of retries
 // turns that into "this one camera fails fast" instead.
-async function fetchUpstream(url: string, options: RequestInit = {}, { timeoutMs = 8_000, retries = 2 }: { timeoutMs?: number; retries?: number } = {}): Promise<Response> {
+async function fetchUpstream(url: string, options: RequestInit = {}, { timeoutMs = 20_000, retries = 1 }: { timeoutMs?: number; retries?: number } = {}): Promise<Response> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -248,7 +248,7 @@ async function startServer() {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' },
         body: `password=${encodeURIComponent(password)}`,
         redirect: 'manual',
-      }, { timeoutMs: 8_000, retries: 1 });
+      }, { timeoutMs: 20_000, retries: 1 });
       const setCookie = res.headers.get('set-cookie');
       const match = setCookie?.match(/([a-zA-Z0-9_]+=[^;]+)/);
       if (match) {
@@ -284,11 +284,14 @@ async function startServer() {
         return headers;
       };
 
-      // Manifests should fail fast (a stuck manifest fetch blocks playback from
-      // even starting); segments get a slightly longer budget since they're
-      // bigger, but both are far short of "hang indefinitely."
+      // This grid's origin (corp8.cloud) is evidently slow to respond even
+      // when a request eventually succeeds — an early build of this timeout
+      // used 8-12s and it aborted every single request. Manifests get one
+      // long attempt with no retry (retrying a systemically slow origin
+      // just triples the wait for no benefit); segments repeat constantly
+      // during playback so get a shorter budget with one retry.
       const isManifestUrl = targetUrl.toLowerCase().includes('.m3u8');
-      const fetchOpts = { timeoutMs: isManifestUrl ? 8_000 : 12_000, retries: 2 };
+      const fetchOpts = isManifestUrl ? { timeoutMs: 45_000, retries: 0 } : { timeoutMs: 20_000, retries: 1 };
 
       let upstream: Response;
       if (password) {
