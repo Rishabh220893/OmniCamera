@@ -6,7 +6,7 @@ import { auth, db, googleProvider } from './lib/firebase';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch } from 'firebase/firestore';
 
-import { CameraConfig, LogEntry, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs } from './types';
+import { CameraConfig, LogEntry, LogSentiment, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs } from './types';
 import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
 import { parseCsv, toCsv, downloadCsv } from './lib/csv';
 import { computeGapAnalysis } from './lib/registryReport';
@@ -269,6 +269,7 @@ export default function App() {
         dbLogs.push({
           id: d.id, cameraId: data.cameraId || '', cameraName: data.cameraName || 'Unknown Camera', timestamp: ts,
           summary: data.summary || '', counts: data.counts || { people: 0, vehicles: 0, other: 0 },
+          sentiment: (['calm', 'neutral', 'tense', 'critical'] as const).includes(data.sentiment) ? data.sentiment as LogSentiment : 'neutral',
           isUnusual: data.isUnusual || false, unusualReason: data.unusualReason || undefined, alerts: data.alerts || [],
           detectedPlates: data.detectedPlates || [], isWatchlistMatch: data.isWatchlistMatch || false,
         });
@@ -611,6 +612,7 @@ export default function App() {
       const detectedPlates: string[] = data.detected_plates || [];
       const watchlistMatches: string[] = data.watchlistMatches || [];
       const isWatchlistMatch = watchlistMatches.length > 0;
+      const sentiment: LogSentiment = (['calm', 'neutral', 'tense', 'critical'] as const).includes(data.sentiment) ? data.sentiment : 'neutral';
 
       const summaryWithExtra = `${data.summary}${data.brands?.length ? ` Detected brands: ${data.brands.join(', ')}.` : ''} People: ${data.people_identified?.join(', ') || 'N/A'}`;
       const alerts: string[] = [...(data.alerts || [])];
@@ -618,7 +620,7 @@ export default function App() {
 
       const newEntry: LogEntry = {
         id: Math.random().toString(36).substr(2, 9), cameraId: activeCamera.id, cameraName: activeCamera.name, timestamp: new Date(),
-        summary: summaryWithExtra, counts: data.counts || { people: 0, vehicles: 0, other: 0 },
+        summary: summaryWithExtra, counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment,
         isUnusual: isWatchlistMatch || data.isUnusual || (data.people_identified?.includes('Unknown Person') && activeCamera.sensitivity > 3),
         unusualReason: data.isUnusualReason || (data.people_identified?.includes('Unknown Person') ? 'Unknown identity detected near camera' : undefined),
         alerts, detectedPlates, isWatchlistMatch
@@ -630,7 +632,7 @@ export default function App() {
         addDoc(collection(db, 'logs'), {
           cameraId: activeCamera.id, cameraName: activeCamera.name, summary: summaryWithExtra,
           detectedItems: data.people_identified || [], timestamp: new Date(), userId: user.uid,
-          counts: data.counts || { people: 0, vehicles: 0, other: 0 }, isUnusual: newEntry.isUnusual,
+          counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment, isUnusual: newEntry.isUnusual,
           unusualReason: newEntry.unusualReason || '', alerts, detectedPlates, isWatchlistMatch
         }).catch(err => { console.error('Firestore log write failed, falling back to local state:', err); setLogs(prev => [newEntry, ...prev].slice(0, 100)); });
       }

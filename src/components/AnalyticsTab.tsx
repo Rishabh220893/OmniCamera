@@ -3,9 +3,11 @@ import { motion } from 'motion/react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
-import { ArrowLeft, Download, Users, Truck, Search, Navigation } from 'lucide-react';
-import { cn } from '../lib/utils';
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Users, Truck, Search, Navigation } from 'lucide-react';
+import { cn, sentimentEmoji } from '../lib/utils';
 import { LogEntry, TabId } from '../types';
+
+const ROWS_PER_PAGE = 25;
 
 interface AnalyticsTabProps {
   logs: LogEntry[];
@@ -17,6 +19,13 @@ interface AnalyticsTabProps {
 
 export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate }: AnalyticsTabProps) {
   const [plateQuery, setPlateQuery] = useState('');
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(logs.length / ROWS_PER_PAGE));
+  // Clamp rather than reset to 0 — new entries stream into page 1 (index 0)
+  // continuously during active capture, and forcing the viewer back there
+  // on every new row would make browsing older pages impossible.
+  const safePage = Math.min(page, totalPages - 1);
+  const pageLogs = logs.slice(safePage * ROWS_PER_PAGE, safePage * ROWS_PER_PAGE + ROWS_PER_PAGE);
 
   const statsData = [...logs].reverse().map(log => ({
     time: log.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -155,41 +164,52 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
           <table className="w-full text-left border-collapse">
             <thead>
               <tr>
-                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Timeline</th>
+                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Camera</th>
+                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Timestamp</th>
                 <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Summary</th>
-                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Units</th>
-                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted text-right">Status</th>
+                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted text-center">Sentiment</th>
+                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted text-right">Vehicles</th>
+                <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-ink-muted text-right">People</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {logs.map((log) => (
-                <tr key={log.id} className="hover:bg-surface-muted transition-colors">
-                  <td className="px-8 py-5 text-xs font-mono text-ink-muted">{log.timestamp.toLocaleTimeString()}</td>
-                  <td className="px-8 py-5">
+              {pageLogs.map((log) => (
+                <tr key={log.id} className={cn('hover:bg-surface-muted transition-colors', log.isWatchlistMatch && 'bg-critical-soft/40')}>
+                  <td className="px-8 py-5 text-xs font-bold text-ink whitespace-nowrap">{log.cameraName}</td>
+                  <td className="px-8 py-5 text-xs font-mono text-ink-muted whitespace-nowrap">{log.timestamp.toLocaleString()}</td>
+                  <td className="px-8 py-5 min-w-[280px]">
                     <p className="text-sm text-ink">{log.summary}</p>
                     {log.alerts.length > 0 && <span className="text-[10px] text-critical font-semibold mt-1 block">{log.alerts.join(', ')}</span>}
                   </td>
-                  <td className="px-8 py-5">
-                    <div className="flex gap-3">
-                      <div className="flex items-center gap-1.5 px-2 py-1 bg-accent-soft rounded-lg">
-                        <Users className="w-3 h-3 text-accent" strokeWidth={1.75} />
-                        <span className="text-[11px] font-bold text-accent">{log.counts.people}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 px-2 py-1 bg-success-soft rounded-lg">
-                        <Truck className="w-3 h-3 text-success" strokeWidth={1.75} />
-                        <span className="text-[11px] font-bold text-success">{log.counts.vehicles}</span>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-8 py-5 text-right">
-                    <span className={cn('badge', log.isWatchlistMatch ? 'badge-critical' : log.isUnusual ? 'badge-warning' : 'badge-success')}>
-                      {log.isWatchlistMatch ? 'Watchlist hit' : log.isUnusual ? 'Suspicious' : 'Clean'}
-                    </span>
-                  </td>
+                  <td className="px-8 py-5 text-center text-lg" title={log.sentiment || 'neutral'}>{sentimentEmoji(log.sentiment)}</td>
+                  <td className="px-8 py-5 text-right text-sm font-bold text-success">{log.counts.vehicles}</td>
+                  <td className="px-8 py-5 text-right text-sm font-bold text-accent">{log.counts.people}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+        <div className="p-5 border-t border-border flex items-center justify-between gap-4 flex-wrap">
+          <p className="text-xs text-ink-muted">
+            {logs.length === 0 ? 'No entries yet.' : `Showing ${safePage * ROWS_PER_PAGE + 1}-${Math.min(logs.length, (safePage + 1) * ROWS_PER_PAGE)} of ${logs.length}`}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={safePage === 0}
+              className="btn-ghost !p-2 !rounded-lg border border-border disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <ChevronLeft className="w-4 h-4" strokeWidth={1.75} />
+            </button>
+            <span className="text-xs font-semibold text-ink-muted px-1">Page {safePage + 1} of {totalPages}</span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={safePage >= totalPages - 1}
+              className="btn-ghost !p-2 !rounded-lg border border-border disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <ChevronRight className="w-4 h-4" strokeWidth={1.75} />
+            </button>
+          </div>
         </div>
       </div>
     </motion.div>

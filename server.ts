@@ -550,8 +550,8 @@ async function startServer() {
               Current System Configuration:
               - Camera Name: ${camera?.name ?? 'Unknown'}
               - Anomaly Sensitivity: ${camera?.sensitivity ?? 5}/10
-              - People Threshold: ${camera?.peopleThreshold ?? 5}
-              - Vehicle Threshold: ${camera?.vehicleThreshold ?? 2}
+              - People count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.peopleThreshold ?? 5}
+              - Vehicle count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.vehicleThreshold ?? 2}
               ${camera?.suspiciousRules ? `- CUSTOM SUSPICIOUS RULES: ${camera.suspiciousRules}` : ''}
               ${knownFacesContext}
 
@@ -559,8 +559,16 @@ async function startServer() {
               1. A brief summary of events. IMPORTANT: Mention identified people by their names in the summary.
               2. Count people, vehicles, and notable objects.
               3. Identify any visible brands on products, clothing, or environment.
-              4. Check for unusual activity (unknown people, exceeding thresholds, matching custom suspicious rules, suspicious behavior).
+              4. Check for genuinely malicious, harmful, or suspicious activity — weapons, forced entry,
+                 vandalism, trespassing, loitering with intent, an unknown person behaving suspiciously, or
+                 anything matching the custom suspicious rules above. A busy or crowded scene is NOT by
+                 itself unusual — do not flag isUnusual or write an alert merely because a lot of people or
+                 vehicles are present. Only raise isUnusual/alerts for content that would actually warrant a
+                 human operator's attention for security reasons.
               5. Read any vehicle license/number plates that are legible in the frame.
+              6. Rate the overall mood/threat level of the scene as one of: "calm" (ordinary, nothing of
+                 note), "neutral" (unremarkable activity), "tense" (something worth watching but not yet
+                 alarming), "critical" (matches an alert-worthy situation from task 4).
 
               Output MUST be strict JSON:
               {
@@ -568,10 +576,11 @@ async function startServer() {
                 "counts": { "people": number, "vehicles": number, "other": number },
                 "brands": ["List of identified brands"],
                 "people_identified": ["Names of identified known members or 'Unknown Person'"],
-                "alerts": ["List of specific warnings"],
+                "alerts": ["List of specific malicious/harmful/suspicious warnings only — do NOT include plain crowd/traffic-count observations here"],
                 "isUnusual": boolean,
-                "isUnusualReason": "Explain WHY it was marked unusual based on thresholds or custom rules",
-                "detected_plates": ["Any legible vehicle plate numbers, uppercase, no spaces"]
+                "isUnusualReason": "Explain WHY it was marked unusual — must be a malicious/harmful/suspicious reason, never just a headcount",
+                "detected_plates": ["Any legible vehicle plate numbers, uppercase, no spaces"],
+                "sentiment": "calm" | "neutral" | "tense" | "critical"
               }`,
             },
           ],

@@ -57,6 +57,8 @@ export interface CameraConfig {
   onboardedVia?: 'manual' | 'bulk_import' | 'api';
 }
 
+export type LogSentiment = 'calm' | 'neutral' | 'tense' | 'critical';
+
 export interface LogEntry {
   id: string;
   cameraId: string;
@@ -67,6 +69,10 @@ export interface LogEntry {
   isUnusual: boolean;
   unusualReason?: string;
   alerts: string[];
+  /** Overall mood/threat read of the scene, from Gemini — display-only,
+   *  independent of isUnusual/alerts (a calm scene can still cross a count
+   *  threshold, which is no longer itself grounds for an alert). */
+  sentiment?: LogSentiment;
   /** Plate-tracking fields (Sentinel Mesh Model 4 pull, single-tier stand-in). */
   detectedPlates?: string[];
   isWatchlistMatch?: boolean;

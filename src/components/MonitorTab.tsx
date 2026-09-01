@@ -2,11 +2,12 @@ import { MutableRefObject } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Users, Truck, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
 import CameraFeed from './CameraFeed';
+import CameraTrendChart from './CameraTrendChart';
 
 interface MonitorTabProps {
   cameras: CameraConfig[];
@@ -194,23 +195,7 @@ export default function MonitorTab({
           </div>
         </div>
 
-        <div className="grid sm:grid-cols-3 gap-5">
-          {[
-            { label: 'Identified people', icon: Users, value: logs[0]?.counts.people || 0 },
-            { label: 'Vehicles detected', icon: Truck, value: logs[0]?.counts.vehicles || 0 },
-            { label: 'Anomalies (session)', icon: AlertTriangle, value: logs.filter(l => l.isUnusual).length }
-          ].map((m, i) => (
-            <div key={i} className="card p-5 flex items-center">
-              <div className="w-12 h-12 rounded-xl bg-accent-soft flex items-center justify-center mr-4 text-accent">
-                <m.icon className="w-6 h-6" strokeWidth={1.75} />
-              </div>
-              <div className="flex flex-col">
-                <span className="text-[10px] font-bold text-ink-muted uppercase">{m.label}</span>
-                <span className="text-xl font-bold text-ink">{m.value}</span>
-              </div>
-            </div>
-          ))}
-        </div>
+        <CameraTrendChart camera={activeCamera} logs={logs} />
       </div>
 
       <div className="space-y-6 flex flex-col h-full">
