@@ -159,8 +159,12 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         manifestLoadingMaxRetry: 2,
         levelLoadingTimeOut: 50_000,
         levelLoadingMaxRetry: 2,
-        fragLoadingTimeOut: 25_000,
-        fragLoadingMaxRetry: 4,
+        // A HAR capture showed every segment request needing as long as a
+        // manifest fetch on this origin (both ~20-45s) — matching that here
+        // too, since 25s was cutting segments off before the proxy's own
+        // (now 45s) attempt could ever complete.
+        fragLoadingTimeOut: 50_000,
+        fragLoadingMaxRetry: 2,
         xhrSetup: (xhr) => {
           if (streamAccessPassword) xhr.setRequestHeader('X-Stream-Password', streamAccessPassword);
         },

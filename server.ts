@@ -345,12 +345,13 @@ async function startServer() {
 
       // This grid's origin (corp8.cloud) is evidently slow to respond even
       // when a request eventually succeeds — an early build of this timeout
-      // used 8-12s and it aborted every single request. Manifests get one
-      // long attempt with no retry (retrying a systemically slow origin
-      // just triples the wait for no benefit); segments repeat constantly
-      // during playback so get a shorter budget with one retry.
-      const isManifestUrl = targetUrl.toLowerCase().includes('.m3u8');
-      const fetchOpts = isManifestUrl ? { timeoutMs: 45_000, retries: 0 } : { timeoutMs: 20_000, retries: 1 };
+      // used 8-12s and it aborted every single request. A HAR capture later
+      // showed 100% of segment requests dying at ~20s regardless of camera
+      // count (even a single camera failed identically) — this origin
+      // apparently needs as long to serve one segment as a whole manifest,
+      // so both get the same generous, no-retry budget now (retrying a
+      // systemically slow origin just triples the wait for no benefit).
+      const fetchOpts = { timeoutMs: 45_000, retries: 0 };
 
       const cacheKey = password ? `${new URL(targetUrl).host}|${password}` : null;
 
