@@ -41,6 +41,10 @@ function GridTile({
   shouldConnect, onRequestLoad
 }: GridTileProps) {
   const [status, setStatus] = useState<FeedStatus>('connecting');
+  // Bumping this remounts CameraFeed (via the key below), forcing a full
+  // fresh attempt — nothing auto-retries a failed remote connection on its
+  // own, so without this the tile would sit on "error" forever.
+  const [retryToken, setRetryToken] = useState(0);
 
   return (
     // A plain div, not <button> — this tile hosts a real nested <button>
@@ -57,6 +61,7 @@ function GridTile({
     >
       {shouldConnect ? (
         <CameraFeed
+          key={retryToken}
           camera={camera}
           isFocused={false}
           isCapturing={isCapturing}
@@ -89,7 +94,13 @@ function GridTile({
       {shouldConnect && status === 'error' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
           <AlertTriangle className="w-5 h-5 text-critical" strokeWidth={1.75} />
-          <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Reconnecting…</span>
+          <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Connection failed</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); setStatus('connecting'); setRetryToken((t) => t + 1); }}
+            className="text-[9px] font-bold text-accent uppercase tracking-wide underline"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -192,21 +203,19 @@ export default function MonitorTab({
   // concurrent connections (roughly matching a browser's own per-origin
   // limit anyway) and lazy-loading the rest fixes that without giving up
   // the ability to watch many cameras — just not all at once, unrequested.
-  const MAX_CONCURRENT_GRID_CONNECTIONS = 6;
+  // Auto-filling remaining slots up to a cap turned out to still be more
+  // than this origin reliably handles (a HAR with only 6 auto-connected
+  // cameras showed the same failures as 8), so this is now fully manual:
+  // only the focused camera and anything explicitly checked for analysis
+  // connect automatically — every other tile is opt-in via "click to load".
   const [manuallyLoadedIds, setManuallyLoadedIds] = useState<Set<string>>(new Set());
   const requestLoad = (id: string) => setManuallyLoadedIds(prev => new Set(prev).add(id));
-  // Cameras already wanted (focused, or checked for analysis) always get a
-  // slot; remaining slots fill in display order.
   const autoConnectIds = useMemo(() => {
     const ids = new Set<string>();
     ids.add(activeCameraId);
     for (const id of analysisCameraIds) ids.add(id);
-    for (const cam of filteredCameras) {
-      if (ids.size >= MAX_CONCURRENT_GRID_CONNECTIONS) break;
-      ids.add(cam.id);
-    }
     return ids;
-  }, [filteredCameras, activeCameraId, analysisCameraIds]);
+  }, [activeCameraId, analysisCameraIds]);
 
   return (
     <motion.div

@@ -132,6 +132,20 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     const handlePlaying = () => setStatus('live');
     video.addEventListener('playing', handlePlaying);
 
+    // hls.js only reports a fatal error once it exhausts its own retry
+    // budget — with this origin's ~45-50s per-attempt timeouts and 2-3
+    // retries per loading stage, that can take several minutes, during
+    // which the tile just shows an indefinite spinner with no feedback
+    // that anything is wrong. This watchdog gives up from the UI's side
+    // after a fixed window regardless of what hls.js is still attempting
+    // internally, so "stuck" is at least visible instead of silent.
+    const watchdog = setTimeout(() => {
+      setRemoteError('Timed out waiting for the stream to start.');
+      setStatus('error');
+    }, 90_000);
+    const clearWatchdog = () => clearTimeout(watchdog);
+    video.addEventListener('playing', clearWatchdog);
+
     // Always routed through our own server, never fetched by the browser
     // directly — a cross-origin camera CDN without CORS headers blocks
     // hls.js (and even a plain <video> load) outright otherwise, and this
@@ -178,15 +192,19 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
             : '';
           setRemoteError(`HLS playback error (${data.type}): ${data.details}${authHint}`);
           setStatus('error');
+          clearWatchdog();
         }
       });
     } else {
       setRemoteError('This browser does not support HLS playback.');
       setStatus('error');
+      clearWatchdog();
     }
 
     return () => {
+      clearWatchdog();
       video.removeEventListener('playing', handlePlaying);
+      video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
   }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword]);

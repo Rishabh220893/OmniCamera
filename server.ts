@@ -142,10 +142,12 @@ const PLAYLIST_LEVEL_TAG_PREFIXES = [
   '#EXT-X-INDEPENDENT-SEGMENTS', '#EXT-X-DISCONTINUITY-SEQUENCE', '#EXT-X-KEY', '#EXT-X-START',
 ];
 
-function truncateVodManifestToTail(text: string, maxSegments: number): string | null {
+// Always rewrites (never returns the input unchanged) — even a manifest
+// short enough to need no tail-trimming still needs ENDLIST/PLAYLIST-TYPE
+// stripped, see below.
+function truncateVodManifestToTail(text: string, maxSegments: number): string {
   const lines = text.split('\n');
   const prefixLines: string[] = [];
-  const suffixLines: string[] = [];
   const segments: { tags: string[]; uri: string }[] = [];
   let pendingTags: string[] = [];
   let mediaSequence = 0;
@@ -157,8 +159,18 @@ function truncateVodManifestToTail(text: string, maxSegments: number): string | 
       mediaSequence = parseInt(line.split(':')[1], 10) || 0;
       continue; // re-emitted below, adjusted for the new starting point
     }
+    // #EXT-X-ENDLIST and #EXT-X-PLAYLIST-TYPE:VOD are deliberately dropped
+    // entirely, not just carried through — the origin serves this as a
+    // single static list covering the camera's entire history, but the
+    // intent is a live camera. Forwarding those tags verbatim tells
+    // hls.js "this is the whole clip, nothing more is coming," so it
+    // plays through our truncated window and then simply stops (looks
+    // exactly like a frozen feed). Omitting them makes it a playlist
+    // hls.js keeps reloading, which is what actually picks up new
+    // segments as the source grows.
+    if (line.startsWith('#EXT-X-ENDLIST')) continue;
     if (line.startsWith('#')) {
-      if (line.startsWith('#EXT-X-ENDLIST')) { suffixLines.push(line); continue; }
+      if (line.startsWith('#EXT-X-PLAYLIST-TYPE')) continue;
       if (PLAYLIST_LEVEL_TAG_PREFIXES.some((p) => line.startsWith(p))) prefixLines.push(line);
       else pendingTags.push(line); // e.g. #EXTINF — belongs to the segment named next
     } else {
@@ -167,16 +179,13 @@ function truncateVodManifestToTail(text: string, maxSegments: number): string | 
     }
   }
 
-  if (segments.length <= maxSegments) return null; // already short enough — nothing to do
-
-  const kept = segments.slice(-maxSegments);
+  const kept = segments.length <= maxSegments ? segments : segments.slice(-maxSegments);
   const newMediaSequence = mediaSequence + (segments.length - kept.length);
 
   return [
     ...prefixLines,
     `#EXT-X-MEDIA-SEQUENCE:${newMediaSequence}`,
     ...kept.flatMap((seg) => [...seg.tags, seg.uri]),
-    ...suffixLines,
   ].join('\n');
 }
 
@@ -402,9 +411,12 @@ async function startServer() {
           return;
         }
         const cleanText = text.replace(/^\uFEFF/, '');
-        const sourceText = cleanText.includes('#EXT-X-PLAYLIST-TYPE:VOD')
-          ? (truncateVodManifestToTail(cleanText, VOD_TAIL_SEGMENTS) ?? cleanText)
-          : cleanText;
+        // Always run every manifest through this \u2014 besides tail-truncating
+        // an oversized VOD list, it also strips ENDLIST/PLAYLIST-TYPE so
+        // hls.js treats the feed as ongoing rather than a finished clip (see
+        // the function's own comment). It's a no-op for a manifest that
+        // already looks like a normal rolling live playlist.
+        const sourceText = truncateVodManifestToTail(cleanText, VOD_TAIL_SEGMENTS);
 
         const baseUrl = new URL(targetUrl);
         const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
