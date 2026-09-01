@@ -121,6 +121,65 @@ async function fetchUpstream(url: string, options: RequestInit = {}, { timeoutMs
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+// This grid's cameras serve HLS as one giant VOD playlist covering their
+// entire recording history (observed: 7,201 segments, ~12 hours, in a
+// single manifest) rather than a rolling live window. hls.js defaults to
+// starting a VOD playback at segment 0 — the OLDEST segment — and on this
+// origin that segment is consistently unreachable (every proxy failure
+// logged during diagnosis was on seg00000.ts specifically, across five
+// different cameras), almost certainly because old segments have been
+// evicted from whatever hot storage/cache serves them while the manifest
+// still lists them. Rewriting the manifest to only the most recent
+// segments points playback at data that's actually likely to still exist.
+const VOD_TAIL_SEGMENTS = 12;
+
+// Tags that describe the playlist as a whole rather than one specific
+// segment — always kept verbatim regardless of truncation. Anything else
+// starting with '#' (EXTINF, DISCONTINUITY, PROGRAM-DATE-TIME, BYTERANGE...)
+// is segment-scoped and travels with whichever segment follows it.
+const PLAYLIST_LEVEL_TAG_PREFIXES = [
+  '#EXTM3U', '#EXT-X-VERSION', '#EXT-X-TARGETDURATION', '#EXT-X-PLAYLIST-TYPE',
+  '#EXT-X-INDEPENDENT-SEGMENTS', '#EXT-X-DISCONTINUITY-SEQUENCE', '#EXT-X-KEY', '#EXT-X-START',
+];
+
+function truncateVodManifestToTail(text: string, maxSegments: number): string | null {
+  const lines = text.split('\n');
+  const prefixLines: string[] = [];
+  const suffixLines: string[] = [];
+  const segments: { tags: string[]; uri: string }[] = [];
+  let pendingTags: string[] = [];
+  let mediaSequence = 0;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+      mediaSequence = parseInt(line.split(':')[1], 10) || 0;
+      continue; // re-emitted below, adjusted for the new starting point
+    }
+    if (line.startsWith('#')) {
+      if (line.startsWith('#EXT-X-ENDLIST')) { suffixLines.push(line); continue; }
+      if (PLAYLIST_LEVEL_TAG_PREFIXES.some((p) => line.startsWith(p))) prefixLines.push(line);
+      else pendingTags.push(line); // e.g. #EXTINF — belongs to the segment named next
+    } else {
+      segments.push({ tags: pendingTags, uri: line });
+      pendingTags = [];
+    }
+  }
+
+  if (segments.length <= maxSegments) return null; // already short enough — nothing to do
+
+  const kept = segments.slice(-maxSegments);
+  const newMediaSequence = mediaSequence + (segments.length - kept.length);
+
+  return [
+    ...prefixLines,
+    `#EXT-X-MEDIA-SEQUENCE:${newMediaSequence}`,
+    ...kept.flatMap((seg) => [...seg.tags, seg.uri]),
+    ...suffixLines,
+  ].join('\n');
+}
+
 async function writeRegistryAudit(
   db: Firestore,
   entry: { cameraId: string; cameraName: string; action: 'create' | 'update' | 'delete'; source: 'api'; userId: string }
@@ -341,11 +400,16 @@ async function startServer() {
           res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest — likely an expired session or wrong password serving a login page instead of the stream.');
           return;
         }
+        const cleanText = text.replace(/^\uFEFF/, '');
+        const sourceText = cleanText.includes('#EXT-X-PLAYLIST-TYPE:VOD')
+          ? (truncateVodManifestToTail(cleanText, VOD_TAIL_SEGMENTS) ?? cleanText)
+          : cleanText;
+
         const baseUrl = new URL(targetUrl);
         const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
         const proxyLine = (uri: string) => `/api/proxy-hls?url=${encodeURIComponent(new URL(uri, baseUrl).toString())}${passwordQuery}`;
 
-        const rewritten = text.split('\n').map((line) => {
+        const rewritten = sourceText.split('\n').map((line) => {
           const trimmed = line.trim();
           if (!trimmed) return line;
           if (trimmed.startsWith('#')) {

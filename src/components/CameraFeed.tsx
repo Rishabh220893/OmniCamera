@@ -122,6 +122,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     } else if (Hls.isSupported()) {
       hls = new Hls({
         maxLiveSyncPlaybackRate: 1.5,
+        // hls.js's defaults (manifestLoadingTimeOut: 10s, fragLoadingTimeOut:
+        // 20s) are shorter than this origin's real response times (its
+        // manifest alone can take 20-45s) — hls.js was very likely aborting
+        // and retrying on its own schedule before the server-side proxy
+        // timeout ever got a chance to respond. These give the real
+        // round-trip room to complete instead of racing it.
+        manifestLoadingTimeOut: 50_000,
+        manifestLoadingMaxRetry: 2,
+        levelLoadingTimeOut: 50_000,
+        levelLoadingMaxRetry: 2,
+        fragLoadingTimeOut: 25_000,
+        fragLoadingMaxRetry: 4,
         xhrSetup: (xhr) => {
           if (streamAccessPassword) xhr.setRequestHeader('X-Stream-Password', streamAccessPassword);
         },
