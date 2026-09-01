@@ -58,7 +58,11 @@ function defaultCameraFields(name: string): Omit<CameraConfig, 'id'> {
   return {
     name, peopleThreshold: 5, vehicleThreshold: 2, sensitivity: 5, interval: 60,
     webhookUrl: '', useRemoteFeed: false, remoteStreamUrl: '', facingMode: 'user',
-    suspiciousRules: 'Any unknown person approaching the door', useSimulatedFeed: false,
+    // Simulated, not local-device: a placeholder/newly-seeded camera has no
+    // stream configured yet, and defaulting to getUserMedia() would silently
+    // open the viewer's own webcam/front camera on every first load instead
+    // of showing a harmless demo tile. Matches the CSV bulk-import fallback.
+    suspiciousRules: 'Any unknown person approaching the door', useSimulatedFeed: true,
     connectivityStatus: 'unknown', maintenanceStatus: 'operational', onboardedVia: 'manual'
   };
 }
@@ -844,19 +848,24 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Kept mounted (CSS-hidden, not unmounted) even off-tab: MonitorTab owns
+                    the live HLS connection via CameraFeed, and the background capture/
+                    analysis loop reads frames from its video ref. Unmounting on every tab
+                    switch used to kill the stream, forcing a full reconnect (and a blank
+                    frame being sent to Gemini) whenever the user came back. */}
+                <div className={activeTab === 'monitor' ? '' : 'hidden'}>
+                  <MonitorTab
+                    cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
+                    onAddCamera={addCamera} isCapturing={isCapturing} isAnalyzing={isAnalyzing}
+                    cameraError={cameraError} analysisError={analysisError} logs={logs}
+                    viewMode={viewMode} onChangeViewMode={setViewMode} containerRef={containerRef}
+                    isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
+                    onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}
+                    onCameraError={setCameraError} onFallbackToSimulated={handleFallbackToSimulated}
+                    onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword}
+                  />
+                </div>
                 <AnimatePresence mode="wait">
-                  {activeTab === 'monitor' && (
-                    <MonitorTab
-                      cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
-                      onAddCamera={addCamera} isCapturing={isCapturing} isAnalyzing={isAnalyzing}
-                      cameraError={cameraError} analysisError={analysisError} logs={logs}
-                      viewMode={viewMode} onChangeViewMode={setViewMode} containerRef={containerRef}
-                      isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
-                      onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}
-                      onCameraError={setCameraError} onFallbackToSimulated={handleFallbackToSimulated}
-                      onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword}
-                    />
-                  )}
                   {activeTab === 'analytics' && (
                     <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} />
                   )}

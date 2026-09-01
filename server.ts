@@ -67,7 +67,21 @@ function isRetryableGeminiError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err);
   // Capacity/transient errors, and "model no longer exists" (404/NOT_FOUND)
   // — both are reasons to try the *next* model, not to fail outright.
-  return /"code":\s*(404|429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|NOT_FOUND/i.test(message);
+  return /"code":\s*(404|429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|NOT_FOUND|GEMINI_TIMEOUT/i.test(message);
+}
+
+const GEMINI_TIMEOUT_MS = 25_000;
+
+// Without this, a stalled call to a given model just hangs forever — the
+// client's fetch has no timeout of its own, so isAnalyzing never clears and
+// the capture loop stops producing any new summary/alerts until the tab is
+// reloaded. Racing a timeout turns that into a fast, retryable failure that
+// falls through to the next model instead.
+function withGeminiTimeout<T>(promise: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`GEMINI_TIMEOUT: no response after ${GEMINI_TIMEOUT_MS}ms`)), GEMINI_TIMEOUT_MS);
+    promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
 }
 
 async function generateContentWithFallback(
@@ -77,7 +91,7 @@ async function generateContentWithFallback(
   let lastError: unknown;
   for (const model of models) {
     try {
-      return await ai.models.generateContent({ ...params, model });
+      return await withGeminiTimeout(ai.models.generateContent({ ...params, model }));
     } catch (err: unknown) {
       lastError = err;
       if (!isRetryableGeminiError(err)) throw err;
@@ -85,6 +99,26 @@ async function generateContentWithFallback(
     }
   }
   throw lastError;
+}
+
+// Every upstream fetch to a camera CDN below routes through this instead of
+// calling fetch() directly. Without a timeout, one dead/slow camera hangs
+// its request indefinitely — and since browsers cap concurrent connections
+// per origin at ~6, one stuck request occupies a slot that every other
+// camera queued behind this proxy is waiting on, so the whole grid stalls
+// behind a single bad camera. A short timeout plus a couple of retries
+// turns that into "this one camera fails fast" instead.
+async function fetchUpstream(url: string, options: RequestInit = {}, { timeoutMs = 8_000, retries = 2 }: { timeoutMs?: number; retries?: number } = {}): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await new Promise((r) => setTimeout(r, 300 * (attempt + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function writeRegistryAudit(
@@ -156,7 +190,7 @@ async function startServer() {
 
     try {
       console.log(`[PROXY FRAME] Fetching from: ${targetUrl}`);
-      const response = await fetch(targetUrl, {
+      const response = await fetchUpstream(targetUrl, {
         method: 'GET',
         headers: {
           'ngrok-skip-browser-warning': 'true',
@@ -202,18 +236,23 @@ async function startServer() {
   const sessionCookieCache = new Map<string, string>();
 
   async function loginForSessionCookie(targetUrl: string, password: string): Promise<string | null> {
+    // Keyed by host+password, not password alone — a shared password across
+    // multiple camera hosts (common on a bulk-onboarded test grid) would
+    // otherwise reuse host A's session cookie against host B and get
+    // rejected as an invalid session there.
+    const cacheKey = `${new URL(targetUrl).host}|${password}`;
     try {
       const loginUrl = new URL('/auth/login', targetUrl).toString();
-      const res = await fetch(loginUrl, {
+      const res = await fetchUpstream(loginUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OmniSee-AI-Vision-Server/1.0' },
         body: `password=${encodeURIComponent(password)}`,
         redirect: 'manual',
-      });
+      }, { timeoutMs: 8_000, retries: 1 });
       const setCookie = res.headers.get('set-cookie');
       const match = setCookie?.match(/([a-zA-Z0-9_]+=[^;]+)/);
       if (match) {
-        sessionCookieCache.set(password, match[1]);
+        sessionCookieCache.set(cacheKey, match[1]);
         return match[1];
       }
     } catch (err) {
@@ -245,20 +284,27 @@ async function startServer() {
         return headers;
       };
 
+      // Manifests should fail fast (a stuck manifest fetch blocks playback from
+      // even starting); segments get a slightly longer budget since they're
+      // bigger, but both are far short of "hang indefinitely."
+      const isManifestUrl = targetUrl.toLowerCase().includes('.m3u8');
+      const fetchOpts = { timeoutMs: isManifestUrl ? 8_000 : 12_000, retries: 2 };
+
       let upstream: Response;
       if (password) {
-        const cachedCookie = sessionCookieCache.get(password) || (await loginForSessionCookie(targetUrl, password));
-        upstream = await fetch(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' });
+        const cacheKey = `${new URL(targetUrl).host}|${password}`;
+        const cachedCookie = sessionCookieCache.get(cacheKey) || (await loginForSessionCookie(targetUrl, password));
+        upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' }, fetchOpts);
         // A redirect with a password set means the session was invalid/expired
         // (or this is the first request and there was nothing cached) — log
         // in fresh and retry exactly once before giving up.
         if (upstream.status >= 300 && upstream.status < 400) {
-          sessionCookieCache.delete(password);
+          sessionCookieCache.delete(cacheKey);
           const freshCookie = await loginForSessionCookie(targetUrl, password);
-          upstream = await fetch(targetUrl, { headers: buildHeaders(freshCookie), redirect: 'manual' });
+          upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(freshCookie), redirect: 'manual' }, fetchOpts);
         }
       } else {
-        upstream = await fetch(targetUrl, { headers: buildHeaders(), redirect: 'manual' });
+        upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(), redirect: 'manual' }, fetchOpts);
       }
 
       if (!upstream.ok) {
