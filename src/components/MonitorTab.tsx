@@ -9,8 +9,18 @@ import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
 
-interface GridTileProps {
+function formatLastAnalysisTime(lat: unknown): string {
+  if (!lat) return '';
+  let d: Date;
+  if (lat instanceof Date) d = lat;
+  else if (typeof lat === 'object' && lat !== null && 'seconds' in lat) d = new Date((lat as { seconds: number }).seconds * 1000);
+  else d = new Date(lat as string | number);
+  return isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
+}
+
+interface CameraTileProps {
   camera: CameraConfig;
+  layout: 'grid' | 'focus';
   isActive: boolean;
   isSelectedForAnalysis: boolean;
   isCapturing: boolean;
@@ -22,33 +32,108 @@ interface GridTileProps {
   streamAccessPassword: string;
   onSelect: () => void;
   onToggleAnalysis: () => void;
-  /** Whether this tile is allowed to actually open a connection. Mounting
-   *  every camera's HLS player at once — 8, 30, however many — hammers a
-   *  shared origin with that many simultaneous manifest+segment fetches;
-   *  a HAR capture with 8 cameras showed every single one timing out where
-   *  a handful at a time succeeded. Tiles beyond the concurrency cap show a
-   *  static placeholder until the viewer explicitly asks to load them. */
-  shouldConnect: boolean;
-  onRequestLoad: () => void;
+  onStatusChange: (cameraId: string, status: FeedStatus) => void;
+  cameraError: string | null;
+  isFullscreen: boolean;
+  onToggleFullscreen: () => void;
+  onToggleCameraFacing: () => void;
+  hidden?: boolean;
 }
 
-// A grid tile owns its own connecting/live/error status — nothing else in
-// the app needs to react to one specific tile's connection state, so this
-// stays local instead of lifted into shared state.
-function GridTile({
-  camera, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
+// One persistent tile per connected camera — mounted once and restyled via
+// the `layout` prop, rather than being two separate elements in the grid
+// and focus render branches. That used to mean switching view modes
+// unmounted whichever CameraFeed wasn't in the active branch, tearing down
+// a perfectly good HLS connection and restarting it from zero.
+function CameraTile({
+  camera, layout, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
   mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onSelect, onToggleAnalysis,
-  shouldConnect, onRequestLoad
-}: GridTileProps) {
+  onStatusChange, cameraError, isFullscreen, onToggleFullscreen, onToggleCameraFacing, hidden
+}: CameraTileProps) {
   const [status, setStatus] = useState<FeedStatus>('connecting');
   // Bumping this remounts CameraFeed (via the key below), forcing a full
   // fresh attempt — nothing auto-retries a failed remote connection on its
   // own, so without this the tile would sit on "error" forever.
   const [retryToken, setRetryToken] = useState(0);
 
+  const feed = (
+    <CameraFeed
+      key={retryToken}
+      camera={camera}
+      isFocused={layout === 'focus'}
+      isCapturing={isCapturing}
+      reportRefs={isSelectedForAnalysis}
+      mediaRefs={mediaRefs}
+      onCameraError={onCameraError}
+      onFallbackToSimulated={onFallbackToSimulated}
+      streamAccessPassword={streamAccessPassword}
+      onStatusChange={(s) => { setStatus(s); onStatusChange(camera.id, s); }}
+    />
+  );
+
+  if (layout === 'focus') {
+    return (
+      <div className={cn('absolute inset-0', hidden && 'hidden')}>
+        {feed}
+        {cameraError && (
+          <div className="absolute inset-0 z-50 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-critical-soft flex items-center justify-center mb-5">
+              <AlertTriangle className="w-8 h-8 text-critical" strokeWidth={1.75} />
+            </div>
+            <h3 className="text-lg font-bold text-ink mb-2">Camera access error</h3>
+            <p className="text-critical text-sm max-w-md mb-6">{cameraError}</p>
+          </div>
+        )}
+        {status === 'error' && (
+          <div className="absolute inset-0 z-40 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center gap-3">
+            <AlertTriangle className="w-8 h-8 text-critical" strokeWidth={1.75} />
+            <p className="text-critical text-sm max-w-md">Timed out connecting to this feed.</p>
+            <button
+              onClick={() => { setStatus('connecting'); setRetryToken((t) => t + 1); }}
+              className="btn-secondary !py-2 text-xs"
+            >
+              <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} /> Retry connection
+            </button>
+          </div>
+        )}
+        <div className="absolute inset-0 pointer-events-none">
+          {isCapturing && <div className="absolute inset-x-0 top-0 h-px bg-accent/40" />}
+          <div className="absolute top-6 left-6 flex flex-col gap-2 pointer-events-auto">
+            <div className="bg-black/55 backdrop-blur-md rounded-xl px-3.5 py-1.5 flex items-center gap-2.5">
+              <Activity className="w-3.5 h-3.5 text-success" strokeWidth={1.75} />
+              <span className="text-[10px] font-mono font-bold text-white uppercase">{camera.name.replace(/\s+/g, '_')}</span>
+            </div>
+            {camera.lastAnalysisTime && (
+              <div className="bg-black/55 backdrop-blur-md rounded-xl px-3.5 py-1.5 flex items-center gap-2.5">
+                <Clock className="w-3.5 h-3.5 text-accent" strokeWidth={1.75} />
+                <span className="text-[10px] font-mono font-bold text-white uppercase">Last sync: {formatLastAnalysisTime(camera.lastAnalysisTime)}</span>
+              </div>
+            )}
+          </div>
+          <div className="absolute bottom-6 right-6 flex gap-3 pointer-events-auto">
+            <button onClick={onToggleFullscreen} className="w-11 h-11 flex items-center justify-center rounded-xl bg-black/55 backdrop-blur-md text-white">
+              {isFullscreen ? <Minimize2 className="w-4.5 h-4.5" strokeWidth={1.75} /> : <Maximize2 className="w-4.5 h-4.5" strokeWidth={1.75} />}
+            </button>
+            <button onClick={onToggleCameraFacing} className="w-11 h-11 flex items-center justify-center rounded-xl bg-black/55 backdrop-blur-md text-white">
+              <SwitchCamera className="w-4.5 h-4.5" strokeWidth={1.75} />
+            </button>
+          </div>
+          {isAnalyzing && (
+            <div className="absolute inset-x-0 bottom-0 flex flex-col items-center p-16">
+              <div className="flex items-center gap-2.5 bg-ink px-5 py-2 rounded-full">
+                <RefreshCw className="w-3.5 h-3.5 text-white animate-spin" strokeWidth={1.75} />
+                <span className="text-[10px] font-bold text-white uppercase tracking-wider">Processing stream...</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     // A plain div, not <button> — this tile hosts a real nested <button>
-    // (the load-placeholder) and a <label><input> (the checkbox), and
+    // (the retry/load actions) and a <label><input> (the checkbox), and
     // nesting interactive elements inside a <button> is invalid HTML that
     // browsers silently "fix" by restructuring the DOM, breaking clicks in
     // unpredictable ways. role/tabIndex/onKeyDown keep it keyboard-operable.
@@ -59,39 +144,15 @@ function GridTile({
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
       className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left group cursor-pointer', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
     >
-      {shouldConnect ? (
-        <CameraFeed
-          key={retryToken}
-          camera={camera}
-          isFocused={false}
-          isCapturing={isCapturing}
-          reportRefs={isSelectedForAnalysis}
-          mediaRefs={mediaRefs}
-          onCameraError={onCameraError}
-          onFallbackToSimulated={onFallbackToSimulated}
-          streamAccessPassword={streamAccessPassword}
-          onStatusChange={setStatus}
-        />
-      ) : (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
-          <button
-            onClick={(e) => { e.stopPropagation(); onRequestLoad(); }}
-            className="w-9 h-9 rounded-full bg-black/40 flex items-center justify-center text-white hover:bg-black/55"
-            title="Load this feed"
-          >
-            <Play className="w-4 h-4 ml-0.5" strokeWidth={1.75} />
-          </button>
-          <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Click to load</span>
-        </div>
-      )}
+      {feed}
 
-      {shouldConnect && status === 'connecting' && (
+      {status === 'connecting' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted animate-pulse">
           <Loader2 className="w-5 h-5 text-ink-muted animate-spin" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Connecting…</span>
         </div>
       )}
-      {shouldConnect && status === 'error' && (
+      {status === 'error' && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
           <AlertTriangle className="w-5 h-5 text-critical" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Connection failed</span>
@@ -131,13 +192,47 @@ function GridTile({
   );
 }
 
+interface PlaceholderTileProps {
+  camera: CameraConfig;
+  isActive: boolean;
+  onSelect: () => void;
+  onRequestLoad: () => void;
+}
+
+// Shown in grid view for a camera nobody has asked to connect yet — zero
+// network activity until the viewer explicitly loads it.
+function PlaceholderTile({ camera, isActive, onSelect, onRequestLoad }: PlaceholderTileProps) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
+      className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left cursor-pointer', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
+    >
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
+        <button
+          onClick={(e) => { e.stopPropagation(); onRequestLoad(); }}
+          className="w-9 h-9 rounded-full bg-black/40 flex items-center justify-center text-white hover:bg-black/55"
+          title="Load this feed"
+        >
+          <Play className="w-4 h-4 ml-0.5" strokeWidth={1.75} />
+        </button>
+        <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Click to load</span>
+      </div>
+      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
+        <span className="text-[10px] font-bold text-white uppercase tracking-wide">{camera.name}</span>
+      </div>
+    </div>
+  );
+}
+
 interface MonitorTabProps {
   cameras: CameraConfig[];
   activeCameraId: string;
   onSelectCamera: (id: string) => void;
   onAddCamera: () => void;
   isCapturing: boolean;
-  isAnalyzing: boolean;
   cameraError: string | null;
   analysisError: string | null;
   logs: LogEntry[];
@@ -158,23 +253,15 @@ interface MonitorTabProps {
   analyzingCameraIds: Set<string>;
   onToggleAnalysisCamera: (id: string) => void;
   onJumpToLog: (logId: string) => void;
-}
-
-function formatLastAnalysisTime(lat: unknown): string {
-  if (!lat) return '';
-  let d: Date;
-  if (lat instanceof Date) d = lat;
-  else if (typeof lat === 'object' && lat !== null && 'seconds' in lat) d = new Date((lat as { seconds: number }).seconds * 1000);
-  else d = new Date(lat as string | number);
-  return isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
+  onCameraStatusChange: (cameraId: string, status: FeedStatus) => void;
 }
 
 export default function MonitorTab({
-  cameras, activeCameraId, onSelectCamera, onAddCamera, isCapturing, isAnalyzing,
+  cameras, activeCameraId, onSelectCamera, onAddCamera, isCapturing,
   cameraError, analysisError, logs, viewMode, onChangeViewMode, containerRef,
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
   onFallbackToSimulated, onChangeTab, streamAccessPassword,
-  analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog
+  analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [gridFilter, setGridFilter] = useState('');
@@ -199,23 +286,19 @@ export default function MonitorTab({
 
   // Grid view used to mount every camera's HLS player at once — fine for a
   // handful, but a capture with 8 simultaneous connections showed literally
-  // every single one time out against this grid's shared origin. Capping
-  // concurrent connections (roughly matching a browser's own per-origin
-  // limit anyway) and lazy-loading the rest fixes that without giving up
-  // the ability to watch many cameras — just not all at once, unrequested.
-  // Auto-filling remaining slots up to a cap turned out to still be more
-  // than this origin reliably handles (a HAR with only 6 auto-connected
-  // cameras showed the same failures as 8), so this is now fully manual:
-  // only the focused camera and anything explicitly checked for analysis
-  // connect automatically — every other tile is opt-in via "click to load".
+  // every single one time out against this grid's shared origin. Auto-
+  // filling slots up to a cap still showed the same failures, so this is
+  // fully manual: only the focused camera and anything explicitly checked
+  // for analysis connect automatically — every other tile is opt-in via
+  // "click to load". connectedIds is used for BOTH view modes now (not
+  // just grid) — see the CameraTile comment for why.
   const [manuallyLoadedIds, setManuallyLoadedIds] = useState<Set<string>>(new Set());
   const requestLoad = (id: string) => setManuallyLoadedIds(prev => new Set(prev).add(id));
-  const autoConnectIds = useMemo(() => {
-    const ids = new Set<string>();
-    ids.add(activeCameraId);
-    for (const id of analysisCameraIds) ids.add(id);
+  const connectedIds = useMemo(() => {
+    const ids = new Set(analysisCameraIds); // already always includes activeCameraId
+    for (const id of manuallyLoadedIds) ids.add(id);
     return ids;
-  }, [activeCameraId, analysisCameraIds]);
+  }, [analysisCameraIds, manuallyLoadedIds]);
 
   return (
     <motion.div
@@ -257,97 +340,62 @@ export default function MonitorTab({
           </div>
         </div>
 
-        {viewMode === 'grid' ? (
-          filteredCameras.length === 0 ? (
-            <div className="card p-10 text-center text-xs text-ink-muted">No cameras match "{gridFilter}".</div>
-          ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredCameras.map(cam => (
-              <GridTile
-                key={cam.id}
-                camera={cam}
-                isActive={cam.id === activeCameraId}
-                isSelectedForAnalysis={analysisCameraIds.has(cam.id)}
-                isCapturing={isCapturing}
-                isAnalyzing={analyzingCameraIds.has(cam.id)}
-                latestLog={latestLogByCamera.get(cam.id)}
-                mediaRefs={mediaRefs}
-                onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
-                onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
-                streamAccessPassword={streamAccessPassword}
-                onSelect={() => onSelectCamera(cam.id)}
-                onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
-                shouldConnect={autoConnectIds.has(cam.id) || manuallyLoadedIds.has(cam.id)}
-                onRequestLoad={() => requestLoad(cam.id)}
-              />
-            ))}
-          </div>
-          )
-        ) : (
-          <div
-            ref={containerRef}
-            className={cn(
-              'relative rounded-[2rem] overflow-hidden bg-surface-muted border border-border group transition-all duration-300',
-              isFullscreen ? 'rounded-none border-none h-screen w-screen' : 'aspect-video'
-            )}
-          >
-              <CameraFeed
-                camera={activeCamera}
-                isFocused
-                isCapturing={isCapturing}
-                reportRefs
-                mediaRefs={mediaRefs}
-                onCameraError={onCameraError}
-                onFallbackToSimulated={onFallbackToSimulated}
-                streamAccessPassword={streamAccessPassword}
-              />
-
-              {cameraError && (
-                <div className="absolute inset-0 z-50 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center">
-                  <div className="w-16 h-16 rounded-2xl bg-critical-soft flex items-center justify-center mb-5">
-                    <AlertTriangle className="w-8 h-8 text-critical" strokeWidth={1.75} />
-                  </div>
-                  <h3 className="text-lg font-bold text-ink mb-2">Camera access error</h3>
-                  <p className="text-critical text-sm max-w-md mb-6">{cameraError}</p>
-                </div>
-              )}
-
-              <div className="absolute inset-0 pointer-events-none">
-                {isCapturing && <div className="absolute inset-x-0 top-0 h-px bg-accent/40" />}
-
-                <div className="absolute top-6 left-6 flex flex-col gap-2 pointer-events-auto">
-                  <div className="bg-black/55 backdrop-blur-md rounded-xl px-3.5 py-1.5 flex items-center gap-2.5">
-                    <Activity className="w-3.5 h-3.5 text-success" strokeWidth={1.75} />
-                    <span className="text-[10px] font-mono font-bold text-white uppercase">{activeCamera.name.replace(/\s+/g, '_')}</span>
-                  </div>
-                  {activeCamera.lastAnalysisTime && (
-                    <div className="bg-black/55 backdrop-blur-md rounded-xl px-3.5 py-1.5 flex items-center gap-2.5">
-                      <Clock className="w-3.5 h-3.5 text-accent" strokeWidth={1.75} />
-                      <span className="text-[10px] font-mono font-bold text-white uppercase">Last sync: {formatLastAnalysisTime(activeCamera.lastAnalysisTime)}</span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="absolute bottom-6 right-6 flex gap-3 pointer-events-auto">
-                  <button onClick={onToggleFullscreen} className="w-11 h-11 flex items-center justify-center rounded-xl bg-black/55 backdrop-blur-md text-white">
-                    {isFullscreen ? <Minimize2 className="w-4.5 h-4.5" strokeWidth={1.75} /> : <Maximize2 className="w-4.5 h-4.5" strokeWidth={1.75} />}
-                  </button>
-                  <button onClick={onToggleCameraFacing} className="w-11 h-11 flex items-center justify-center rounded-xl bg-black/55 backdrop-blur-md text-white">
-                    <SwitchCamera className="w-4.5 h-4.5" strokeWidth={1.75} />
-                  </button>
-                </div>
-
-                {isAnalyzing && (
-                  <div className="absolute inset-x-0 bottom-0 flex flex-col items-center p-16">
-                    <div className="flex items-center gap-2.5 bg-ink px-5 py-2 rounded-full">
-                      <RefreshCw className="w-3.5 h-3.5 text-white animate-spin" strokeWidth={1.75} />
-                      <span className="text-[10px] font-bold text-white uppercase tracking-wider">Processing stream...</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
+        {viewMode === 'grid' && filteredCameras.length === 0 && (
+          <div className="card p-10 text-center text-xs text-ink-muted">No cameras match "{gridFilter}".</div>
         )}
+
+        {/* Always mounted regardless of view mode — a connected camera's
+            CameraTile (and the CameraFeed/hls.js connection inside it) must
+            keep the same React identity whichever way it's currently being
+            displayed, or switching views tears it down and restarts it. In
+            grid mode this is a normal CSS grid; in focus mode it becomes the
+            single large "focus box" (aspect-video, fullscreen-capable) with
+            only the active camera's tile visible. */}
+        <div
+          ref={containerRef}
+          className={cn(
+            (viewMode === 'grid' && filteredCameras.length > 0)
+              ? 'grid sm:grid-cols-2 lg:grid-cols-3 gap-4'
+              : viewMode === 'focus'
+                ? cn('relative rounded-[2rem] overflow-hidden bg-surface-muted border border-border transition-all duration-300', isFullscreen ? 'rounded-none border-none h-screen w-screen' : 'aspect-video')
+                : 'hidden'
+          )}
+        >
+          {viewMode === 'grid' && filteredCameras.filter(cam => !connectedIds.has(cam.id)).map(cam => (
+            <PlaceholderTile
+              key={cam.id}
+              camera={cam}
+              isActive={cam.id === activeCameraId}
+              onSelect={() => onSelectCamera(cam.id)}
+              onRequestLoad={() => requestLoad(cam.id)}
+            />
+          ))}
+
+          {cameras.filter(cam => connectedIds.has(cam.id) && (viewMode === 'grid' ? filteredCameras.includes(cam) : true)).map(cam => (
+            <CameraTile
+              key={cam.id}
+              camera={cam}
+              layout={viewMode === 'grid' ? 'grid' : 'focus'}
+              hidden={viewMode === 'focus' && cam.id !== activeCameraId}
+              isActive={cam.id === activeCameraId}
+              isSelectedForAnalysis={analysisCameraIds.has(cam.id)}
+              isCapturing={isCapturing}
+              isAnalyzing={analyzingCameraIds.has(cam.id)}
+              latestLog={latestLogByCamera.get(cam.id)}
+              mediaRefs={mediaRefs}
+              onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
+              onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
+              streamAccessPassword={streamAccessPassword}
+              onSelect={() => onSelectCamera(cam.id)}
+              onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
+              onStatusChange={onCameraStatusChange}
+              cameraError={cam.id === activeCameraId ? cameraError : null}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={onToggleFullscreen}
+              onToggleCameraFacing={onToggleCameraFacing}
+            />
+          ))}
+        </div>
 
         {analysisError && (
           <div className="card border-critical/30 p-6 space-y-2 text-xs">
@@ -386,7 +434,7 @@ export default function MonitorTab({
             {cameras.map(cam => (
               // A div, not <button> — it hosts a nested <label><input> for
               // the analysis checkbox, and interactive-in-interactive is
-              // invalid HTML (see the matching note on GridTile above).
+              // invalid HTML (see the matching note on CameraTile above).
               <div
                 key={cam.id}
                 role="button"

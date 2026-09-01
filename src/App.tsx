@@ -17,6 +17,7 @@ import Sidebar from './components/Sidebar';
 import MobileNav from './components/MobileNav';
 import Header from './components/Header';
 import MonitorTab from './components/MonitorTab';
+import type { FeedStatus } from './components/CameraFeed';
 import AnalyticsTab from './components/AnalyticsTab';
 import SettingsTab from './components/SettingsTab';
 import RegistryTab from './components/RegistryTab';
@@ -154,8 +155,22 @@ export default function App() {
   }, [extraAnalysisCameraIds, activeCameraId]);
   const [analyzingCameraIds, setAnalyzingCameraIds] = useState<Set<string>>(new Set());
   const [analysisErrors, setAnalysisErrors] = useState<Map<string, string>>(new Map());
-  const isAnalyzing = analyzingCameraIds.has(activeCameraId);
   const analysisError = analysisErrors.get(activeCameraId) || null;
+
+  // Real per-camera connection status (reported by whichever CameraFeed
+  // instance is actually mounted for that camera) — not the registry's
+  // static connectivityStatus field, which is manually-set metadata that
+  // says "online" regardless of whether the feed is actually playing.
+  const [cameraStatuses, setCameraStatuses] = useState<Map<string, FeedStatus>>(new Map());
+  const handleCameraStatusChange = useCallback((cameraId: string, status: FeedStatus) => {
+    setCameraStatuses(prev => {
+      if (prev.get(cameraId) === status) return prev;
+      const next = new Map(prev);
+      next.set(cameraId, status);
+      return next;
+    });
+  }, []);
+  const camerasLive = useMemo(() => cameras.filter(c => cameraStatuses.get(c.id) === 'live').length, [cameras, cameraStatuses]);
 
   const updateActiveCamera = useCallback((updates: Partial<CameraConfig>) => {
     setCameras(prev => prev.map(c => c.id === activeCameraId ? { ...c, ...updates } : c));
@@ -902,7 +917,7 @@ export default function App() {
             <div className="lg:pl-20 min-h-screen flex flex-col w-full">
               <Header
                 isCapturing={isCapturing} onToggleCapturing={() => setIsCapturing(!isCapturing)} user={user} onLogout={handleLogout}
-                camerasOnline={cameras.filter(c => c.connectivityStatus !== 'offline' && c.connectivityStatus !== 'degraded').length}
+                camerasLive={camerasLive}
                 camerasTotal={cameras.length}
                 alertsToday={logs.filter(l => l.alerts.length > 0 && l.timestamp.toDateString() === new Date().toDateString()).length}
                 geminiHealthy={analysisErrors.size === 0}
@@ -933,7 +948,7 @@ export default function App() {
                 <div className={activeTab === 'monitor' ? '' : 'hidden'}>
                   <MonitorTab
                     cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
-                    onAddCamera={addCamera} isCapturing={isCapturing} isAnalyzing={isAnalyzing}
+                    onAddCamera={addCamera} isCapturing={isCapturing}
                     cameraError={cameraError} analysisError={analysisError} logs={logs}
                     viewMode={viewMode} onChangeViewMode={setViewMode} containerRef={containerRef}
                     isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
@@ -942,6 +957,7 @@ export default function App() {
                     onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword}
                     analysisCameraIds={analysisCameraIds} analyzingCameraIds={analyzingCameraIds}
                     onToggleAnalysisCamera={toggleAnalysisCamera} onJumpToLog={handleJumpToLog}
+                    onCameraStatusChange={handleCameraStatusChange}
                   />
                 </div>
                 <AnimatePresence mode="wait">

@@ -7,13 +7,13 @@ interface HeaderProps {
   onToggleCapturing: () => void;
   user: FirebaseUser | null;
   onLogout: () => void;
-  camerasOnline: number;
+  camerasLive: number;
   camerasTotal: number;
   alertsToday: number;
   geminiHealthy: boolean;
 }
 
-export default function Header({ isCapturing, onToggleCapturing, user, onLogout, camerasOnline, camerasTotal, alertsToday, geminiHealthy }: HeaderProps) {
+export default function Header({ isCapturing, onToggleCapturing, user, onLogout, camerasLive, camerasTotal, alertsToday, geminiHealthy }: HeaderProps) {
   return (
     <header className="flex flex-col bg-surface/90 backdrop-blur-xl border-b border-border sticky top-0 z-40">
       <div className="h-20 flex items-center justify-between px-6">
@@ -72,8 +72,8 @@ export default function Header({ isCapturing, onToggleCapturing, user, onLogout,
           without having to scan every camera tile individually. */}
       <div className="flex items-center gap-5 px-6 pb-3 -mt-1 overflow-x-auto">
         <div className="flex items-center gap-1.5 shrink-0">
-          <Video className={cn('w-3.5 h-3.5', camerasOnline === camerasTotal && camerasTotal > 0 ? 'text-success' : 'text-warning')} strokeWidth={1.75} />
-          <span className="text-[10px] font-semibold text-ink-muted whitespace-nowrap">{camerasOnline}/{camerasTotal} online</span>
+          <Video className={cn('w-3.5 h-3.5', camerasLive === camerasTotal && camerasTotal > 0 ? 'text-success' : 'text-warning')} strokeWidth={1.75} />
+          <span className="text-[10px] font-semibold text-ink-muted whitespace-nowrap" title="Cameras with a confirmed live feed right now — not just registered">{camerasLive}/{camerasTotal} live</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <AlertTriangle className={cn('w-3.5 h-3.5', alertsToday > 0 ? 'text-warning' : 'text-ink-muted')} strokeWidth={1.75} />
