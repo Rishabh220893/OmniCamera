@@ -331,7 +331,11 @@ async function startServer() {
         // were real HLS content leaves hls.js parsing zero segments out of
         // an unrecognized file forever, with no fatal error to ever surface
         // to the UI — it just looks like a permanently "loading" tile.
-        if (!text.trimStart().startsWith('#EXTM3U')) {
+        // Strip a possible UTF-8 BOM before checking — some Windows-based
+        // NVR/encoder software emits one, and trimStart() alone doesn't
+        // remove it, which would make this reject every single otherwise-
+        // valid manifest from an origin that does this.
+        if (!text.replace(/^\uFEFF/, '').trimStart().startsWith('#EXTM3U')) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
           console.error(`[PROXY HLS] Upstream returned ${upstream.status} for ${targetUrl} but the body isn't a valid HLS manifest. First 200 chars: ${text.slice(0, 200)}`);
           res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest — likely an expired session or wrong password serving a login page instead of the stream.');

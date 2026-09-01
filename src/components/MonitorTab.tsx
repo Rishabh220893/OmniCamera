@@ -105,14 +105,13 @@ export default function MonitorTab({
             ))}
           </div>
         ) : (
-          <>
-            <div
-              ref={containerRef}
-              className={cn(
-                'relative rounded-[2rem] overflow-hidden bg-surface-muted border border-border group transition-all duration-300',
-                isFullscreen ? 'rounded-none border-none h-screen w-screen' : 'aspect-video'
-              )}
-            >
+          <div
+            ref={containerRef}
+            className={cn(
+              'relative rounded-[2rem] overflow-hidden bg-surface-muted border border-border group transition-all duration-300',
+              isFullscreen ? 'rounded-none border-none h-screen w-screen' : 'aspect-video'
+            )}
+          >
               <CameraFeed
                 camera={activeCamera}
                 isFocused
@@ -169,47 +168,49 @@ export default function MonitorTab({
                 )}
               </div>
             </div>
-
-            {analysisError && (
-              <div className="card border-critical/30 p-6 space-y-2 text-xs">
-                <div className="flex items-center gap-2 font-bold text-critical">
-                  <AlertTriangle className="w-4 h-4" strokeWidth={1.75} />
-                  <span className="text-sm">Frame analysis error</span>
-                </div>
-                <p className="text-ink-muted leading-relaxed">
-                  {analysisError}
-                </p>
-              </div>
-            )}
-
-            <div className="card p-7 flex flex-wrap items-center justify-between gap-6">
-              <div className="flex flex-col gap-1 max-w-xl">
-                <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">Ongoing context</h3>
-                <p className="text-base text-ink">
-                  {logs[0]?.summary || 'No active summary. Activate guard to begin analysis.'}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid sm:grid-cols-3 gap-5">
-              {[
-                { label: 'Identified people', icon: Users, value: logs[0]?.counts.people || 0 },
-                { label: 'Vehicles detected', icon: Truck, value: logs[0]?.counts.vehicles || 0 },
-                { label: 'Anomalies (session)', icon: AlertTriangle, value: logs.filter(l => l.isUnusual).length }
-              ].map((m, i) => (
-                <div key={i} className="card p-5 flex items-center">
-                  <div className="w-12 h-12 rounded-xl bg-accent-soft flex items-center justify-center mr-4 text-accent">
-                    <m.icon className="w-6 h-6" strokeWidth={1.75} />
-                  </div>
-                  <div className="flex flex-col">
-                    <span className="text-[10px] font-bold text-ink-muted uppercase">{m.label}</span>
-                    <span className="text-xl font-bold text-ink">{m.value}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
         )}
+
+        {analysisError && (
+          <div className="card border-critical/30 p-6 space-y-2 text-xs">
+            <div className="flex items-center gap-2 font-bold text-critical">
+              <AlertTriangle className="w-4 h-4" strokeWidth={1.75} />
+              <span className="text-sm">Frame analysis error</span>
+            </div>
+            <p className="text-ink-muted leading-relaxed">
+              {analysisError}
+            </p>
+          </div>
+        )}
+
+        {/* Shown regardless of grid/focus view — previously focus-only, which meant
+            Gemini's summary and live counts were invisible to anyone using the grid
+            (the view every reported screenshot has actually been in). */}
+        <div className="card p-7 flex flex-wrap items-center justify-between gap-6">
+          <div className="flex flex-col gap-1 max-w-xl">
+            <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">Ongoing context — {activeCamera.name}</h3>
+            <p className="text-base text-ink">
+              {logs[0]?.summary || 'No active summary. Activate guard to begin analysis.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid sm:grid-cols-3 gap-5">
+          {[
+            { label: 'Identified people', icon: Users, value: logs[0]?.counts.people || 0 },
+            { label: 'Vehicles detected', icon: Truck, value: logs[0]?.counts.vehicles || 0 },
+            { label: 'Anomalies (session)', icon: AlertTriangle, value: logs.filter(l => l.isUnusual).length }
+          ].map((m, i) => (
+            <div key={i} className="card p-5 flex items-center">
+              <div className="w-12 h-12 rounded-xl bg-accent-soft flex items-center justify-center mr-4 text-accent">
+                <m.icon className="w-6 h-6" strokeWidth={1.75} />
+              </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-ink-muted uppercase">{m.label}</span>
+                <span className="text-xl font-bold text-ink">{m.value}</span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="space-y-6 flex flex-col h-full">
