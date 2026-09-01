@@ -293,9 +293,10 @@ async function startServer() {
       const isManifestUrl = targetUrl.toLowerCase().includes('.m3u8');
       const fetchOpts = isManifestUrl ? { timeoutMs: 45_000, retries: 0 } : { timeoutMs: 20_000, retries: 1 };
 
+      const cacheKey = password ? `${new URL(targetUrl).host}|${password}` : null;
+
       let upstream: Response;
-      if (password) {
-        const cacheKey = `${new URL(targetUrl).host}|${password}`;
+      if (password && cacheKey) {
         const cachedCookie = sessionCookieCache.get(cacheKey) || (await loginForSessionCookie(targetUrl, password));
         upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' }, fetchOpts);
         // A redirect with a password set means the session was invalid/expired
@@ -324,6 +325,18 @@ async function startServer() {
       const isManifest = targetUrl.toLowerCase().includes('.m3u8');
       if (isManifest) {
         const text = await upstream.text();
+        // A 2xx status doesn't guarantee the body is actually a manifest —
+        // some servers answer an expired/invalid session with 200 + an HTML
+        // login page instead of a proper redirect. Forwarding that as if it
+        // were real HLS content leaves hls.js parsing zero segments out of
+        // an unrecognized file forever, with no fatal error to ever surface
+        // to the UI — it just looks like a permanently "loading" tile.
+        if (!text.trimStart().startsWith('#EXTM3U')) {
+          if (cacheKey) sessionCookieCache.delete(cacheKey);
+          console.error(`[PROXY HLS] Upstream returned ${upstream.status} for ${targetUrl} but the body isn't a valid HLS manifest. First 200 chars: ${text.slice(0, 200)}`);
+          res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest — likely an expired session or wrong password serving a login page instead of the stream.');
+          return;
+        }
         const baseUrl = new URL(targetUrl);
         const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
         const proxyLine = (uri: string) => `/api/proxy-hls?url=${encodeURIComponent(new URL(uri, baseUrl).toString())}${passwordQuery}`;
@@ -343,8 +356,15 @@ async function startServer() {
         res.setHeader('Cache-Control', 'no-store');
         res.status(200).send(rewritten);
       } else {
-        const arrayBuffer = await upstream.arrayBuffer();
         const contentType = upstream.headers.get('content-type') || 'video/mp2t';
+        if (/text\/html|text\/plain/i.test(contentType)) {
+          if (cacheKey) sessionCookieCache.delete(cacheKey);
+          const bodyText = await upstream.text().catch(() => '');
+          console.error(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but content-type is "${contentType}" (expected binary media). First 200 chars: ${bodyText.slice(0, 200)}`);
+          res.status(502).send('Upstream returned a 2xx status but the response was HTML/text, not a media segment — likely an expired session serving a login page.');
+          return;
+        }
+        const arrayBuffer = await upstream.arrayBuffer();
         res.setHeader('Content-Type', contentType);
         res.setHeader('Cache-Control', 'no-store');
         res.status(200).send(Buffer.from(arrayBuffer));
