@@ -10,6 +10,7 @@ import { CameraConfig, LogEntry, LogSentiment, KnownFace, NotificationPrefs, Use
 import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
 import { parseCsv, toCsv, downloadCsv } from './lib/csv';
 import { computeGapAnalysis } from './lib/registryReport';
+import { DEMO_GRID_CAMERAS } from './data/demoGridCameras';
 
 import OnboardingScreen from './components/OnboardingScreen';
 import AuthScreen from './components/AuthScreen';
@@ -800,10 +801,27 @@ export default function App() {
 
   const bulkImportCameras = async (rows: Record<string, string>[]) => {
     if (!user) return;
-    const valid = rows.filter(r => r.name?.trim());
+    // Re-importing the same file (or clicking "Load demo grid" twice) would
+    // otherwise create a second copy of every camera that already has a
+    // matching remote feed URL registered.
+    const existingUrls = new Set(
+      camerasRef.current.filter(c => c.remoteStreamUrl.trim()).map(c => c.remoteStreamUrl.trim().toLowerCase())
+    );
+    const valid = rows.filter(r => {
+      if (!r.name?.trim()) return false;
+      const url = r.remoteStreamUrl?.trim().toLowerCase();
+      return !url || !existingUrls.has(url);
+    });
     const localCreated: CameraConfig[] = [];
     for (const row of valid) {
       const hasRemoteFeed = !!row.remoteStreamUrl?.trim();
+      // Guards against duplicate URLs within the same import batch too, not
+      // just against cameras already on record.
+      if (hasRemoteFeed) {
+        const url = row.remoteStreamUrl.trim().toLowerCase();
+        if (existingUrls.has(url)) continue;
+        existingUrls.add(url);
+      }
       const fields: Omit<CameraConfig, 'id'> = {
         ...defaultCameraFields(row.name.trim()),
         department: row.department || undefined,
@@ -847,6 +865,8 @@ export default function App() {
     const text = await file.text();
     await bulkImportCameras(parseCsv(text));
   };
+
+  const loadDemoGrid = () => bulkImportCameras(DEMO_GRID_CAMERAS);
 
   const exportRegistryCsv = () => {
     const rows = cameras.map(c => ({
@@ -970,7 +990,7 @@ export default function App() {
                       routePlate={routePlate} routePoints={routePoints} onClearRoute={() => setRoutePlate(null)}
                       isAdmin={isAdmin} onAddCamera={() => { addCamera(); handleJumpToSetup(); }}
                       onRemoveCamera={removeCamera} onCsvUpload={handleRegistryCsvUpload} onExportCsv={exportRegistryCsv}
-                      gapReport={gapReport} auditTrail={auditTrail}
+                      onLoadDemoGrid={loadDemoGrid} gapReport={gapReport} auditTrail={auditTrail}
                     />
                   )}
                   {activeTab === 'settings' && (

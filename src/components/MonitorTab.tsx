@@ -411,13 +411,29 @@ export default function MonitorTab({
 
         {/* Shown regardless of grid/focus view — previously focus-only, which meant
             Gemini's summary and live counts were invisible to anyone using the grid
-            (the view every reported screenshot has actually been in). */}
-        <div className="card p-7 flex flex-wrap items-center justify-between gap-6">
-          <div className="flex flex-col gap-1 max-w-xl">
-            <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">Ongoing context — {activeCamera.name}</h3>
-            <p className="text-base text-ink">
-              {logs[0]?.summary || 'No active summary. Activate guard to begin analysis.'}
-            </p>
+            (the view every reported screenshot has actually been in). Lists every
+            camera currently selected for analysis (not just the active one) —
+            picking logs[0], the single most-recent log across ALL cameras, used to
+            show whichever camera's cycle happened to finish last under a header
+            naming a different camera entirely once more than one was selected. */}
+        <div className="card p-7 flex flex-col gap-5">
+          <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">
+            Ongoing context{analysisCameraIds.size > 1 ? ` — ${analysisCameraIds.size} cameras` : ` — ${activeCamera.name}`}
+          </h3>
+          <div className="flex flex-col gap-4">
+            {cameras.filter(cam => analysisCameraIds.has(cam.id)).map(cam => {
+              const latest = logs.find(l => l.cameraId === cam.id);
+              return (
+                <div key={cam.id} className="flex flex-col gap-1 max-w-xl">
+                  {analysisCameraIds.size > 1 && (
+                    <span className="text-[10px] font-bold text-ink-muted uppercase tracking-wide">{cam.name}</span>
+                  )}
+                  <p className="text-base text-ink">
+                    {latest?.summary || 'No active summary. Activate guard to begin analysis.'}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         </div>
 

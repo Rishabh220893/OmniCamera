@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Search, Upload, Download, Plus, Trash2, MapPin, Building2, ShieldAlert,
-  AlertTriangle, Clock3, History, ChevronRight, Wrench
+  AlertTriangle, Clock3, History, ChevronRight, Wrench, LayoutGrid
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig, RoutePoint, RegistryAuditEntry } from '../types';
@@ -21,6 +21,7 @@ interface RegistryTabProps {
   onRemoveCamera: (id: string) => void;
   onCsvUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onExportCsv: () => void;
+  onLoadDemoGrid: () => void;
   gapReport: GapAnalysisReport;
   auditTrail: RegistryAuditEntry[];
 }
@@ -34,7 +35,7 @@ const MAINTENANCE_BADGE: Record<string, string> = {
 
 export default function RegistryTab({
   cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute,
-  isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, gapReport, auditTrail
+  isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, onLoadDemoGrid, gapReport, auditTrail
 }: RegistryTabProps) {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('all');
@@ -69,12 +70,17 @@ export default function RegistryTab({
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {isAdmin && (
-            <div className="relative">
-              <input type="file" id="registry-csv-upload" className="hidden" accept=".csv" onChange={onCsvUpload} />
-              <label htmlFor="registry-csv-upload" className="btn-secondary !py-2 text-xs cursor-pointer">
-                <Upload className="w-3.5 h-3.5" strokeWidth={1.75} /> Bulk import CSV
-              </label>
-            </div>
+            <>
+              <button onClick={onLoadDemoGrid} className="btn-secondary !py-2 text-xs" title="Add every camera from the Corp8 demo grid that isn't already registered">
+                <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> Load demo grid
+              </button>
+              <div className="relative">
+                <input type="file" id="registry-csv-upload" className="hidden" accept=".csv" onChange={onCsvUpload} />
+                <label htmlFor="registry-csv-upload" className="btn-secondary !py-2 text-xs cursor-pointer">
+                  <Upload className="w-3.5 h-3.5" strokeWidth={1.75} /> Bulk import CSV
+                </label>
+              </div>
+            </>
           )}
           <button onClick={onExportCsv} className="btn-secondary !py-2 text-xs"><Download className="w-3.5 h-3.5" strokeWidth={1.75} /> Export CSV</button>
           <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add node</button>
