@@ -478,6 +478,88 @@ async function startServer() {
     }
   });
 
+  // WHEP (WebRTC) signaling proxy — the grid's raw origin (bypassing
+  // Cloudflare/corp8.cloud entirely) runs MediaMTX and serves each camera at
+  // http://103.250.160.189:8889/stream/<camId>/whep. Confirmed directly: an
+  // RTSP client hitting 103.250.160.189:8554 loaded a camera in ~5s while
+  // the same camera through the Cloudflare-fronted HLS path was taking
+  // 20-45s even for a 16-byte key file — a fixed per-request penalty
+  // Cloudflare applies regardless of resource size, which no User-Agent
+  // change can fix since its bot scoring weighs TLS fingerprint/IP
+  // reputation far more than headers. WHEP is the same bypass, but
+  // browser-playable (native RTCPeerConnection, no ffmpeg needed).
+  //
+  // This proxy only relays the SDP signaling handshake, not media: the
+  // actual audio/video flows directly between the browser and the origin
+  // over WebRTC (ICE/DTLS/SRTP), which isn't subject to mixed-content
+  // blocking. The signaling POST/DELETE themselves ARE plain http:// and
+  // WOULD be blocked as mixed content if the browser called them directly
+  // from our https:// page — hence proxying just that exchange server-side.
+  const WHEP_ORIGIN = 'http://103.250.160.189:8889';
+  const CAM_ID_RE = /^cam\d{1,3}$/;
+
+  app.post('/api/whep-proxy', express.text({ type: 'application/sdp', limit: '256kb' }), async (req, res) => {
+    const camId = req.query.camId as string;
+    if (!camId || !CAM_ID_RE.test(camId)) {
+      res.status(400).send("Parameter 'camId' must look like camNN");
+      return;
+    }
+    if (typeof req.body !== 'string' || !req.body.trim()) {
+      res.status(400).send('Request body must be an SDP offer (Content-Type: application/sdp)');
+      return;
+    }
+    try {
+      const upstream = await fetchUpstream(`${WHEP_ORIGIN}/stream/${camId}/whep`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sdp' },
+        body: req.body,
+      }, { timeoutMs: 15_000, retries: 0 });
+
+      const answer = await upstream.text();
+      if (!upstream.ok) {
+        console.error(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status}. Body: ${answer.slice(0, 300)}`);
+        res.status(upstream.status).send(answer);
+        return;
+      }
+
+      // MediaMTX answers with a Location header identifying this session's
+      // resource (for later PATCH/DELETE) — usually a path relative to this
+      // same origin. Resolve it to an absolute URL now so the client doesn't
+      // need to know the upstream host, and hand it back as an opaque token
+      // it can round-trip to the DELETE route below for cleanup.
+      const location = upstream.headers.get('location');
+      const resourceUrl = location ? new URL(location, WHEP_ORIGIN).toString() : null;
+      if (resourceUrl) res.setHeader('X-Whep-Resource', encodeURIComponent(resourceUrl));
+      res.setHeader('Content-Type', 'application/sdp');
+      res.status(201).send(answer);
+    } catch (err: unknown) {
+      console.error('[WHEP PROXY] Error negotiating session:', err);
+      res.status(502).send(err instanceof Error ? err.message : 'Error negotiating WHEP session');
+    }
+  });
+
+  app.delete('/api/whep-proxy', async (req, res) => {
+    const resourceParam = req.query.resource as string;
+    if (!resourceParam) { res.status(204).end(); return; }
+    try {
+      const resourceUrl = new URL(decodeURIComponent(resourceParam));
+      // Only ever forward this to the known camera grid origin — the token
+      // round-trips through the client, so this guards against it being
+      // tampered with into an SSRF vector against an arbitrary host.
+      if (resourceUrl.origin !== WHEP_ORIGIN) {
+        res.status(400).send('Invalid resource');
+        return;
+      }
+      await fetchUpstream(resourceUrl.toString(), { method: 'DELETE' }, { timeoutMs: 8_000, retries: 0 });
+    } catch (err) {
+      // Best-effort cleanup — the origin will also time out an abandoned
+      // session on its own once ICE disconnects, so a failure here isn't
+      // fatal to anything.
+      console.error('[WHEP PROXY] Session cleanup failed (non-fatal):', err);
+    }
+    res.status(204).end();
+  });
+
   // The grid's own integrator guide: "Start from the catalogue rather than
   // hard-coding endpoints... camera ids and the set of available cameras
   // can change; the catalogue is the contract, the URL pattern is not."

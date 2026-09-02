@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, useCallback, MutableRefObject } from 'reac
 import Hls from 'hls.js';
 import { AlertTriangle, RefreshCw, Video, Info } from 'lucide-react';
 import { CameraConfig, CameraMediaRefs } from '../types';
-import { detectStreamType, unsupportedReason } from '../lib/streamAdapters';
+import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/streamAdapters';
+import { startWhep } from '../lib/whepClient';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -57,9 +58,30 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
 
+  // WHEP (WebRTC) is tried first for cameras on the demo grid — it bypasses
+  // Cloudflare's connection-level throttling on the HLS path entirely (see
+  // deriveWhepCamId). If it can't establish a real connection after a couple
+  // of tries, this permanently drops to the existing HLS path for the rest
+  // of this mount rather than retrying a route that isn't working — e.g. a
+  // network that blocks outbound WebRTC/UDP.
+  const [playbackMode, setPlaybackMode] = useState<'whep' | 'hls'>('whep');
+  const whepRetryDelayRef = useRef(BASE_RETRY_DELAY_MS);
+  const whepRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const whepFailCountRef = useRef(0);
+  const [whepRetryGeneration, setWhepRetryGeneration] = useState(0);
+
   const isSimulated = !!camera.useSimulatedFeed;
   const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
   const streamType = isRemote ? detectStreamType(camera.remoteStreamUrl) : null;
+  const whepCamId = isRemote && streamType === 'hls' ? deriveWhepCamId(camera.remoteStreamUrl) : null;
+
+  // A fresh camera (or one whose URL changed) always gets a clean shot at
+  // WHEP again — a previous camera's fallback-to-HLS shouldn't carry over.
+  useEffect(() => {
+    setPlaybackMode('whep');
+    whepRetryDelayRef.current = BASE_RETRY_DELAY_MS;
+    whepFailCountRef.current = 0;
+  }, [camera.id, camera.remoteStreamUrl]);
 
   useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
   // A simulated feed "connects" instantly — it's a local canvas animation,
@@ -126,12 +148,86 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     };
   }, [camera.id, camera.facingMode, isRemote, isSimulated, startCamera]);
 
+  // WHEP (WebRTC) playback — tried before HLS for any camera on the demo
+  // grid (see whepCamId). Falls back to the existing HLS path after a
+  // couple of failed attempts rather than retrying indefinitely.
+  const MAX_WHEP_ATTEMPTS_BEFORE_FALLBACK = 2;
+  useEffect(() => {
+    if (!isRemote || streamType !== 'hls' || !whepCamId || playbackMode !== 'whep') return;
+    const video = videoRef.current;
+    if (!video) return;
+    setRemoteError(null);
+    setStatus('connecting');
+    let cancelled = false;
+
+    const fallbackToHls = (message: string) => {
+      console.warn(`[WHEP] ${message} — falling back to HLS for ${camera.id}.`);
+      setPlaybackMode('hls');
+    };
+
+    const scheduleWhepRetry = (message: string) => {
+      if (cancelled) return;
+      setRemoteError(message);
+      setStatus('error');
+      whepFailCountRef.current += 1;
+      if (whepFailCountRef.current > MAX_WHEP_ATTEMPTS_BEFORE_FALLBACK) {
+        fallbackToHls(message);
+        return;
+      }
+      if (whepRetryTimerRef.current) return;
+      whepRetryTimerRef.current = setTimeout(() => {
+        whepRetryTimerRef.current = null;
+        whepRetryDelayRef.current = Math.min(MAX_RETRY_DELAY_MS, whepRetryDelayRef.current * 2);
+        setWhepRetryGeneration((g) => g + 1);
+      }, whepRetryDelayRef.current);
+    };
+
+    const connectTimeout = setTimeout(() => {
+      scheduleWhepRetry('Timed out waiting for a WebRTC connection.');
+    }, 12_000);
+
+    const handlePlaying = () => {
+      clearTimeout(connectTimeout);
+      whepFailCountRef.current = 0;
+      whepRetryDelayRef.current = BASE_RETRY_DELAY_MS;
+      setStatus('live');
+    };
+    video.addEventListener('playing', handlePlaying);
+
+    // Created synchronously (not awaited) so cleanup below can close() it
+    // immediately, before negotiation ever reaches setRemoteDescription —
+    // see the comment on startWhep for why that matters.
+    const session = startWhep(whepCamId, video, (state) => {
+      if (cancelled) return;
+      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+        clearTimeout(connectTimeout);
+        scheduleWhepRetry(`WebRTC connection ${state}.`);
+      }
+    });
+    session.ready.catch((err: unknown) => {
+      if (cancelled) return;
+      clearTimeout(connectTimeout);
+      scheduleWhepRetry(err instanceof Error ? err.message : 'WHEP connection failed.');
+    });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(connectTimeout);
+      if (whepRetryTimerRef.current) { clearTimeout(whepRetryTimerRef.current); whepRetryTimerRef.current = null; }
+      video.removeEventListener('playing', handlePlaying);
+      session.close();
+    };
+  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id]);
+
   // HLS playback — browsers don't decode .m3u8 natively (except Safari),
   // so this feeds the same <video> element via MediaSource Extensions.
   // Frame capture (App.tsx captureAndAnalyze) draws from that same element,
-  // so nothing else needs to know HLS is involved.
+  // so nothing else needs to know HLS is involved. Runs when this camera has
+  // no WHEP path at all, or WHEP repeatedly failed and playbackMode fell
+  // back to 'hls'.
   useEffect(() => {
     if (!isRemote || streamType !== 'hls') return;
+    if (whepCamId && playbackMode !== 'hls') return;
     const video = videoRef.current;
     if (!video) return;
     setRemoteError(null);
@@ -288,7 +384,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
-  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration, whepCamId, playbackMode]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.

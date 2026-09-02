@@ -60,6 +60,28 @@ export function unsupportedReason(url: string): string {
   return 'This stream format is not supported for direct playback.';
 }
 
+/**
+ * The demo grid's HLS path (cctv.corp8.cloud, fronted by Cloudflare) is
+ * throttled at the connection level — even a 16-byte key file takes 20-45s,
+ * which rules out bandwidth and points to Cloudflare's bot mitigation, which
+ * a spoofed User-Agent can't beat (it scores TLS fingerprint/IP reputation
+ * more heavily). The same cameras are also served as WHEP (WebRTC) straight
+ * off the raw origin (confirmed directly against the grid's MediaMTX
+ * instance at 103.250.160.189, via /api/whep-proxy), bypassing Cloudflare
+ * entirely. Only recognizes this specific grid's URL shape — any other
+ * camera's HLS URL still plays through the HLS path unchanged.
+ */
+export function deriveWhepCamId(hlsUrl: string): string | null {
+  try {
+    const parsed = new URL(hlsUrl);
+    if (!/(^|\.)corp8\.cloud$/i.test(parsed.hostname)) return null;
+    const match = parsed.pathname.match(/\/(cam\d{1,3})\/index\.m3u8$/i);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Best-effort snapshot endpoint for a go2rtc-style iframe player URL. */
 export function buildSnapshotUrl(remoteStreamUrl: string): string | null {
   try {
