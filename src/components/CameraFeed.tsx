@@ -175,7 +175,11 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // (expected with many cameras streaming at once) into unnecessary
   // reconnect churn, which only added more load and made it worse. Give it
   // a grace window to recover on its own before treating it as a failure.
-  const DISCONNECTED_GRACE_MS = 5_000;
+  // A production HAR showed working cameras reconnecting every 10-70s even
+  // after this was first added — a full WHEP renegotiation is much more
+  // disruptive to watch than a few extra seconds of staying on a connection
+  // that's about to recover on its own, so this errs generous.
+  const DISCONNECTED_GRACE_MS = 10_000;
   useEffect(() => {
     if (!isRemote || streamType !== 'hls' || !whepCamId || playbackMode !== 'whep' || !shouldConnect) return;
     const video = videoRef.current;
@@ -251,7 +255,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
             setStatus('live');
           } else if (everConfirmedLive) {
             staleCycles += 1;
-            if (staleCycles >= 4) { // ~6s with no visible change after having been genuinely live
+            if (staleCycles >= 7) { // ~10.5s with no visible change after having been genuinely live
               if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
               scheduleWhepRetry('Stream stalled — no new frames arriving.');
             }
@@ -295,7 +299,19 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     session.ready.catch((err: unknown) => {
       if (cancelled) return;
       clearTimeout(connectTimeout);
-      scheduleWhepRetry(err instanceof Error ? err.message : 'WHEP connection failed.');
+      const message = err instanceof Error ? err.message : 'WHEP connection failed.';
+      // A HAR capture showed a fixed subset of cameras always getting
+      // rejected with HTTP 400 and "codecs not supported by client" -
+      // MediaMTX telling us that camera's source codec has no match in our
+      // WebRTC offer (likely a codec outside VP8/VP9/H264/AV1 entirely, not
+      // something retrying can ever fix). Retrying 6 times anyway before
+      // falling back just made those specific cameras' first picture show
+      // up over a minute later than necessary — skip straight to HLS.
+      if (/WHEP negotiation failed \(400\)/.test(message)) {
+        fallbackToHls(message);
+        return;
+      }
+      scheduleWhepRetry(message);
     });
 
     return () => {
