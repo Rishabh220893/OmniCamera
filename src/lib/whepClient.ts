@@ -23,6 +23,36 @@ export interface WhepSession {
 
 const ICE_GATHERING_TIMEOUT_MS = 4_000;
 
+// All 30 demo-grid cameras auto-connect on load now (see MonitorTab) — 30
+// RTCPeerConnections all starting negotiation in the same tick is a
+// thundering herd against both our own /api/whep-proxy and the origin's
+// MediaMTX, and was observed causing widespread negotiation timeouts and
+// retry storms. Capping how many negotiate at once and queuing the rest
+// smooths that into a ramp instead of a spike; a queued connection still
+// negotiates within a few seconds since each slot is held only for the
+// signaling exchange, not the connection's lifetime.
+const MAX_CONCURRENT_NEGOTIATIONS = 6;
+let activeNegotiationSlots = 0;
+const negotiationQueue: Array<() => void> = [];
+
+function acquireNegotiationSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const grant = () => {
+      activeNegotiationSlots++;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        activeNegotiationSlots--;
+        const next = negotiationQueue.shift();
+        if (next) next();
+      });
+    };
+    if (activeNegotiationSlots < MAX_CONCURRENT_NEGOTIATIONS) grant();
+    else negotiationQueue.push(grant);
+  });
+}
+
 /**
  * The RTCPeerConnection is created synchronously (not inside the async
  * negotiate() below) so a caller can close() it immediately on cleanup,
@@ -68,45 +98,51 @@ export function startWhep(
   };
 
   const negotiate = async () => {
-    const offer = await pc.createOffer();
-    if (closed) return;
-    await pc.setLocalDescription(offer);
+    const releaseSlot = await acquireNegotiationSlot();
+    try {
+      if (closed) return;
+      const offer = await pc.createOffer();
+      if (closed) return;
+      await pc.setLocalDescription(offer);
 
-    if (pc.iceGatheringState !== 'complete') {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, ICE_GATHERING_TIMEOUT_MS);
-        pc.onicegatheringstatechange = () => {
-          if (pc.iceGatheringState === 'complete') {
-            clearTimeout(timer);
-            pc.onicegatheringstatechange = null;
-            resolve();
-          }
-        };
+      if (pc.iceGatheringState !== 'complete') {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, ICE_GATHERING_TIMEOUT_MS);
+          pc.onicegatheringstatechange = () => {
+            if (pc.iceGatheringState === 'complete') {
+              clearTimeout(timer);
+              pc.onicegatheringstatechange = null;
+              resolve();
+            }
+          };
+        });
+      }
+      if (closed) return;
+
+      const finalOffer = pc.localDescription;
+      if (!finalOffer?.sdp) throw new Error('Failed to build a local SDP offer');
+
+      const res = await fetch(`/api/whep-proxy?camId=${encodeURIComponent(camId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/sdp' },
+        body: finalOffer.sdp,
+        signal: abortController.signal,
       });
+
+      const answerSdp = await res.text();
+      if (closed) return;
+      if (!res.ok) {
+        throw new Error(`WHEP negotiation failed (${res.status}): ${answerSdp.slice(0, 200)}`);
+      }
+
+      const resourceHeader = res.headers.get('x-whep-resource');
+      resourceUrl = resourceHeader ? decodeURIComponent(resourceHeader) : null;
+      if (closed) return;
+
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    } finally {
+      releaseSlot();
     }
-    if (closed) return;
-
-    const finalOffer = pc.localDescription;
-    if (!finalOffer?.sdp) throw new Error('Failed to build a local SDP offer');
-
-    const res = await fetch(`/api/whep-proxy?camId=${encodeURIComponent(camId)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/sdp' },
-      body: finalOffer.sdp,
-      signal: abortController.signal,
-    });
-
-    const answerSdp = await res.text();
-    if (closed) return;
-    if (!res.ok) {
-      throw new Error(`WHEP negotiation failed (${res.status}): ${answerSdp.slice(0, 200)}`);
-    }
-
-    const resourceHeader = res.headers.get('x-whep-resource');
-    resourceUrl = resourceHeader ? decodeURIComponent(resourceHeader) : null;
-    if (closed) return;
-
-    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
   };
 
   const ready = negotiate().catch((err) => {

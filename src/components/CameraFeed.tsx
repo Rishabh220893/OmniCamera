@@ -27,6 +27,13 @@ interface CameraFeedProps {
    *  either playing video or nothing — a blank tile during a slow upstream
    *  connection otherwise reads as broken rather than working. */
   onStatusChange?: (status: FeedStatus) => void;
+  /** Gates remote (WHEP/HLS) playback — false means "don't connect yet".
+   *  Used to only decode cameras actually scrolled into view (see
+   *  MonitorTab's useInViewport usage); decoding all 30 grid cameras at
+   *  once saturates the browser regardless of how healthy each individual
+   *  connection is. Ignored for simulated/local-webcam/iframe/image feeds,
+   *  which don't carry that cost. Defaults to true so this is opt-in. */
+  shouldConnect?: boolean;
 }
 
 type SimEntity = {
@@ -45,7 +52,7 @@ const SIM_SEED: SimEntity[] = [
 const BASE_RETRY_DELAY_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 30_000;
 
-export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange }: CameraFeedProps) {
+export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange, shouldConnect = true }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -149,16 +156,35 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   }, [camera.id, camera.facingMode, isRemote, isSimulated, startCamera]);
 
   // WHEP (WebRTC) playback — tried before HLS for any camera on the demo
-  // grid (see whepCamId). Falls back to the existing HLS path after a
-  // couple of failed attempts rather than retrying indefinitely.
-  const MAX_WHEP_ATTEMPTS_BEFORE_FALLBACK = 2;
+  // grid (see whepCamId). Falls back to the existing HLS path only after
+  // several failed attempts, not a couple — HLS is the strictly slower,
+  // Cloudflare-throttled path this whole thing exists to avoid, so bailing
+  // to it too eagerly during a transient rough patch (e.g. all 30 cameras
+  // connecting at once) trades a recoverable WHEP hiccup for the old
+  // unreliable path permanently for that camera's mount lifetime.
+  const MAX_WHEP_ATTEMPTS_BEFORE_FALLBACK = 6;
+  // A queued negotiation (see whepClient's concurrency limiter) can wait
+  // several seconds behind other cameras before it even starts when all 30
+  // connect at once — the connect timeout has to comfortably outlast that
+  // queueing delay, not just the negotiation itself.
+  const WHEP_CONNECT_TIMEOUT_MS = 30_000;
+  // WebRTC's 'disconnected' state is commonly a brief, self-recovering
+  // blip (a missed STUN check under momentary load), not a real failure —
+  // only 'failed' means ICE has actually given up. Tearing the connection
+  // down immediately on 'disconnected' was turning transient congestion
+  // (expected with many cameras streaming at once) into unnecessary
+  // reconnect churn, which only added more load and made it worse. Give it
+  // a grace window to recover on its own before treating it as a failure.
+  const DISCONNECTED_GRACE_MS = 5_000;
   useEffect(() => {
-    if (!isRemote || streamType !== 'hls' || !whepCamId || playbackMode !== 'whep') return;
+    if (!isRemote || streamType !== 'hls' || !whepCamId || playbackMode !== 'whep' || !shouldConnect) return;
     const video = videoRef.current;
     if (!video) return;
     setRemoteError(null);
     setStatus('connecting');
     let cancelled = false;
+    let disconnectedGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    let verifyTimer: ReturnType<typeof setInterval> | null = null;
 
     const fallbackToHls = (message: string) => {
       console.warn(`[WHEP] ${message} — falling back to HLS for ${camera.id}.`);
@@ -175,22 +201,70 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         return;
       }
       if (whepRetryTimerRef.current) return;
+      // Jittered so 30 cameras that all failed around the same moment
+      // (e.g. a shared burst of congestion) don't all retry in lockstep
+      // and immediately recreate the exact same thundering herd.
+      const jitter = 0.75 + Math.random() * 0.5;
       whepRetryTimerRef.current = setTimeout(() => {
         whepRetryTimerRef.current = null;
         whepRetryDelayRef.current = Math.min(MAX_RETRY_DELAY_MS, whepRetryDelayRef.current * 2);
         setWhepRetryGeneration((g) => g + 1);
-      }, whepRetryDelayRef.current);
+      }, whepRetryDelayRef.current * jitter);
     };
 
     const connectTimeout = setTimeout(() => {
       scheduleWhepRetry('Timed out waiting for a WebRTC connection.');
-    }, 12_000);
+    }, WHEP_CONNECT_TIMEOUT_MS);
+
+    const clearDisconnectedGrace = () => {
+      if (disconnectedGraceTimer) { clearTimeout(disconnectedGraceTimer); disconnectedGraceTimer = null; }
+    };
+
+    // pc.connectionState can stay 'connected' while the picture itself is
+    // frozen or black — e.g. decode falling behind under the load of many
+    // simultaneous streams. ICE/DTLS being healthy says nothing about
+    // whether real, changing frames are actually reaching the screen, which
+    // is the same class of gap the HLS path below already guards against.
+    // Without this, a decode-starved tile would sit on a dead frame forever
+    // since nothing here would ever call it out as failed.
+    const startFrameVerification = () => {
+      if (verifyTimer || cancelled) return;
+      const canvas = document.createElement('canvas');
+      canvas.width = 16; canvas.height = 16;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) { setStatus('live'); return; }
+      let lastSample: Uint8ClampedArray | null = null;
+      let staleCycles = 0;
+      let everConfirmedLive = false;
+      verifyTimer = setInterval(() => {
+        let current: Uint8ClampedArray | null = null;
+        try {
+          ctx.drawImage(video, 0, 0, 16, 16);
+          current = ctx.getImageData(0, 0, 16, 16).data;
+        } catch { /* video not ready for this sample yet */ }
+        if (current && lastSample) {
+          let diff = 0;
+          for (let i = 0; i < current.length; i += 4) diff += Math.abs(current[i] - lastSample[i]);
+          if (diff > 40) {
+            staleCycles = 0;
+            if (!everConfirmedLive) { everConfirmedLive = true; whepFailCountRef.current = 0; whepRetryDelayRef.current = BASE_RETRY_DELAY_MS; }
+            setStatus('live');
+          } else if (everConfirmedLive) {
+            staleCycles += 1;
+            if (staleCycles >= 4) { // ~6s with no visible change after having been genuinely live
+              if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+              scheduleWhepRetry('Stream stalled — no new frames arriving.');
+            }
+          }
+        }
+        if (current) lastSample = current;
+      }, 1500);
+    };
 
     const handlePlaying = () => {
       clearTimeout(connectTimeout);
-      whepFailCountRef.current = 0;
-      whepRetryDelayRef.current = BASE_RETRY_DELAY_MS;
-      setStatus('live');
+      clearDisconnectedGrace();
+      startFrameVerification();
     };
     video.addEventListener('playing', handlePlaying);
 
@@ -199,9 +273,23 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // see the comment on startWhep for why that matters.
     const session = startWhep(whepCamId, video, (state) => {
       if (cancelled) return;
-      if (state === 'failed' || state === 'disconnected' || state === 'closed') {
+      if (state === 'connected') {
+        clearDisconnectedGrace();
+        return;
+      }
+      if (state === 'failed' || state === 'closed') {
         clearTimeout(connectTimeout);
+        clearDisconnectedGrace();
         scheduleWhepRetry(`WebRTC connection ${state}.`);
+        return;
+      }
+      if (state === 'disconnected' && !disconnectedGraceTimer) {
+        disconnectedGraceTimer = setTimeout(() => {
+          disconnectedGraceTimer = null;
+          if (cancelled) return;
+          clearTimeout(connectTimeout);
+          scheduleWhepRetry('WebRTC connection disconnected.');
+        }, DISCONNECTED_GRACE_MS);
       }
     });
     session.ready.catch((err: unknown) => {
@@ -213,11 +301,13 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     return () => {
       cancelled = true;
       clearTimeout(connectTimeout);
+      clearDisconnectedGrace();
+      if (verifyTimer) clearInterval(verifyTimer);
       if (whepRetryTimerRef.current) { clearTimeout(whepRetryTimerRef.current); whepRetryTimerRef.current = null; }
       video.removeEventListener('playing', handlePlaying);
       session.close();
     };
-  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id]);
+  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect]);
 
   // HLS playback — browsers don't decode .m3u8 natively (except Safari),
   // so this feeds the same <video> element via MediaSource Extensions.
@@ -226,7 +316,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // no WHEP path at all, or WHEP repeatedly failed and playbackMode fell
   // back to 'hls'.
   useEffect(() => {
-    if (!isRemote || streamType !== 'hls') return;
+    if (!isRemote || streamType !== 'hls' || !shouldConnect) return;
     if (whepCamId && playbackMode !== 'hls') return;
     const video = videoRef.current;
     if (!video) return;
@@ -384,7 +474,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
-  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration, whepCamId, playbackMode]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration, whepCamId, playbackMode, shouldConnect]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.

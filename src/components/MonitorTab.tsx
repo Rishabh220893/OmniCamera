@@ -1,10 +1,11 @@
-import { MutableRefObject, useMemo, useState } from 'react';
+import { MutableRefObject, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Play
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
+import { useInViewport } from '../lib/useInViewport';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
@@ -56,6 +57,24 @@ function CameraTile({
   // own, so without this the tile would sit on "error" forever.
   const [retryToken, setRetryToken] = useState(0);
 
+  // Decoding all 30 grid cameras' live video at once was observed
+  // saturating the browser badly enough that tiles which HAD connected
+  // successfully would lose frames and drop — a hard client-side decode
+  // ceiling, not a networking problem. Only a tile actually scrolled into
+  // view (plus a margin, so it's ready just before it's visible) connects;
+  // this replaces the old manual "click to load" — nothing needs a click,
+  // it just activates automatically as the camera comes into view, and
+  // disconnects again once genuinely scrolled away (useInViewport debounces
+  // that exit so a tile sitting at the boundary doesn't thrash) — keeping
+  // the total simultaneous decode load bounded to roughly what's on screen
+  // instead of growing to all 30 the moment someone scrolls through the
+  // whole grid once. The active camera and anything selected for analysis
+  // always connect regardless of scroll position: analysis reads live
+  // frames off cameras that may not currently be visible on screen.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inViewport = useInViewport(containerRef);
+  const shouldConnect = isActive || isSelectedForAnalysis || inViewport;
+
   const feed = (
     <CameraFeed
       key={retryToken}
@@ -63,6 +82,7 @@ function CameraTile({
       isFocused={layout === 'focus'}
       isCapturing={isCapturing}
       reportRefs={isSelectedForAnalysis}
+      shouldConnect={shouldConnect}
       mediaRefs={mediaRefs}
       onCameraError={onCameraError}
       onFallbackToSimulated={onFallbackToSimulated}
@@ -73,7 +93,7 @@ function CameraTile({
 
   if (layout === 'focus') {
     return (
-      <div className={cn('absolute inset-0', hidden && 'hidden')}>
+      <div ref={containerRef} className={cn('absolute inset-0', hidden && 'hidden')}>
         {feed}
         {cameraError && (
           <div className="absolute inset-0 z-50 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center">
@@ -138,6 +158,7 @@ function CameraTile({
     // browsers silently "fix" by restructuring the DOM, breaking clicks in
     // unpredictable ways. role/tabIndex/onKeyDown keep it keyboard-operable.
     <div
+      ref={containerRef}
       role="button"
       tabIndex={0}
       onClick={onSelect}
@@ -146,7 +167,12 @@ function CameraTile({
     >
       {feed}
 
-      {status === 'connecting' && (
+      {status === 'connecting' && !shouldConnect && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
+          <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Scroll into view to connect</span>
+        </div>
+      )}
+      {status === 'connecting' && shouldConnect && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted animate-pulse">
           <Loader2 className="w-5 h-5 text-ink-muted animate-spin" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Connecting…</span>
@@ -185,41 +211,6 @@ function CameraTile({
         )}
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
-        <span className="text-[10px] font-bold text-white uppercase tracking-wide">{camera.name}</span>
-      </div>
-    </div>
-  );
-}
-
-interface PlaceholderTileProps {
-  camera: CameraConfig;
-  isActive: boolean;
-  onSelect: () => void;
-  onRequestLoad: () => void;
-}
-
-// Shown in grid view for a camera nobody has asked to connect yet — zero
-// network activity until the viewer explicitly loads it.
-function PlaceholderTile({ camera, isActive, onSelect, onRequestLoad }: PlaceholderTileProps) {
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onSelect}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
-      className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left cursor-pointer', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
-    >
-      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
-        <button
-          onClick={(e) => { e.stopPropagation(); onRequestLoad(); }}
-          className="w-9 h-9 rounded-full bg-black/40 flex items-center justify-center text-white hover:bg-black/55"
-          title="Load this feed"
-        >
-          <Play className="w-4 h-4 ml-0.5" strokeWidth={1.75} />
-        </button>
-        <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Click to load</span>
-      </div>
       <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
         <span className="text-[10px] font-bold text-white uppercase tracking-wide">{camera.name}</span>
       </div>
@@ -284,22 +275,6 @@ export default function MonitorTab({
     return items.sort((a, b) => (a.log.isWatchlistMatch === b.log.isWatchlistMatch ? 0 : a.log.isWatchlistMatch ? -1 : 1));
   }, [logs]);
 
-  // Grid view used to mount every camera's HLS player at once — fine for a
-  // handful, but a capture with 8 simultaneous connections showed literally
-  // every single one time out against this grid's shared origin. Auto-
-  // filling slots up to a cap still showed the same failures, so this is
-  // fully manual: only the focused camera and anything explicitly checked
-  // for analysis connect automatically — every other tile is opt-in via
-  // "click to load". connectedIds is used for BOTH view modes now (not
-  // just grid) — see the CameraTile comment for why.
-  const [manuallyLoadedIds, setManuallyLoadedIds] = useState<Set<string>>(new Set());
-  const requestLoad = (id: string) => setManuallyLoadedIds(prev => new Set(prev).add(id));
-  const connectedIds = useMemo(() => {
-    const ids = new Set(analysisCameraIds); // already always includes activeCameraId
-    for (const id of manuallyLoadedIds) ids.add(id);
-    return ids;
-  }, [analysisCameraIds, manuallyLoadedIds]);
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
@@ -361,17 +336,7 @@ export default function MonitorTab({
                 : 'hidden'
           )}
         >
-          {viewMode === 'grid' && filteredCameras.filter(cam => !connectedIds.has(cam.id)).map(cam => (
-            <PlaceholderTile
-              key={cam.id}
-              camera={cam}
-              isActive={cam.id === activeCameraId}
-              onSelect={() => onSelectCamera(cam.id)}
-              onRequestLoad={() => requestLoad(cam.id)}
-            />
-          ))}
-
-          {cameras.filter(cam => connectedIds.has(cam.id) && (viewMode === 'grid' ? filteredCameras.includes(cam) : true)).map(cam => (
+          {cameras.filter(cam => viewMode === 'grid' ? filteredCameras.includes(cam) : true).map(cam => (
             <CameraTile
               key={cam.id}
               camera={cam}
