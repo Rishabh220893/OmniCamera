@@ -524,11 +524,34 @@ export default function App() {
     setChatMessages(prev => [...prev, { role: 'user', text: userMsg }]);
     setIsChatSending(true);
     try {
+      // Grab a fresh frame from every camera currently under AI analysis
+      // (always includes the focused camera — see analysisCameraIds) so the
+      // chatbot can answer questions about what's literally visible right
+      // now — object counts, scenery, anything not covered by the fixed
+      // people/vehicle/brand schema the periodic summaries are built from —
+      // instead of being limited to those stored summaries. Capped at 4 and
+      // run with allSettled so a camera that isn't currently decodable just
+      // gets skipped rather than blocking the question.
+      const candidateCameras = Array.from(analysisCameraIds)
+        .map(id => cameras.find(c => c.id === id))
+        .filter((c): c is CameraConfig => !!c)
+        .slice(0, 4);
+      const frameResults = await Promise.allSettled(
+        candidateCameras.map(async (camera) => ({
+          cameraName: camera.name,
+          imageBase64: await captureFrameBase64(camera),
+        }))
+      );
+      const frames = frameResults
+        .filter((r): r is PromiseFulfilledResult<{ cameraName: string; imageBase64: string }> => r.status === 'fulfilled')
+        .map(r => r.value);
+
       const response = await fetch('/api/gemini/chat', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: userMsg, history: chatMessages.slice(-15),
-          cameraLogs: logs.slice(0, 20).map(l => ({ cameraName: l.cameraName, summary: l.summary, timestamp: l.timestamp, counts: l.counts }))
+          cameraLogs: logs.slice(0, 20).map(l => ({ cameraName: l.cameraName, summary: l.summary, timestamp: l.timestamp, counts: l.counts })),
+          frames
         })
       });
       if (!response.ok) throw new Error('Failed to receive response from OmniSee AI.');
@@ -602,30 +625,19 @@ export default function App() {
   const handleFallbackToSimulated = useCallback(() => updateActiveCamera({ useSimulatedFeed: true, useRemoteFeed: false }), [updateActiveCamera]);
 
   // ---------- Frame capture + analysis ----------
-  // Parameterized by camera (rather than closing over a single activeCamera)
-  // so multiple cameras — the focused one plus any grid-view checkboxes —
-  // can run their own capture/analysis cycles concurrently.
-  const captureAndAnalyzeCamera = useCallback(async (camera: CameraConfig) => {
-    if (inFlightAnalysisRef.current.has(camera.id)) return;
+  // Grabs one still frame from whatever this camera is currently rendering
+  // (simulated canvas, WHEP/HLS video element, plain image, or an iframe via
+  // the snapshot proxy) as a base64 JPEG. Shared by the periodic analysis
+  // loop below and the chatbot (see handleSendChat) — anywhere that needs
+  // "what does this camera see right now" rather than a stored summary.
+  const captureFrameBase64 = useCallback(async (camera: CameraConfig): Promise<string> => {
     const refs = mediaRefs.current.get(camera.id);
-    if (!refs) return; // this camera's feed hasn't reported its DOM refs yet
+    if (!refs) throw new Error(`"${camera.name}" isn't live right now.`);
 
     const isSimulated = !!camera.useSimulatedFeed;
     const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
     const streamType = isRemote ? detectStreamType(camera.remoteStreamUrl) : null;
 
-    inFlightAnalysisRef.current.add(camera.id);
-    setAnalyzingCameraIds(prev => new Set(prev).add(camera.id));
-    setAnalysisErrors(prev => { if (!prev.has(camera.id)) return prev; const next = new Map(prev); next.delete(camera.id); return next; });
-
-    const finish = () => {
-      inFlightAnalysisRef.current.delete(camera.id);
-      setAnalyzingCameraIds(prev => { if (!prev.has(camera.id)) return prev; const next = new Set(prev); next.delete(camera.id); return next; });
-    };
-
-    // A private scratch canvas per call — never attached to the DOM. Reusing
-    // one shared canvas (the old design) would race when two cameras' cycles
-    // overlap, since drawImage/toDataURL on a shared element isn't atomic.
     const canvas = document.createElement('canvas');
     const MAX_DIMENSION = 1024;
     let width = 640, height = 360;
@@ -642,46 +654,66 @@ export default function App() {
     }
     canvas.width = width; canvas.height = height;
     const ctx = canvas.getContext('2d');
-    if (!ctx) { finish(); return; }
+    if (!ctx) throw new Error('Canvas unavailable.');
+
+    if (isSimulated) {
+      if (!refs.canvas) throw new Error('Simulated feed is not ready yet.');
+      ctx.drawImage(refs.canvas, 0, 0, width, height);
+    } else if (isRemote) {
+      if ((streamType === 'video' || streamType === 'hls') && refs.video) ctx.drawImage(refs.video, 0, 0, width, height);
+      else if (streamType === 'image' && refs.img) ctx.drawImage(refs.img, 0, 0, width, height);
+      else if (streamType === 'unsupported') {
+        throw new Error('RTSP/WHEP URLs cannot be analyzed directly in the browser. Use this camera\'s HLS URL instead.');
+      }
+      else if (streamType === 'iframe') {
+        const snapshotImgUrl = buildSnapshotUrl(camera.remoteStreamUrl);
+        if (!snapshotImgUrl) throw new Error('Failed to parse iframe URL for snapshot extraction.');
+        const proxiedUrl = `/api/proxy-frame?url=${encodeURIComponent(snapshotImgUrl)}`;
+        const res = await fetch(proxiedUrl);
+        if (!res.ok) throw new Error((await res.text()) || `Proxy response status: ${res.status}`);
+        const blob = await res.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        try {
+          const tempImg = new Image();
+          await new Promise((resolve, reject) => {
+            tempImg.onload = resolve;
+            tempImg.onerror = () => reject(new Error('Unable to parse the retrieved frame data as an image.'));
+            setTimeout(() => reject(new Error('Image render timeout')), 5000);
+            tempImg.src = objectUrl;
+          });
+          ctx.drawImage(tempImg, 0, 0, width, height);
+        } finally { URL.revokeObjectURL(objectUrl); }
+      } else {
+        throw new Error('Embedded stream player URLs require active snapshot endpoints to analyze frame content.');
+      }
+    } else {
+      if (!refs.video) throw new Error('Camera feed is not ready yet.');
+      ctx.drawImage(refs.video, 0, 0, width, height);
+    }
+
+    const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+    if (!base64Image) throw new Error('Failed to capture frame.');
+    return base64Image;
+  }, []);
+
+  // Parameterized by camera (rather than closing over a single activeCamera)
+  // so multiple cameras — the focused one plus any grid-view checkboxes —
+  // can run their own capture/analysis cycles concurrently.
+  const captureAndAnalyzeCamera = useCallback(async (camera: CameraConfig) => {
+    if (inFlightAnalysisRef.current.has(camera.id)) return;
+    if (!mediaRefs.current.get(camera.id)) return; // this camera's feed hasn't reported its DOM refs yet
+
+    inFlightAnalysisRef.current.add(camera.id);
+    setAnalyzingCameraIds(prev => new Set(prev).add(camera.id));
+    setAnalysisErrors(prev => { if (!prev.has(camera.id)) return prev; const next = new Map(prev); next.delete(camera.id); return next; });
+
+    const finish = () => {
+      inFlightAnalysisRef.current.delete(camera.id);
+      setAnalyzingCameraIds(prev => { if (!prev.has(camera.id)) return prev; const next = new Set(prev); next.delete(camera.id); return next; });
+    };
 
     try {
-      if (isSimulated) {
-        if (!refs.canvas) throw new Error('Simulated feed is not ready yet.');
-        ctx.drawImage(refs.canvas, 0, 0, width, height);
-      } else if (isRemote) {
-        if ((streamType === 'video' || streamType === 'hls') && refs.video) ctx.drawImage(refs.video, 0, 0, width, height);
-        else if (streamType === 'image' && refs.img) ctx.drawImage(refs.img, 0, 0, width, height);
-        else if (streamType === 'unsupported') {
-          throw new Error('RTSP/WHEP URLs cannot be analyzed directly in the browser. Use this camera\'s HLS URL instead.');
-        }
-        else if (streamType === 'iframe') {
-          const snapshotImgUrl = buildSnapshotUrl(camera.remoteStreamUrl);
-          if (!snapshotImgUrl) throw new Error('Failed to parse iframe URL for snapshot extraction.');
-          const proxiedUrl = `/api/proxy-frame?url=${encodeURIComponent(snapshotImgUrl)}`;
-          const res = await fetch(proxiedUrl);
-          if (!res.ok) throw new Error((await res.text()) || `Proxy response status: ${res.status}`);
-          const blob = await res.blob();
-          const objectUrl = URL.createObjectURL(blob);
-          try {
-            const tempImg = new Image();
-            await new Promise((resolve, reject) => {
-              tempImg.onload = resolve;
-              tempImg.onerror = () => reject(new Error('Unable to parse the retrieved frame data as an image.'));
-              setTimeout(() => reject(new Error('Image render timeout')), 5000);
-              tempImg.src = objectUrl;
-            });
-            ctx.drawImage(tempImg, 0, 0, width, height);
-          } finally { URL.revokeObjectURL(objectUrl); }
-        } else {
-          throw new Error('Embedded stream player URLs require active snapshot endpoints to analyze frame content.');
-        }
-      } else {
-        if (!refs.video) throw new Error('Camera feed is not ready yet.');
-        ctx.drawImage(refs.video, 0, 0, width, height);
-      }
-
-      const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-      if (!base64Image) { finish(); return; }
+      const base64Image = await captureFrameBase64(camera);
 
       const analyzeResponse = await fetch('/api/gemini/analyze-frame', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -750,7 +782,7 @@ export default function App() {
       console.error(`Frame analysis failed for "${camera.name}":`, err);
       setAnalysisErrors(prev => new Map(prev).set(camera.id, err instanceof Error ? err.message : String(err)));
     } finally { finish(); }
-  }, [knownFaces, watchlist, user]);
+  }, [knownFaces, watchlist, user, captureFrameBase64]);
 
   // One shared 1s tick checks every selected camera's own interval setting
   // rather than juggling a separate setInterval per camera — simpler, and

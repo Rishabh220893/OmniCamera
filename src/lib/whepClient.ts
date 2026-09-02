@@ -23,15 +23,29 @@ export interface WhepSession {
 
 const ICE_GATHERING_TIMEOUT_MS = 4_000;
 
-// All 30 demo-grid cameras auto-connect on load now (see MonitorTab) — 30
-// RTCPeerConnections all starting negotiation in the same tick is a
-// thundering herd against both our own /api/whep-proxy and the origin's
-// MediaMTX, and was observed causing widespread negotiation timeouts and
-// retry storms. Capping how many negotiate at once and queuing the rest
-// smooths that into a ramp instead of a spike; a queued connection still
-// negotiates within a few seconds since each slot is held only for the
-// signaling exchange, not the connection's lifetime.
-const MAX_CONCURRENT_NEGOTIATIONS = 6;
+// All cameras on a grid page auto-connect on mount (see MonitorTab) — every
+// RTCPeerConnection starting negotiation in the same tick is a thundering
+// herd against both our own /api/whep-proxy and the origin's MediaMTX, and
+// was observed causing widespread negotiation timeouts and retry storms.
+// Capping how many negotiate at once and queuing the rest smooths that into
+// a ramp instead of a spike; a queued connection still negotiates within a
+// few seconds since each slot is held only for the signaling exchange, not
+// the connection's lifetime.
+//
+// That original tuning (6) predates snapshot mode, when every grid tile
+// held a live decode session open — 6 concurrent sustained WebRTC decodes
+// was already a meaningful bandwidth/CPU commitment. Now most tiles only
+// ever hold a slot for a brief connect-capture-disconnect cycle (see
+// captureWhepSnapshot) that releases it the moment signaling completes, well
+// before any media flows — so the real constraint this queue should be
+// sized against is "how many simultaneous SDP offer/answer exchanges can be
+// in flight," not "how many decodes can this browser tab sustain." With a
+// full 24-50 tile page now the common case (see MonitorTab/RegistryTab
+// pagination), a cap of 6 means most of a page's tiles just sit queued
+// through their first several refresh cycles — read as "not rendering" even
+// though nothing is actually failing. Raised well above the live-decode-era
+// value to match that shift.
+const MAX_CONCURRENT_NEGOTIATIONS = 16;
 // A hard ceiling on how long any one negotiation is allowed to hold a slot,
 // independent of whatever that negotiation is actually doing. Closing an
 // RTCPeerConnection mid-operation (e.g. captureWhepSnapshot's timeout

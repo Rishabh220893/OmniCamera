@@ -4,6 +4,7 @@ import { AlertTriangle, RefreshCw, Video, Info } from 'lucide-react';
 import { CameraConfig, CameraMediaRefs } from '../types';
 import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/streamAdapters';
 import { startWhep, captureWhepSnapshot } from '../lib/whepClient';
+import { captureHlsSnapshot } from '../lib/hlsSnapshot';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -175,6 +176,11 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // indefinitely, so this scales to however many tiles are in the current
   // page/viewport regardless of total registry size.
   const SNAPSHOT_REFRESH_MS = 20_000;
+  // Same throttled Cloudflare-fronted origin the live-video HLS fallback
+  // uses (see fallbackToHls below) — its manifests/segments routinely take
+  // 20-45s, so a snapshot cycle over it is refreshed far less often than
+  // the WHEP path to avoid stacking up overlapping slow requests.
+  const HLS_SNAPSHOT_REFRESH_MS = 90_000;
   useEffect(() => {
     if (liveVideo || !isRemote || streamType !== 'hls' || !whepCamId || !shouldConnect) return;
     let cancelled = false;
@@ -199,8 +205,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       setStatus((s) => (s === 'live' ? s : 'connecting'));
       const abortController = new AbortController();
       currentAbortController = abortController;
+      // Set only when switching transport mid-cycle, so the effect's own
+      // re-run (triggered by the playbackMode dependency below) is what
+      // schedules the next attempt — not this stale closure's delay.
+      let switchingToHls = false;
       try {
-        const url = await captureWhepSnapshot(whepCamId, { signal: abortController.signal });
+        const url = playbackMode === 'hls'
+          ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, signal: abortController.signal })
+          : await captureWhepSnapshot(whepCamId, { signal: abortController.signal });
         if (cancelled) return;
         hasSnapshot = true;
         setSnapshotUrl(url);
@@ -208,13 +220,27 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         setRemoteError(null);
       } catch (err) {
         if (cancelled) return;
-        // A stale-but-present image beats hiding it behind an error state
-        // over one missed refresh cycle — only surface an error once we've
-        // never managed to get a picture at all.
-        if (!hasSnapshot) setStatus('error');
-        setRemoteError(err instanceof Error ? err.message : 'Snapshot unavailable.');
+        const message = err instanceof Error ? err.message : 'Snapshot unavailable.';
+        // Same permanent-rejection signature the live-video path uses to
+        // give up on WHEP for this camera (see fallbackToHls below) — that
+        // camera's source codec has no match in our WebRTC offer, so every
+        // future WHEP attempt would fail the exact same way. Switch this
+        // tile's snapshot loop to HLS instead of retrying WHEP forever.
+        if (playbackMode === 'whep' && /WHEP negotiation failed \(400\)/.test(message)) {
+          switchingToHls = true;
+          setPlaybackMode('hls');
+        } else {
+          // A stale-but-present image beats hiding it behind an error state
+          // over one missed refresh cycle — only surface an error once
+          // we've never managed to get a picture at all.
+          if (!hasSnapshot) setStatus('error');
+          setRemoteError(message);
+        }
       } finally {
-        if (!cancelled) timer = setTimeout(captureLoop, SNAPSHOT_REFRESH_MS);
+        if (!cancelled && !switchingToHls) {
+          const delay = playbackMode === 'hls' ? HLS_SNAPSHOT_REFRESH_MS : SNAPSHOT_REFRESH_MS;
+          timer = setTimeout(captureLoop, delay);
+        }
       }
     };
     captureLoop();
@@ -224,7 +250,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       if (timer) clearTimeout(timer);
       currentAbortController?.abort();
     };
-  }, [liveVideo, isRemote, streamType, whepCamId, shouldConnect]);
+  }, [liveVideo, isRemote, streamType, whepCamId, shouldConnect, playbackMode, camera.remoteStreamUrl, streamAccessPassword]);
 
   // WHEP (WebRTC) playback — tried before HLS for any camera on the demo
   // grid (see whepCamId). Falls back to the existing HLS path only after

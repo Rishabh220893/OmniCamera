@@ -830,15 +830,13 @@ async function startServer() {
   });
 
   app.post('/api/gemini/chat', async (req, res) => {
-    const { prompt, history, cameraLogs } = req.body;
+    const { prompt, history, cameraLogs, frames } = req.body;
     if (!prompt) {
       res.status(400).json({ error: "Parameter 'prompt' is required" });
       return;
     }
 
     try {
-      console.log(`[GEMINI CHATBOT] Query: "${prompt}"`);
-      
       interface CameraLog {
         cameraName?: string;
         summary?: string;
@@ -855,14 +853,26 @@ async function startServer() {
         text?: string;
       }
 
+      interface ChatFrame {
+        cameraName?: string;
+        imageBase64?: string;
+      }
+
       interface ContentPart {
-        text: string;
+        text?: string;
+        inlineData?: { mimeType: string; data: string };
       }
 
       interface ContentItem {
         role: 'user' | 'model';
         parts: ContentPart[];
       }
+
+      const framesList = (Array.isArray(frames) ? (frames as ChatFrame[]) : [])
+        .filter((f): f is ChatFrame & { imageBase64: string } => !!f?.imageBase64)
+        .slice(0, 4);
+
+      console.log(`[GEMINI CHATBOT] Query: "${prompt}" (${framesList.length} live frame(s) attached)`);
 
       let contextLogsText = "No recent camera logs/summaries or observations available yet.";
       if (cameraLogs && Array.isArray(cameraLogs) && cameraLogs.length > 0) {
@@ -879,12 +889,15 @@ You have access to the latest security surveillance summaries and detection logs
 === RECENT SURVEILLANCE LOGS ===
 ${contextLogsText}
 ================================
-
+${framesList.length > 0 ? `
+Live camera frame image(s) captured just now are attached to the user's latest message, one per camera, each preceded by a text label naming its camera. These are the actual current pixels of that camera's feed — use them directly to answer anything about what is literally visible right now (object counts, scenery, colors, text, anything not covered by the logs above), not just what the stored summaries happen to mention. The logs above only ever record people/vehicle/brand counts and security-relevant events, so a literal visual question (e.g. "how many trees are visible") will never be answered by them — look at the attached image instead.
+` : ''}
 Analyze this context to answer user queries:
 - If asked about identified people, check the logs for their names (like "Jane", "John").
 - If asked about vehicles, counting traffic, or specific times, analyze and calculate from public log timestamps.
 - If they ask about anomalies, check logs that indicate unusual activity.
-- If asked about something not present anywhere in the logs, inform them kindly and offer general safety/operational tips.
+- If asked about literal visual content of a scene and a live frame is attached, describe/count directly from that image.
+- If asked about something not present anywhere in the logs or attached frames, inform them kindly and offer general safety/operational tips.
 - Maintain a helpful, vigilant, and highly knowledgeable security assistant persona. Be concise but descriptive.`;
 
       // Format history + prompt into contents
@@ -897,12 +910,23 @@ Analyze this context to answer user queries:
           });
         });
       }
-      contentsList.push({
-        role: 'user',
-        parts: [{ text: prompt }]
-      });
 
-      const response = await generateContentWithFallback(CHAT_MODELS, {
+      const userParts: ContentPart[] = [];
+      for (const frame of framesList) {
+        userParts.push({ text: `Camera: "${frame.cameraName ?? 'Unknown'}"` });
+        userParts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: frame.imageBase64.includes(',') ? frame.imageBase64.split(',')[1] : frame.imageBase64,
+          },
+        });
+      }
+      userParts.push({ text: prompt });
+      contentsList.push({ role: 'user', parts: userParts });
+
+      // Vision-capable models only when frames are attached — the plain
+      // chat models can't accept inlineData parts at all.
+      const response = await generateContentWithFallback(framesList.length > 0 ? VISION_MODELS : CHAT_MODELS, {
         contents: contentsList,
         config: {
           systemInstruction,
