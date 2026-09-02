@@ -17,14 +17,21 @@ import { RefObject, useEffect, useState } from 'react';
  * pixel), and tearing a connection down and rebuilding it on every flip was
  * observed causing a tight connect/disconnect loop that never actually got
  * a camera live. Becoming visible is reported immediately; becoming hidden
- * only takes effect after it's stayed hidden for `leaveDebounceMs` —
- * enough to absorb boundary jitter while still freeing decode capacity for
- * a tile genuinely scrolled far away.
+ * only takes effect after it's stayed hidden for `leaveDebounceMs`.
+ *
+ * That debounce needs to comfortably outlast ordinary scrolling, not just
+ * render jitter — a viewer scrolling down to check another camera and
+ * back up within a few seconds is normal browsing, not "gone", and a
+ * production report confirmed a short debounce was tearing down tiles the
+ * viewer considered already-loaded on completely ordinary scrolling.
+ * Generous here costs little: it only delays reclaiming decode capacity
+ * for a tile actually abandoned, it never delays reconnecting one that's
+ * visible.
  */
 export function useInViewport<T extends Element>(
   ref: RefObject<T>,
   rootMargin = '150px',
-  leaveDebounceMs = 3_000,
+  leaveDebounceMs = 30_000,
 ): boolean {
   const [rawInViewport, setRawInViewport] = useState(false);
   const [debouncedInViewport, setDebouncedInViewport] = useState(false);

@@ -73,6 +73,34 @@ function createDefaultCamera(id: string, name: string): CameraConfig {
   return { id, ...defaultCameraFields(name) };
 }
 
+/**
+ * Collapses cameras that point at the same remote stream URL down to one.
+ * bulkImportCameras already guards new imports against creating these, but
+ * that check only ever ran against whatever was in local state at click
+ * time — a "Load demo grid" click fired again before the first batch's
+ * Firestore writes had round-tripped back through onSnapshot (or a second
+ * CSV import of the same grid in an earlier session, before that guard
+ * existed) leaves genuine duplicate documents on record. Loading N
+ * duplicate records for one physical camera doesn't just look wrong in the
+ * registry — each one independently opens its own WHEP connection, so a
+ * doubled registry silently doubles every camera's real network and decode
+ * load. Applied wherever a camera list is loaded wholesale from an
+ * external source (Firestore, localStorage), not on every render — set
+ * membership is by remoteStreamUrl only for actual remote feeds, so
+ * multiple simulated/local placeholder cameras (no URL to compare) are
+ * left alone.
+ */
+function dedupeCamerasByStreamUrl(cams: CameraConfig[]): CameraConfig[] {
+  const seenUrls = new Set<string>();
+  return cams.filter(c => {
+    const url = c.useRemoteFeed ? c.remoteStreamUrl.trim().toLowerCase() : '';
+    if (!url) return true;
+    if (seenUrls.has(url)) return false;
+    seenUrls.add(url);
+    return true;
+  });
+}
+
 const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   criticalAlerts: true, systemStatus: true, quietHoursEnabled: false, quietHoursStart: '22:00', quietHoursEnd: '07:00'
 };
@@ -245,7 +273,7 @@ export default function App() {
           const localCams = localStorage.getItem(`user-${firebaseUser.uid}-cameras`);
           if (localCams) {
             try {
-              const parsed = JSON.parse(localCams);
+              const parsed = dedupeCamerasByStreamUrl(JSON.parse(localCams));
               if (Array.isArray(parsed) && parsed.length > 0) {
                 setCameras(parsed);
                 if (!parsed.find((c: CameraConfig) => c.id === activeCameraId)) setActiveCameraId(parsed[0].id);
@@ -353,8 +381,9 @@ export default function App() {
         });
       });
       if (cams.length > 0) {
-        setCameras(cams);
-        if (!cams.find(c => c.id === activeCameraId)) setActiveCameraId(cams[0].id);
+        const deduped = dedupeCamerasByStreamUrl(cams);
+        setCameras(deduped);
+        if (!deduped.find(c => c.id === activeCameraId)) setActiveCameraId(deduped[0].id);
       } else if (!hasSeededCameraRef.current) {
         // Covers both brand-new accounts and any existing account whose
         // users/{uid} doc predates the registry migration and therefore
@@ -412,7 +441,7 @@ export default function App() {
     const guestCams = localStorage.getItem('demo-guest-cameras');
     if (guestCams) {
       try {
-        const parsed = JSON.parse(guestCams);
+        const parsed = dedupeCamerasByStreamUrl(JSON.parse(guestCams));
         if (Array.isArray(parsed) && parsed.length > 0) { setCameras(parsed); setActiveCameraId(parsed[0].id); }
       } catch (e) { console.error(e); }
     }
