@@ -43,6 +43,7 @@ export default function RegistryTab({
   const [typeFilter, setTypeFilter] = useState('all');
   const [showReport, setShowReport] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
+  const [page, setPage] = useState(0);
 
   const departments = useMemo(() => Array.from(new Set(cameras.map(c => c.department).filter(Boolean))) as string[], [cameras]);
   const types = useMemo(() => Array.from(new Set(cameras.map(c => c.cameraType).filter(Boolean))) as string[], [cameras]);
@@ -57,6 +58,18 @@ export default function RegistryTab({
       return true;
     });
   }, [cameras, search, departmentFilter, statusFilter, typeFilter]);
+
+  // A table rendering every row of an 80,000-camera registry is its own
+  // kind of hiccup, independent of anything video-related — search/filter
+  // narrows the set, this bounds how much of it hits the DOM at once.
+  const PAGE_SIZE = 50;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const clampedPage = Math.min(page, totalPages - 1);
+  const pagedFiltered = useMemo(
+    () => filtered.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE),
+    [filtered, clampedPage]
+  );
+  const resetToFirstPage = () => setPage(0);
 
   return (
     <motion.div
@@ -91,20 +104,20 @@ export default function RegistryTab({
       <div className="card p-4 flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[180px]">
           <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, department, ownership..." className="input !pl-10 !py-2.5 text-sm" />
+          <input value={search} onChange={e => { setSearch(e.target.value); resetToFirstPage(); }} placeholder="Search name, department, ownership..." className="input !pl-10 !py-2.5 text-sm" />
         </div>
-        <select value={departmentFilter} onChange={e => setDepartmentFilter(e.target.value)} className="input !py-2.5 !w-auto text-sm">
+        <select value={departmentFilter} onChange={e => { setDepartmentFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !w-auto text-sm">
           <option value="all">All departments</option>
           {departments.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="input !py-2.5 !w-auto text-sm">
+        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !w-auto text-sm">
           <option value="all">All statuses</option>
           <option value="online">Online</option>
           <option value="offline">Offline</option>
           <option value="degraded">Degraded</option>
           <option value="unknown">Unknown</option>
         </select>
-        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="input !py-2.5 !w-auto text-sm">
+        <select value={typeFilter} onChange={e => { setTypeFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !w-auto text-sm">
           <option value="all">All types</option>
           {types.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
@@ -137,7 +150,7 @@ export default function RegistryTab({
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {filtered.map(c => (
+              {pagedFiltered.map(c => (
                 <tr key={c.id} className={cn('hover:bg-surface-muted transition-colors', c.id === activeCameraId && 'bg-accent-soft')}>
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2">
@@ -167,6 +180,30 @@ export default function RegistryTab({
             </tbody>
           </table>
         </div>
+        {filtered.length > PAGE_SIZE && (
+          <div className="px-6 py-4 border-t border-border flex items-center justify-between text-xs">
+            <span className="text-ink-muted">
+              Showing {clampedPage * PAGE_SIZE + 1}–{Math.min((clampedPage + 1) * PAGE_SIZE, filtered.length)} of {filtered.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage(Math.max(0, clampedPage - 1))}
+                disabled={clampedPage === 0}
+                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <span className="text-ink-muted font-medium">Page {clampedPage + 1} of {totalPages}</span>
+              <button
+                onClick={() => setPage(Math.min(totalPages - 1, clampedPage + 1))}
+                disabled={clampedPage >= totalPages - 1}
+                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Gap analysis */}

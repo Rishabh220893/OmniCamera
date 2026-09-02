@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import { AlertTriangle, RefreshCw, Video, Info } from 'lucide-react';
 import { CameraConfig, CameraMediaRefs } from '../types';
 import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/streamAdapters';
-import { startWhep } from '../lib/whepClient';
+import { startWhep, captureWhepSnapshot } from '../lib/whepClient';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -34,6 +34,15 @@ interface CameraFeedProps {
    *  connection is. Ignored for simulated/local-webcam/iframe/image feeds,
    *  which don't carry that cost. Defaults to true so this is opt-in. */
   shouldConnect?: boolean;
+  /** false = show a periodically-refreshed still image instead of a live
+   *  decode, for cameras on the demo grid (WHEP-capable). A registry that
+   *  scales to tens of thousands of cameras can never have more than a
+   *  handful genuinely live-decoding in one browser tab at once — that's a
+   *  hardware ceiling, not a tuning problem — so most grid tiles run in
+   *  this mode; only the focused camera and anything selected for
+   *  analysis need `liveVideo`. Ignored for simulated/local/image/iframe
+   *  feeds, which are already cheap. Defaults to true so this is opt-in. */
+  liveVideo?: boolean;
 }
 
 type SimEntity = {
@@ -52,7 +61,7 @@ const SIM_SEED: SimEntity[] = [
 const BASE_RETRY_DELAY_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 30_000;
 
-export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange, shouldConnect = true }: CameraFeedProps) {
+export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange, shouldConnect = true, liveVideo = true }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -61,6 +70,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const [localError, setLocalError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [status, setStatus] = useState<FeedStatus>('connecting');
+  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null);
   const retryDelayRef = useRef(BASE_RETRY_DELAY_MS);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -88,6 +98,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     setPlaybackMode('whep');
     whepRetryDelayRef.current = BASE_RETRY_DELAY_MS;
     whepFailCountRef.current = 0;
+    setSnapshotUrl(null);
   }, [camera.id, camera.remoteStreamUrl]);
 
   useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
@@ -155,6 +166,66 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     };
   }, [camera.id, camera.facingMode, isRemote, isSimulated, startCamera]);
 
+  // Snapshot mode — the scalable path for a grid tile that isn't the
+  // focused camera or an analysis target (see the `liveVideo` prop doc).
+  // Instead of holding a live decode open, this repeatedly does a brief
+  // connect-capture-disconnect cycle via WHEP and shows the result as a
+  // plain image, refreshed on an interval. Each cycle only occupies a
+  // signaling slot for a couple of seconds rather than a decode session
+  // indefinitely, so this scales to however many tiles are in the current
+  // page/viewport regardless of total registry size.
+  const SNAPSHOT_REFRESH_MS = 20_000;
+  useEffect(() => {
+    if (liveVideo || !isRemote || streamType !== 'hls' || !whepCamId || !shouldConnect) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // A ref, not the snapshotUrl state itself, so a failed refresh can tell
+    // "never got one" from "have a slightly stale one" without needing
+    // snapshotUrl in this effect's own dependencies — that would restart
+    // the whole capture loop (a fresh connect-capture cycle) on every
+    // single successful capture, which defeats the point of it.
+    let hasSnapshot = false;
+    // Lets cleanup actually stop an in-flight capture (see the AbortSignal
+    // doc on captureWhepSnapshot) rather than just ignoring its result —
+    // otherwise a scrolled-away tile, or React StrictMode's dev-only
+    // double-invoke, leaves a real WHEP negotiation running to completion
+    // for a capture nothing is waiting on anymore. Reassigned per attempt
+    // (an AbortController is one-shot) — cleanup always aborts whichever
+    // one is currently in flight via this binding.
+    let currentAbortController: AbortController | null = null;
+
+    const captureLoop = async () => {
+      if (cancelled) return;
+      setStatus((s) => (s === 'live' ? s : 'connecting'));
+      const abortController = new AbortController();
+      currentAbortController = abortController;
+      try {
+        const url = await captureWhepSnapshot(whepCamId, { signal: abortController.signal });
+        if (cancelled) return;
+        hasSnapshot = true;
+        setSnapshotUrl(url);
+        setStatus('live');
+        setRemoteError(null);
+      } catch (err) {
+        if (cancelled) return;
+        // A stale-but-present image beats hiding it behind an error state
+        // over one missed refresh cycle — only surface an error once we've
+        // never managed to get a picture at all.
+        if (!hasSnapshot) setStatus('error');
+        setRemoteError(err instanceof Error ? err.message : 'Snapshot unavailable.');
+      } finally {
+        if (!cancelled) timer = setTimeout(captureLoop, SNAPSHOT_REFRESH_MS);
+      }
+    };
+    captureLoop();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      currentAbortController?.abort();
+    };
+  }, [liveVideo, isRemote, streamType, whepCamId, shouldConnect]);
+
   // WHEP (WebRTC) playback — tried before HLS for any camera on the demo
   // grid (see whepCamId). Falls back to the existing HLS path only after
   // several failed attempts, not a couple — HLS is the strictly slower,
@@ -181,7 +252,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // that's about to recover on its own, so this errs generous.
   const DISCONNECTED_GRACE_MS = 10_000;
   useEffect(() => {
-    if (!isRemote || streamType !== 'hls' || !whepCamId || playbackMode !== 'whep' || !shouldConnect) return;
+    if (!isRemote || streamType !== 'hls' || !whepCamId || playbackMode !== 'whep' || !shouldConnect || !liveVideo) return;
     const video = videoRef.current;
     if (!video) return;
     setRemoteError(null);
@@ -323,7 +394,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', handlePlaying);
       session.close();
     };
-  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect]);
+  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect, liveVideo]);
 
   // HLS playback — browsers don't decode .m3u8 natively (except Safari),
   // so this feeds the same <video> element via MediaSource Extensions.
@@ -332,7 +403,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // no WHEP path at all, or WHEP repeatedly failed and playbackMode fell
   // back to 'hls'.
   useEffect(() => {
-    if (!isRemote || streamType !== 'hls' || !shouldConnect) return;
+    if (!isRemote || streamType !== 'hls' || !shouldConnect || !liveVideo) return;
     if (whepCamId && playbackMode !== 'hls') return;
     const video = videoRef.current;
     if (!video) return;
@@ -490,7 +561,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
-  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration, whepCamId, playbackMode, shouldConnect]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration, whepCamId, playbackMode, shouldConnect, liveVideo]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.
@@ -611,6 +682,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           className="w-full h-full object-cover" alt={camera.name}
           onLoad={() => setStatus('live')} onError={() => setStatus('error')}
         />
+      );
+    }
+    // Snapshot mode (see `liveVideo`) — a plain refreshed still image
+    // instead of a live decode. CameraTile already renders its own
+    // connecting/error overlay from `status` for a non-focused tile, same
+    // as it does for every other feed type, so this only needs to show
+    // whatever the last successful capture was (or nothing yet).
+    if (streamType === 'hls' && !liveVideo) {
+      return snapshotUrl ? (
+        <img key={camera.id} src={snapshotUrl} className="w-full h-full object-cover" alt={camera.name} />
+      ) : (
+        <div className="absolute inset-0 bg-surface-muted" />
       );
     }
     if (remoteError && isFocused) {

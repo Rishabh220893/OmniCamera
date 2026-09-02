@@ -32,6 +32,17 @@ const ICE_GATHERING_TIMEOUT_MS = 4_000;
 // negotiates within a few seconds since each slot is held only for the
 // signaling exchange, not the connection's lifetime.
 const MAX_CONCURRENT_NEGOTIATIONS = 6;
+// A hard ceiling on how long any one negotiation is allowed to hold a slot,
+// independent of whatever that negotiation is actually doing. Closing an
+// RTCPeerConnection mid-operation (e.g. captureWhepSnapshot's timeout
+// firing while createOffer/setLocalDescription is still pending) isn't
+// guaranteed by every browser to promptly reject that pending call — if it
+// doesn't, negotiate()'s own `finally` never runs and the slot leaks
+// forever, permanently wedging the queue after MAX_CONCURRENT_NEGOTIATIONS
+// leaks (exactly what repeated snapshot capture cycles are prone to
+// triggering). releaseSlot is idempotent, so forcing it here is a safe
+// no-op on the normal path where the real completion already released it.
+const NEGOTIATION_SLOT_MAX_HOLD_MS = 20_000;
 let activeNegotiationSlots = 0;
 const negotiationQueue: Array<() => void> = [];
 
@@ -40,13 +51,15 @@ function acquireNegotiationSlot(): Promise<() => void> {
     const grant = () => {
       activeNegotiationSlots++;
       let released = false;
-      resolve(() => {
+      const release = () => {
         if (released) return;
         released = true;
         activeNegotiationSlots--;
         const next = negotiationQueue.shift();
         if (next) next();
-      });
+      };
+      setTimeout(release, NEGOTIATION_SLOT_MAX_HOLD_MS);
+      resolve(release);
     };
     if (activeNegotiationSlots < MAX_CONCURRENT_NEGOTIATIONS) grant();
     else negotiationQueue.push(grant);
@@ -152,4 +165,90 @@ export function startWhep(
   });
 
   return { pc, ready, close };
+}
+
+/**
+ * Grabs one still frame from a camera over WHEP and returns it as a JPEG
+ * data URL, then tears the connection down — used for grid thumbnails at
+ * scale (see CameraFeed's `liveVideo` prop) instead of keeping a live
+ * decode running per tile. A registry of 80,000 cameras can never have
+ * more than a handful genuinely live-decoding in a browser tab at once —
+ * that's a hardware ceiling, not a tuning problem — but it CAN have many
+ * thumbnails rotating through brief connect-capture-disconnect cycles,
+ * since each one only occupies a signaling/negotiation slot (see
+ * MAX_CONCURRENT_NEGOTIATIONS above) for a couple of seconds rather than
+ * holding a decode session open indefinitely.
+ *
+ * Takes an AbortSignal because, unlike startWhep, the RTCPeerConnection
+ * here is created inside this function rather than handed back to the
+ * caller — without a way to reach in and close it early, a caller that
+ * stops needing the result (an unmount, a camera switch, React Strict
+ * Mode's double-invoke in dev) can only ignore the eventual resolution,
+ * not stop the negotiation actually happening. That leaves a real
+ * WHEP session running to completion for no reason, burning a
+ * concurrency slot and origin resources a scrolled-away or unmounted
+ * tile has no more use for.
+ */
+export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<string> {
+  const { timeoutMs = 12_000, signal } = opts;
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
+
+    // A <video> that's never actually in the document doesn't reliably
+    // play in every engine — 'playing' can simply never fire, autoplay
+    // policies can differ for detached elements, and this was in fact
+    // silently starving every capture (every attempt hit the timeout
+    // fallback below, never a real frame). Kept in the render tree but
+    // fully invisible and out of layout flow.
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.autoplay = true;
+    video.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(video);
+    let settled = false;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const finish = (err?: Error, dataUrl?: string) => {
+      if (settled) return;
+      settled = true;
+      if (settleTimer) clearTimeout(settleTimer);
+      clearTimeout(overallTimeout);
+      signal?.removeEventListener('abort', onAbort);
+      session.close();
+      video.remove();
+      if (err) reject(err); else resolve(dataUrl!);
+    };
+
+    const onAbort = () => finish(new Error('Snapshot aborted'));
+    signal?.addEventListener('abort', onAbort);
+
+    const overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
+
+    const session = startWhep(camId, video, (state) => {
+      if (state === 'failed' || state === 'closed') finish(new Error(`WebRTC connection ${state}`));
+    });
+
+    // The integrator guide is explicit that a join can start on a
+    // corrupt/black decoder frame that self-corrects almost immediately —
+    // a brief settle after 'playing' fires (rather than capturing the
+    // instant a frame exists) keeps thumbnails from being a coin flip on
+    // catching that exact moment.
+    video.addEventListener('playing', () => {
+      settleTimer = setTimeout(() => {
+        if (!video.videoWidth) { finish(new Error('No frame available to capture')); return; }
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { finish(new Error('Canvas unavailable')); return; }
+        ctx.drawImage(video, 0, 0);
+        finish(undefined, canvas.toDataURL('image/jpeg', 0.6));
+      }, 900);
+    }, { once: true });
+
+    session.ready.catch((err: unknown) => {
+      finish(err instanceof Error ? err : new Error('WHEP negotiation failed'));
+    });
+  });
 }

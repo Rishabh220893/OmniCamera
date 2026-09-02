@@ -74,6 +74,14 @@ function CameraTile({
   const containerRef = useRef<HTMLDivElement>(null);
   const inViewport = useInViewport(containerRef);
   const shouldConnect = isActive || isSelectedForAnalysis || inViewport;
+  // Live (persistent) video is reserved for the camera actually being
+  // watched or analyzed — everything else runs as a rotating snapshot
+  // (see CameraFeed's `liveVideo` prop doc). That's the difference between
+  // a grid that scales to a handful of cameras and one that scales to
+  // however many are in the registry: a handful of live decodes is a
+  // constant cost regardless of total camera count, while N live decodes
+  // for N visible tiles is not.
+  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis;
 
   const feed = (
     <CameraFeed
@@ -83,6 +91,7 @@ function CameraTile({
       isCapturing={isCapturing}
       reportRefs={isSelectedForAnalysis}
       shouldConnect={shouldConnect}
+      liveVideo={liveVideo}
       mediaRefs={mediaRefs}
       onCameraError={onCameraError}
       onFallbackToSimulated={onFallbackToSimulated}
@@ -163,7 +172,11 @@ function CameraTile({
       tabIndex={0}
       onClick={onSelect}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
-      className={cn('relative aspect-video rounded-2xl overflow-hidden border text-left group cursor-pointer', isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border')}
+      className={cn(
+        'relative aspect-video rounded-2xl overflow-hidden border text-left group cursor-pointer',
+        isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border',
+        hidden && 'hidden'
+      )}
     >
       {feed}
 
@@ -267,6 +280,40 @@ export default function MonitorTab({
     return map;
   }, [logs]);
 
+  // A registry that scales to tens of thousands of cameras can't have every
+  // one of them mounted as a live React component at once either — that's
+  // a DOM/memory ceiling on top of the decode ceiling snapshot mode already
+  // addresses. Grid view only ever mounts one page's worth of tiles;
+  // switching pages mounts/unmounts freely, which is cheap for a snapshot
+  // tile (worst case it just starts a fresh capture cycle) in a way it
+  // never was for a live one. Search narrows the underlying set first, so
+  // "page 1 of 3,200" only ever happens for a genuinely broad browse, not
+  // for someone who already knows which camera they want.
+  const GRID_PAGE_SIZE = 24;
+  const [gridPage, setGridPage] = useState(0);
+  const totalGridPages = Math.max(1, Math.ceil(filteredCameras.length / GRID_PAGE_SIZE));
+  const clampedGridPage = Math.min(gridPage, totalGridPages - 1);
+  const pagedCameras = useMemo(
+    () => filteredCameras.slice(clampedGridPage * GRID_PAGE_SIZE, (clampedGridPage + 1) * GRID_PAGE_SIZE),
+    [filteredCameras, clampedGridPage]
+  );
+  const handleGridFilterChange = (value: string) => { setGridFilter(value); setGridPage(0); };
+
+  // What actually gets a CameraTile mounted: the current grid page (or just
+  // the active camera in focus view — the rest of the registry has no
+  // reason to be in the DOM until it's paged into view), plus every camera
+  // selected for analysis even if it's off-page or a different view mode is
+  // active — analysis reads live frames through mediaRefs, which only
+  // exist while a camera's tile is actually mounted.
+  const pagedIds = useMemo(() => new Set(pagedCameras.map(c => c.id)), [pagedCameras]);
+  const mountedCameras = useMemo(() => {
+    if (viewMode === 'focus') {
+      return cameras.filter(c => analysisCameraIds.has(c.id)); // already always includes activeCameraId
+    }
+    const offPageAnalysisTargets = cameras.filter(c => analysisCameraIds.has(c.id) && !pagedIds.has(c.id));
+    return [...pagedCameras, ...offPageAnalysisTargets];
+  }, [viewMode, cameras, analysisCameraIds, pagedCameras, pagedIds]);
+
   // Watchlist hits float to the top regardless of age — a rare, severe event
   // shouldn't scroll off-screen under a run of routine suspicious-activity
   // alerts. Within each tier, newest first (logs already arrive that way).
@@ -282,8 +329,12 @@ export default function MonitorTab({
     >
       <div className="xl:col-span-3 space-y-6">
         <div className="flex items-center justify-between gap-3 flex-wrap">
+          {/* A mobile quick-switch strip, not the primary way to find a
+              camera at scale — Registry's search is. Capped so a registry
+              of thousands doesn't render thousands of pill buttons here
+              too; anything beyond the cap is still reachable via search. */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar lg:hidden">
-            {cameras.map(cam => (
+            {cameras.slice(0, 50).map(cam => (
               <button
                 key={cam.id}
                 onClick={() => onSelectCamera(cam.id)}
@@ -299,7 +350,7 @@ export default function MonitorTab({
               <Search className="w-3.5 h-3.5 text-ink-muted absolute left-3 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
               <input
                 value={gridFilter}
-                onChange={(e) => setGridFilter(e.target.value)}
+                onChange={(e) => handleGridFilterChange(e.target.value)}
                 placeholder="Filter by camera name or location"
                 className="input !py-2 !pl-8 text-xs"
               />
@@ -319,13 +370,13 @@ export default function MonitorTab({
           <div className="card p-10 text-center text-xs text-ink-muted">No cameras match "{gridFilter}".</div>
         )}
 
-        {/* Always mounted regardless of view mode — a connected camera's
-            CameraTile (and the CameraFeed/hls.js connection inside it) must
-            keep the same React identity whichever way it's currently being
-            displayed, or switching views tears it down and restarts it. In
-            grid mode this is a normal CSS grid; in focus mode it becomes the
-            single large "focus box" (aspect-video, fullscreen-capable) with
-            only the active camera's tile visible. */}
+        {/* The active camera (and anything selected for analysis) keeps its
+            same CameraTile identity across view-mode switches and page
+            changes — see mountedCameras above — so a live connection is
+            never torn down just because the operator glanced at another
+            page. Everything else is only ever mounted for the current grid
+            page; in focus mode this is a single "focus box" showing just
+            the active camera, in grid mode a normal CSS grid of tiles. */}
         <div
           ref={containerRef}
           className={cn(
@@ -336,12 +387,12 @@ export default function MonitorTab({
                 : 'hidden'
           )}
         >
-          {cameras.filter(cam => viewMode === 'grid' ? filteredCameras.includes(cam) : true).map(cam => (
+          {mountedCameras.map(cam => (
             <CameraTile
               key={cam.id}
               camera={cam}
               layout={viewMode === 'grid' ? 'grid' : 'focus'}
-              hidden={viewMode === 'focus' && cam.id !== activeCameraId}
+              hidden={viewMode === 'focus' ? cam.id !== activeCameraId : !pagedIds.has(cam.id)}
               isActive={cam.id === activeCameraId}
               isSelectedForAnalysis={analysisCameraIds.has(cam.id)}
               isCapturing={isCapturing}
@@ -361,6 +412,31 @@ export default function MonitorTab({
             />
           ))}
         </div>
+
+        {viewMode === 'grid' && filteredCameras.length > GRID_PAGE_SIZE && (
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="text-ink-muted">
+              Showing {clampedGridPage * GRID_PAGE_SIZE + 1}–{Math.min((clampedGridPage + 1) * GRID_PAGE_SIZE, filteredCameras.length)} of {filteredCameras.length} cameras
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setGridPage(Math.max(0, clampedGridPage - 1))}
+                disabled={clampedGridPage === 0}
+                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Previous
+              </button>
+              <span className="text-ink-muted font-medium">Page {clampedGridPage + 1} of {totalGridPages}</span>
+              <button
+                onClick={() => setGridPage(Math.min(totalGridPages - 1, clampedGridPage + 1))}
+                disabled={clampedGridPage >= totalGridPages - 1}
+                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
 
         {analysisError && (
           <div className="card border-critical/30 p-6 space-y-2 text-xs">
@@ -412,7 +488,10 @@ export default function MonitorTab({
             <button onClick={onAddCamera} className="btn-ghost !p-1.5 border border-border !rounded-lg"><Settings2 className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
           </div>
           <div className="space-y-2">
-            {cameras.map(cam => (
+            {/* Same page as the grid, not the full registry — see
+                mountedCameras above for why an unbounded list here doesn't
+                scale either. */}
+            {pagedCameras.map(cam => (
               // A div, not <button> — it hosts a nested <label><input> for
               // the analysis checkbox, and interactive-in-interactive is
               // invalid HTML (see the matching note on CameraTile above).
