@@ -61,7 +61,7 @@ export const SETUP_GUIDES: SetupGuide[] = [
     steps: [
       { title: 'OBS Setup', content: 'Install OBS Studio on your desktop.' },
       { title: 'Virtual Cam', content: 'Start the "Virtual Camera" inside OBS after setting up your scene.' },
-      { title: 'Link to browser', content: 'This browser will detect the OBS Virtual Camera if you select "Local Feed" in node settings.' }
+      { title: 'Link to browser', content: 'This browser will detect the OBS Virtual Camera if you select "Local Feed" in camera settings.' }
     ]
   }
 ];

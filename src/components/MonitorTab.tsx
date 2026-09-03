@@ -2,7 +2,7 @@ import { MutableRefObject, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Sparkles
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { useInViewport } from '../lib/useInViewport';
@@ -204,18 +204,25 @@ function CameraTile({
         </div>
       )}
 
-      <label
-        onClick={(e) => e.stopPropagation()}
-        title="Include this camera in AI analysis"
-        className="absolute top-2.5 left-2.5 w-6 h-6 rounded-md bg-black/55 backdrop-blur-md flex items-center justify-center cursor-pointer"
+      {/* A labeled chip, not a bare checkbox — a plain checkbox icon in a
+          corner was only explained by a hover title, which never fires on
+          touch and is easy to miss even with a mouse. The "AI" label and
+          filled/translucent color difference make the toggle and its
+          current state legible without hovering anything. */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onToggleAnalysis(); }}
+        aria-pressed={isSelectedForAnalysis}
+        aria-label={isSelectedForAnalysis ? `Remove ${camera.name} from AI analysis` : `Include ${camera.name} in AI analysis`}
+        title={isSelectedForAnalysis ? 'Included in AI analysis' : 'Include in AI analysis'}
+        className={cn(
+          'absolute top-2.5 left-2.5 flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-full backdrop-blur-md transition-colors',
+          isSelectedForAnalysis ? 'bg-accent text-white' : 'bg-black/55 text-white/70 hover:text-white'
+        )}
       >
-        <input
-          type="checkbox"
-          checked={isSelectedForAnalysis}
-          onChange={onToggleAnalysis}
-          className="w-3.5 h-3.5 accent-accent cursor-pointer"
-        />
-      </label>
+        <Sparkles className="w-3 h-3 shrink-0" strokeWidth={2} />
+        <span className="text-[9px] font-bold uppercase tracking-wide leading-none">AI</span>
+      </button>
 
       <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
         {latestLog && <span className="text-sm leading-none drop-shadow" title={latestLog.sentiment || 'neutral'}>{sentimentEmoji(latestLog.sentiment)}</span>}
@@ -325,8 +332,14 @@ export default function MonitorTab({
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-      key="monitor" className="grid xl:grid-cols-4 gap-8"
+      key="monitor" className="space-y-6"
     >
+      <div className="space-y-1">
+        <h2 className="text-xl font-bold text-ink">Feed</h2>
+        <p className="text-sm text-ink-muted">Live camera monitoring and AI analysis.</p>
+      </div>
+
+      <div className="grid xl:grid-cols-4 gap-8">
       <div className="xl:col-span-3 space-y-6">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           {/* A mobile quick-switch strip, not the primary way to find a
@@ -465,13 +478,31 @@ export default function MonitorTab({
             {cameras.filter(cam => analysisCameraIds.has(cam.id)).map(cam => {
               const latest = logs.find(l => l.cameraId === cam.id);
               return (
-                <div key={cam.id} className="flex flex-col gap-1 max-w-xl">
+                <div key={cam.id} className="flex flex-col gap-1.5 max-w-xl">
                   {analysisCameraIds.size > 1 && (
                     <span className="text-[10px] font-bold text-ink-muted uppercase tracking-wide">{cam.name}</span>
                   )}
-                  <p className="text-base text-ink">
-                    {latest?.summary || 'No active summary. Activate guard to begin analysis.'}
-                  </p>
+                  {latest ? (
+                    <p className="text-base text-ink">{latest.summary}</p>
+                  ) : !isCapturing ? (
+                    <p className="text-base text-ink-muted italic">Activate guard to begin analysis.</p>
+                  ) : analyzingCameraIds.has(cam.id) ? (
+                    <div className="flex items-center gap-2 text-sm text-ink-muted">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" strokeWidth={1.75} />
+                      Analyzing the first frame…
+                    </div>
+                  ) : (
+                    // A visible "this is actually working" signal for the gap
+                    // between Activate Guard and the first result landing —
+                    // without it, up to a full sync-interval of silence reads
+                    // as broken rather than as working-but-not-done-yet.
+                    <div className="space-y-1.5">
+                      <p className="text-sm text-ink-muted">Waiting for the first analysis — results appear roughly every {Math.max(5, cam.interval)}s.</p>
+                      <div className="h-1 rounded-full bg-surface-muted overflow-hidden max-w-xs">
+                        <div key={`${cam.id}-${cam.interval}`} className="h-full bg-accent progress-fill" style={{ animationDuration: `${Math.max(5, cam.interval)}s` }} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -484,7 +515,7 @@ export default function MonitorTab({
       <div className="space-y-6 flex flex-col h-full">
         <div className="hidden lg:block space-y-3">
           <div className="flex items-center justify-between">
-            <h3 className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Active nodes</h3>
+            <h3 className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Cameras</h3>
             <button onClick={onAddCamera} className="btn-ghost !p-1.5 border border-border !rounded-lg"><Settings2 className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
           </div>
           <div className="space-y-2">
@@ -565,6 +596,7 @@ export default function MonitorTab({
             </button>
           </div>
         </div>
+      </div>
       </div>
     </motion.div>
   );

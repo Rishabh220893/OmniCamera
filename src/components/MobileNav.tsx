@@ -21,7 +21,7 @@ export default function MobileNav({ activeTab, onChangeTab }: MobileNavProps) {
           )}
         >
           <tab.icon className="w-5 h-5" strokeWidth={1.75} />
-          <span className="text-[9px] font-semibold uppercase tracking-wide">{tab.label}</span>
+          <span className="text-[10px] font-semibold">{tab.label}</span>
           {activeTab === tab.id && (
             <motion.div layoutId="mobile-nav-pill" className="absolute top-0 w-8 h-0.5 bg-accent rounded-b-full" />
           )}

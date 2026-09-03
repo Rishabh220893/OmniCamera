@@ -567,7 +567,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         if (data.fatal) {
           clearWatchdog();
           const authHint = data.response?.code === 401 || data.response?.code === 403
-            ? ' — check the Stream Access Password in Setup.'
+            ? ' — check the Stream Access Password in Settings.'
             : '';
           scheduleReconnect(`HLS playback error (${data.type}): ${data.details}${authHint}`);
         }

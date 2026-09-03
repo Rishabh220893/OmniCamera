@@ -24,7 +24,11 @@ export default function FirstUseTour({ onDismiss }: FirstUseTourProps) {
     <AnimatePresence>
       <motion.div
         initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 16 }}
-        className="fixed bottom-6 right-6 z-[150] w-[calc(100%-3rem)] max-w-sm card p-5 shadow-2xl border-accent/30"
+        // Stacked above both the mobile bottom nav (h-16) and the chat
+        // bubble (which itself sits above the mobile nav) so this card never
+        // overlaps either — same reasoning on desktop, just less clearance
+        // needed since the mobile nav doesn't exist there.
+        className="fixed bottom-40 lg:bottom-24 right-6 z-[150] w-[calc(100%-3rem)] max-w-sm card p-5 shadow-2xl border-accent/30"
       >
         <button onClick={onDismiss} className="absolute top-3 right-3 btn-ghost !p-1.5" title="Skip tour">
           <X className="w-3.5 h-3.5" strokeWidth={1.75} />

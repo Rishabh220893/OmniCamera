@@ -67,7 +67,7 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
         <div>
           <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">People &amp; vehicle trend — {camera.name}</h3>
           <p className="text-[11px] text-ink-muted mt-0.5">
-            {total === 0 ? 'No analysis yet for this node.' : `Showing ${visible.length} of ${total} readings${onPointClick ? ' — click a point to open it in the log table' : ''}`}
+            {total === 0 ? 'No analysis yet for this camera.' : `Showing ${visible.length} of ${total} readings${onPointClick ? ' — click a point to open it in the log table' : ''}`}
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -93,7 +93,7 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
       <div ref={containerRef} className="h-[260px]">
         {chartData.length === 0 ? (
           <div className="h-full flex items-center justify-center text-xs text-ink-muted">
-            Activate guard to start building this node's trend.
+            Activate guard to start building this camera's trend.
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">

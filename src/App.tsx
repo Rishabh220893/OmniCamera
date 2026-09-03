@@ -26,6 +26,7 @@ import GuideTab from './components/GuideTab';
 import ChatWidget from './components/ChatWidget';
 import DvrGuideModal from './components/DvrGuideModal';
 import FirstUseTour from './components/FirstUseTour';
+import CommandPalette from './components/CommandPalette';
 
 enum OperationType { CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write' }
 
@@ -149,6 +150,20 @@ export default function App() {
   }, []);
 
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+
+  // Global ⌘K / Ctrl+K — the one entry point for the search palette,
+  // available from anywhere in the app rather than only via a button.
+  useEffect(() => {
+    const handleGlobalKeydown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen(v => !v);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeydown);
+    return () => window.removeEventListener('keydown', handleGlobalKeydown);
+  }, []);
   const [chatInput, setChatInput] = useState('');
   const [isChatSending, setIsChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'model'; text: string }>>([
@@ -808,7 +823,7 @@ export default function App() {
   }, [isCapturing, analysisCameraIds, captureAndAnalyzeCamera]);
 
   const exportData = () => {
-    const csvHeader = 'Timestamp,Node,Summary,People,Vehicles,Other,IsUnusual,Plates,Alerts\n';
+    const csvHeader = 'Timestamp,Camera,Summary,People,Vehicles,Other,IsUnusual,Plates,Alerts\n';
     const csvContent = logs.map(log => {
       const summary = `"${log.summary.replace(/"/g, '""')}"`;
       const alerts = `"${log.alerts.join('; ').replace(/"/g, '""')}"`;
@@ -995,13 +1010,17 @@ export default function App() {
           <div className="flex flex-col lg:flex-row h-screen">
             <Sidebar activeTab={activeTab} onChangeTab={setActiveTab} onLogout={handleLogout} />
 
-            <div className="lg:pl-20 min-h-screen flex flex-col w-full">
+            {/* pb-16 reserves space for the fixed MobileNav bar (h-16) below
+                lg — without it, the footer's last ~64px scrolls in underneath
+                the nav instead of stopping above it. */}
+            <div className="lg:pl-24 min-h-screen flex flex-col w-full pb-16 lg:pb-0">
               <Header
                 isCapturing={isCapturing} onToggleCapturing={() => setIsCapturing(!isCapturing)} user={user} onLogout={handleLogout}
                 camerasLive={camerasLive}
                 camerasTotal={cameras.length}
                 alertsToday={logs.filter(l => l.alerts.length > 0 && l.timestamp.toDateString() === new Date().toDateString()).length}
                 geminiHealthy={analysisErrors.size === 0}
+                onOpenSearch={() => setIsCommandPaletteOpen(true)}
               />
 
               <main className="flex-1 p-6 lg:p-10">
@@ -1072,9 +1091,9 @@ export default function App() {
                 </AnimatePresence>
               </main>
 
-              <footer className="mt-auto border-t border-border p-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-ink-muted">
-                <p className="text-[10px] uppercase tracking-[0.14em] font-semibold">Frame analysis runs server-side</p>
-                <p className="text-[10px] font-mono">NODE_UID: {user?.uid?.slice(0, 8) || '—'}</p>
+              <footer className="mt-auto border-t border-border px-8 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-ink-muted">
+                <p className="text-[10px] uppercase tracking-[0.14em] font-semibold">Frame analysis runs server-side — never in your browser</p>
+                <p className="text-[10px] font-semibold">OmniSee Pro</p>
               </footer>
             </div>
 
@@ -1088,6 +1107,12 @@ export default function App() {
             <ChatWidget
               isOpen={isChatOpen} onToggle={() => setIsChatOpen(!isChatOpen)} messages={chatMessages}
               input={chatInput} onInputChange={setChatInput} isSending={isChatSending} onSend={handleSendChat}
+            />
+
+            <CommandPalette
+              isOpen={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)}
+              cameras={cameras} logs={logs}
+              onSelectCamera={handleSelectCameraFromRegistry} onJumpToLog={handleJumpToLog} onChangeTab={setActiveTab}
             />
 
             <MobileNav activeTab={activeTab} onChangeTab={setActiveTab} />

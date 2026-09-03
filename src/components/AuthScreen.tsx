@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { motion } from 'motion/react';
-import { Fingerprint, Sparkles } from 'lucide-react';
+import { Fingerprint, Sparkles, ChevronDown } from 'lucide-react';
 
 interface AuthScreenProps {
   loginError: string | null;
@@ -8,7 +9,17 @@ interface AuthScreenProps {
   onGuestBypass: () => void;
 }
 
+// A friendly headline per known failure mode — the raw Firebase code/JSON is
+// still available (see the "Technical details" disclosure below), but it's
+// no longer the first thing a signing-in user has to parse.
+function friendlyLoginErrorMessage(loginError: string): string {
+  if (loginError.includes('auth/configuration-not-found')) return "Google Sign-In isn't set up for this project yet.";
+  if (loginError.includes('auth/unauthorized-domain')) return "This site isn't authorized for Google Sign-In yet.";
+  return "We couldn't sign you in.";
+}
+
 export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onGuestBypass }: AuthScreenProps) {
+  const [showDetails, setShowDetails] = useState(false);
   return (
     <motion.div
       key="auth"
@@ -29,10 +40,7 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
         <div className="space-y-5">
           {loginError && (
             <div className="badge-critical rounded-2xl p-4 text-left space-y-3 !inline-block w-full !normal-case">
-              <p className="text-xs font-bold text-critical">Login setup issue detected</p>
-              <p className="text-[11px] text-ink leading-relaxed font-medium">
-                Firebase returned: <code className="text-critical font-mono text-[10px] break-all">{loginError}</code>
-              </p>
+              <p className="text-xs font-bold text-critical">{friendlyLoginErrorMessage(loginError)}</p>
 
               {loginError.includes('auth/configuration-not-found') && (
                 <div className="text-[11px] text-ink-muted space-y-2 mt-2 pt-2 border-t border-border">
@@ -61,6 +69,22 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
                   </p>
                 </div>
               )}
+
+              <div className="pt-2 border-t border-border">
+                <button
+                  type="button"
+                  onClick={() => setShowDetails(v => !v)}
+                  className="flex items-center gap-1 text-[10px] font-bold text-ink-muted uppercase tracking-wide"
+                >
+                  <ChevronDown className={showDetails ? 'w-3 h-3 rotate-180 transition-transform' : 'w-3 h-3 transition-transform'} strokeWidth={2} />
+                  Technical details
+                </button>
+                {showDetails && (
+                  <p className="text-[10px] text-ink-muted leading-relaxed font-mono break-all mt-2">
+                    Firebase returned: <code className="text-critical">{loginError}</code>
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

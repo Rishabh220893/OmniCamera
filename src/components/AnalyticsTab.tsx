@@ -63,6 +63,11 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
       initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
       key="analytics" className="space-y-8"
     >
+      <div className="space-y-1">
+        <h2 className="text-xl font-bold text-ink">Logs</h2>
+        <p className="text-sm text-ink-muted">Analytics, plate search, and the full event archive.</p>
+      </div>
+
       <div className="grid xl:grid-cols-2 gap-6">
         <section className="card p-8">
           <div className="flex items-center justify-between mb-8">

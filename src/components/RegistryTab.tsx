@@ -79,7 +79,7 @@ export default function RegistryTab({
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-xl font-bold text-ink">Registry</h2>
-          <p className="text-sm text-ink-muted">Centralised CCTV asset registry — the mandatory foundation for GIS, analytics, and federation.</p>
+          <p className="text-sm text-ink-muted">The single source of truth for every camera you manage — location, ownership, status, and maintenance in one place.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {isAdmin && (
@@ -96,7 +96,7 @@ export default function RegistryTab({
             </>
           )}
           <button onClick={onExportCsv} className="btn-secondary !py-2 text-xs"><Download className="w-3.5 h-3.5" strokeWidth={1.75} /> Export CSV</button>
-          <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add node</button>
+          <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
         </div>
       </div>
 
@@ -132,8 +132,8 @@ export default function RegistryTab({
       {/* Registry table */}
       <div className="card overflow-hidden">
         <div className="p-6 border-b border-border flex items-center justify-between">
-          <h3 className="text-sm font-bold text-ink">Asset list</h3>
-          <span className="text-xs text-ink-muted">{filtered.length} of {cameras.length} node{cameras.length !== 1 ? 's' : ''}</span>
+          <h3 className="text-sm font-bold text-ink">Camera list</h3>
+          <span className="text-xs text-ink-muted">{filtered.length} of {cameras.length} camera{cameras.length !== 1 ? 's' : ''}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -143,7 +143,7 @@ export default function RegistryTab({
                 <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Department</th>
                 <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Ownership</th>
                 <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Type</th>
-                <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Status</th>
+                <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted" title="Declared in the registry record — set manually or by bulk import, not measured live. See the Feed tab for real-time connection status.">Registry status</th>
                 <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Maintenance</th>
                 <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted">Installed</th>
                 <th className="px-6 py-3 text-[10px] font-bold uppercase tracking-widest text-ink-muted text-right">Actions</th>
@@ -225,7 +225,7 @@ export default function RegistryTab({
           <div className="mt-6 space-y-6">
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { label: 'Unlocated nodes', icon: MapPin, count: gapReport.unlocated.length, items: gapReport.unlocated },
+                { label: 'Unlocated cameras', icon: MapPin, count: gapReport.unlocated.length, items: gapReport.unlocated },
                 { label: 'Offline / degraded', icon: ShieldAlert, count: gapReport.offlineOrDegraded.length, items: gapReport.offlineOrDegraded },
                 { label: 'Ageing infrastructure', icon: Wrench, count: gapReport.ageing.length, items: gapReport.ageing },
                 { label: 'Stale (no recent analysis)', icon: Clock3, count: gapReport.stale.length, items: gapReport.stale },

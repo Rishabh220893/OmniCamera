@@ -69,10 +69,16 @@ export default function SettingsTab(props: SettingsTabProps) {
   };
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-      key="settings" className="max-w-4xl mx-auto space-y-6 pb-20"
+      key="settings" className="max-w-4xl mx-auto space-y-6 pb-24"
     >
+      <div className="space-y-1">
+        <h2 className="text-xl font-bold text-ink">Settings</h2>
+        <p className="text-sm text-ink-muted">System preferences, cameras, and security configuration.</p>
+      </div>
+
       {/* System Preferences */}
       <div className="card p-8">
         <div className="flex items-center gap-4 mb-8">
@@ -175,36 +181,21 @@ export default function SettingsTab(props: SettingsTabProps) {
         <p className="text-[10px] text-ink-muted italic mt-4">Only Admin accounts can manage the vehicle watchlist below.</p>
       </div>
 
-      {/* Save panel */}
+      {/* Cloud sync status — the actual Save action lives in the sticky bar
+          at the bottom of the viewport (see below) so it's always reachable
+          regardless of how far down this page you've scrolled, instead of
+          being stranded in a card mid-page. */}
       <div className="card p-8 relative overflow-hidden">
-        <div className="flex flex-col md:flex-row items-center justify-between gap-5">
-          <div className="flex items-center gap-4 text-left">
-            <div className="w-11 h-11 rounded-2xl bg-accent-soft flex items-center justify-center text-accent">
-              <FolderHeart className="w-5.5 h-5.5" strokeWidth={1.75} />
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-ink">Cloud settings sync</h2>
-              <p className="text-xs text-ink-muted">
-                {user?.uid === 'demo-guest' ? 'Running in offline guest bypass mode' : `Signed in as: ${user?.email}`}
-              </p>
-            </div>
+        <div className="flex items-center gap-4 text-left">
+          <div className="w-11 h-11 rounded-2xl bg-accent-soft flex items-center justify-center text-accent">
+            <FolderHeart className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
-
-          <button
-            onClick={onSaveSettings}
-            disabled={isSaveLoading}
-            className={cn(
-              'w-full md:w-auto px-7 py-3.5 rounded-2xl font-bold text-sm transition-all active:scale-95 flex items-center justify-center gap-2.5',
-              saveSuccess === true && 'bg-success text-white',
-              saveSuccess === false && 'bg-critical text-white',
-              saveSuccess === null && 'btn-primary'
-            )}
-          >
-            {isSaveLoading ? (<><RefreshCw className="w-4 h-4 animate-spin" strokeWidth={1.75} /><span>Saving...</span></>)
-              : saveSuccess === true ? (<><Check className="w-4 h-4" strokeWidth={1.75} /><span>Saved!</span></>)
-              : saveSuccess === false ? (<><AlertTriangle className="w-4 h-4" strokeWidth={1.75} /><span>Sync error</span></>)
-              : (<><Save className="w-4 h-4" strokeWidth={1.75} /><span>Save settings</span></>)}
-          </button>
+          <div>
+            <h2 className="text-base font-bold text-ink">Cloud settings sync</h2>
+            <p className="text-xs text-ink-muted">
+              {user?.uid === 'demo-guest' ? 'Running in offline guest bypass mode' : `Signed in as: ${user?.email}`}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -250,7 +241,7 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
           <div>
             <h2 className="text-lg font-bold text-ink">Stream access password</h2>
-            <p className="text-xs text-ink-muted">Sent to password-protected remote feed hosts (applies to every Remote Link Feed node)</p>
+            <p className="text-xs text-ink-muted">Sent to password-protected remote feed hosts (applies to every Remote Link Feed camera)</p>
           </div>
         </div>
         <div className="p-5 panel space-y-3">
@@ -278,7 +269,7 @@ export default function SettingsTab(props: SettingsTabProps) {
         </div>
       </div>
 
-      {/* Camera nodes */}
+      {/* Cameras */}
       <div className="card p-8">
         <div className="flex items-center justify-between mb-7 flex-wrap gap-3">
           <div className="flex items-center gap-4">
@@ -286,13 +277,13 @@ export default function SettingsTab(props: SettingsTabProps) {
               <Camera className="w-5.5 h-5.5" strokeWidth={1.75} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-ink">Node management</h2>
-              <p className="text-xs text-ink-muted">Configure multiple surveillance endpoints</p>
+              <h2 className="text-lg font-bold text-ink">Camera management</h2>
+              <p className="text-xs text-ink-muted">Configure every camera in your fleet</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={onOpenSetupGuides} className="btn-secondary !py-2 text-xs"><HelpCircle className="w-3.5 h-3.5" strokeWidth={1.75} /> Setup guides</button>
-            <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add node</button>
+            <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
           </div>
         </div>
 
@@ -317,20 +308,20 @@ export default function SettingsTab(props: SettingsTabProps) {
         </div>
       </div>
 
-      {/* Node configuration */}
+      {/* Camera configuration */}
       <div className="card p-8 space-y-8">
         <div className="flex items-center gap-4">
           <div className="w-14 h-14 rounded-2xl bg-accent flex items-center justify-center">
             <Settings className="w-7 h-7 text-white" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-ink">Node configuration</h2>
-            <p className="text-ink-muted text-sm">Targeting: {activeCamera.name}</p>
+            <h2 className="text-xl font-bold text-ink">Camera configuration</h2>
+            <p className="text-ink-muted text-sm">Editing: {activeCamera.name}</p>
           </div>
         </div>
 
         <div className="space-y-4">
-          <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Node identifier</label>
+          <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Camera name</label>
           <input type="text" value={activeCamera.name} onChange={(e) => onUpdateActiveCamera({ name: e.target.value })} className="input text-lg font-bold" placeholder="e.g. Garden View" />
         </div>
 
@@ -480,7 +471,7 @@ export default function SettingsTab(props: SettingsTabProps) {
 
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest flex items-center gap-1.5"><Activity className="w-3.5 h-3.5" strokeWidth={1.75} /> Node webhook</label>
+            <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest flex items-center gap-1.5"><Activity className="w-3.5 h-3.5" strokeWidth={1.75} /> Camera webhook</label>
             {activeCamera.webhookUrl && (
               <button onClick={onTestWebhook} disabled={webhookStatus === 'testing'} className="text-[10px] font-bold uppercase px-3 py-1 rounded-lg btn-ghost">
                 {webhookStatus === 'idle' && 'Test endpoint'}
@@ -529,7 +520,7 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
           <div>
             <h2 className="text-lg font-bold text-ink">Vehicle watchlist</h2>
-            <p className="text-xs text-ink-muted">Plates flagged for real-time tracking across every node</p>
+            <p className="text-xs text-ink-muted">Plates flagged for real-time tracking across every camera</p>
           </div>
         </div>
 
@@ -568,5 +559,33 @@ export default function SettingsTab(props: SettingsTabProps) {
         )}
       </div>
     </motion.div>
+
+    {/* Sticky save bar — reachable regardless of scroll position, instead of
+        the Save action being stranded in a card mid-page. Sits above the
+        mobile bottom nav on small screens, flush with the viewport edge
+        (offset past the icon sidebar) on desktop. Right padding reserves
+        room for the floating chat bubble (fixed bottom-6 right-6, ~72px
+        footprint) so the Save button never renders underneath it. */}
+    <div className="fixed bottom-16 lg:bottom-0 left-0 lg:left-24 right-0 z-40 bg-surface/95 backdrop-blur-xl border-t border-border pl-6 pr-20 lg:pr-28 py-3.5 flex items-center justify-between gap-4">
+      <p className="text-xs text-ink-muted hidden sm:block">
+        Changes apply as you go — Save syncs everything to your account.
+      </p>
+      <button
+        onClick={onSaveSettings}
+        disabled={isSaveLoading}
+        className={cn(
+          'w-full sm:w-auto ml-auto px-6 py-2.5 rounded-xl font-bold text-sm transition-all active:scale-95 flex items-center justify-center gap-2.5',
+          saveSuccess === true && 'bg-success text-white',
+          saveSuccess === false && 'bg-critical text-white',
+          saveSuccess === null && 'btn-primary'
+        )}
+      >
+        {isSaveLoading ? (<><RefreshCw className="w-4 h-4 animate-spin" strokeWidth={1.75} /><span>Saving...</span></>)
+          : saveSuccess === true ? (<><Check className="w-4 h-4" strokeWidth={1.75} /><span>Saved!</span></>)
+          : saveSuccess === false ? (<><AlertTriangle className="w-4 h-4" strokeWidth={1.75} /><span>Sync error</span></>)
+          : (<><Save className="w-4 h-4" strokeWidth={1.75} /><span>Save settings</span></>)}
+      </button>
+    </div>
+    </>
   );
 }

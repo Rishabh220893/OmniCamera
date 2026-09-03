@@ -134,6 +134,12 @@
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .custom-scrollbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
 
+/* Fills once over the given animation-duration — used to visualize progress
+   toward a camera's first analysis cycle (see MonitorTab's "Ongoing
+   context" card) without wiring up a per-second countdown timer. */
+@keyframes fill-progress { from { width: 0%; } to { width: 100%; } }
+.progress-fill { animation-name: fill-progress; animation-timing-function: linear; animation-fill-mode: forwards; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }

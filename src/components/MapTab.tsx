@@ -66,13 +66,16 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
           <MapPin className="w-6 h-6" strokeWidth={1.75} />
         </div>
         <h3 className="text-sm font-bold text-ink">No cameras placed on the map yet</h3>
-        <p className="text-xs text-ink-muted max-w-sm">Add coordinates to a camera node in Setup, or in a bulk-import CSV, to see it plotted here.</p>
+        <p className="text-xs text-ink-muted max-w-sm">Add coordinates to a camera in Settings, or in a bulk-import CSV, to see it plotted here.</p>
       </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      <p className="text-[10px] text-ink-muted">
+        Pin color reflects each camera's <span className="font-semibold text-ink">registry status</span> (declared, not live) — see Feed for real-time connection state.
+      </p>
       {routePlate && (
         <div className="badge badge-accent !normal-case !text-xs gap-2 inline-flex">
           <Navigation className="w-3.5 h-3.5" strokeWidth={1.75} />
