@@ -615,18 +615,31 @@ async function startServer() {
       };
 
       const cacheKey = password ? `${targetHost}|${password}` : null;
-      const fetchCatalogue = async (path: string) => {
+      const fetchCatalogue = async (path: string, forceFreshLogin = false) => {
         const cookie = password
-          ? sessionCookieCache.get(cacheKey!) || (await loginForSessionCookie(`${base}${path}`, password))
+          ? (forceFreshLogin ? null : sessionCookieCache.get(cacheKey!)) || (await loginForSessionCookie(`${base}${path}`, password))
           : null;
         return fetchUpstream(`${base}${path}`, { headers: buildHeaders(cookie), redirect: 'manual' }, { timeoutMs: 20_000, retries: 0 });
       };
 
-      // Two documented names for the same idea across the two guide
-      // revisions we were given (/api/ingest, cameras.json) — try the
-      // grid-specific one first, fall back to the generic one.
       let upstream = await fetchCatalogue('/cameras.json');
-      if (upstream.status >= 300 && upstream.status < 400) upstream = await fetchCatalogue('/api/ingest');
+      // A direct 401 (stale cached cookie, or loginForSessionCookie having
+      // silently failed and left no cookie at all) or a 3xx redirect to a
+      // login page both mean the session was invalid — retry once with a
+      // guaranteed-fresh login before giving up. Same fix already applied
+      // to /api/proxy-hls after a HAR showed exactly this failure mode
+      // (401 on every request despite a correct password) — this route had
+      // the identical gap, just never hit until the catalogue was actually
+      // wired up to the right host.
+      if (password && (upstream.status === 401 || (upstream.status >= 300 && upstream.status < 400))) {
+        if (cacheKey) sessionCookieCache.delete(cacheKey);
+        upstream = await fetchCatalogue('/cameras.json', true);
+      }
+      // Two documented names for the same idea across the two guide
+      // revisions we were given (/api/ingest, cameras.json) — only falls
+      // back to the generic one on an actual 404, not an auth failure
+      // (which the retry above already handles).
+      if (upstream.status === 404) upstream = await fetchCatalogue('/api/ingest');
 
       if (!upstream.ok) {
         res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status)
