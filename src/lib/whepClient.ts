@@ -221,8 +221,25 @@ export function startWhep(
  * concurrency slot and origin resources a scrolled-away or unmounted
  * tile has no more use for.
  */
+// Now that WHEP auth actually succeeds (see /api/whep-proxy's email:password
+// fix), a HAR capture with a full 30-camera grid connecting at once showed
+// most connect-to-disconnect durations bunched up in the last ~1s before
+// this used to be 12s, with none landing between 12s and 20s — the
+// signature of a timeout cutting sessions off, not of them completing
+// naturally. Signaling (the SDP POST) itself answers in well under a
+// second; what actually eats the time is the ICE/DTLS/SRTP handshake that
+// follows it, done straight from the viewer's own browser to the origin
+// (see startWhep's doc comment) — with 16 of these racing concurrently
+// (MAX_CONCURRENT_NEGOTIATIONS) each fighting the same viewer-side
+// bandwidth/CPU for STUN checks and decode, 12s was tuned for a
+// low-concurrency case that stopped being the common one. Matches the
+// grid's own connect timeout for the focused/live path (30s, tuned against
+// the same thundering-herd queueing delay) far more closely than the old
+// snapshot-path value did.
+const WHEP_SNAPSHOT_TIMEOUT_MS = 25_000;
+
 export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal; streamAccessPassword?: string; streamAccessEmail?: string } = {}): Promise<string> {
-  const { timeoutMs = 12_000, signal, streamAccessPassword, streamAccessEmail } = opts;
+  const { timeoutMs = WHEP_SNAPSHOT_TIMEOUT_MS, signal, streamAccessPassword, streamAccessEmail } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
 
