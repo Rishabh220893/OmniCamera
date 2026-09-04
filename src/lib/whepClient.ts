@@ -13,7 +13,7 @@
  * (ICE/DTLS/SRTP) still flows straight from the browser to the origin —
  * only the signaling handshake is relayed.
  */
-import { acquireCaptureSlot } from './captureConcurrency';
+import { whepCaptureGate } from './captureConcurrency';
 
 export interface WhepSession {
   pc: RTCPeerConnection;
@@ -235,7 +235,7 @@ export function startWhep(
 // bandwidth/CPU. Durations bunched up hard at this timeout across nearly
 // every camera during that pile-up, while the few that got a fast frame
 // did so early, before the herd built up — the signature of contention, not
-// of individual cameras being unreachable. acquireCaptureSlot below throttles
+// of individual cameras being unreachable. whepCaptureGate below throttles
 // how many tiles are actively past-signaling-and-decoding at once, closer to
 // what a browser tab can really sustain concurrently, so each gets a real
 // shot instead of all of them starving each other into this timeout.
@@ -255,14 +255,17 @@ const WHEP_SNAPSHOT_TIMEOUT_MS = 25_000;
 // CameraFeed for how this trades against the 20s refresh target on a full
 // page of tiles all wanting a turn.
 //
-// Shared with captureHlsSnapshot (see captureConcurrency.ts) — a single
-// slot scoped to just this transport still let an HLS fallback capture run
-// fully concurrently with a WHEP one, since they're separate code paths.
-// A HAR caught that overlap directly: a 12.6s HLS fetch in flight at the
-// same moment three separate WHEP POSTs in a row failed outright before
-// ever reaching the network (status 0, 100% "blocked" timing) — both
-// transports hit the same single Render server, so gating them separately
-// never actually delivered "one capture at a time" system-wide.
+// A separate gate from captureHlsSnapshot's (see captureConcurrency.ts),
+// not a shared one — they were merged into one slot for a while after a
+// HAR showed a slow HLS fetch overlapping three failed WHEP POSTs, but that
+// overcorrected: a subsequent HAR showed one codec-fallback camera's HLS
+// turn (~57s end-to-end, this origin's own slow manifest/segment fetches)
+// holding the single shared slot long enough to starve every other tile on
+// the page — only 6 of 24+ ever got a turn in a 3-minute session. Two
+// independent lanes (WHEP serializes against WHEP, HLS against HLS) caps
+// total concurrent captures at 2 instead of 1, which is still far below
+// what caused the original contention, without letting one transport's
+// latency block the other's progress.
 
 export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal; streamAccessPassword?: string; streamAccessEmail?: string } = {}): Promise<string> {
   const { timeoutMs = WHEP_SNAPSHOT_TIMEOUT_MS, signal, streamAccessPassword, streamAccessEmail } = opts;
@@ -307,7 +310,7 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
 
     const overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
 
-    acquireCaptureSlot().then((release) => {
+    whepCaptureGate.acquire().then((release) => {
       // Settled (timed out, aborted) while still queued for a slot — hand
       // the slot straight back instead of starting a negotiation nothing is
       // waiting on anymore.

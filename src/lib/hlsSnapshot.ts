@@ -1,5 +1,5 @@
 import Hls from 'hls.js';
-import { acquireCaptureSlot } from './captureConcurrency';
+import { hlsCaptureGate } from './captureConcurrency';
 
 /**
  * One-shot HLS snapshot: connect, capture a single frame, tear down.
@@ -12,11 +12,16 @@ import { acquireCaptureSlot } from './captureConcurrency';
  * and segments both routinely take 20-45s), so timeoutMs defaults high and
  * callers should refresh far less often than the WHEP snapshot path does.
  *
- * Shares captureWhepSnapshot's single-flight gate (see captureConcurrency.ts)
- * rather than running unthrottled — a HAR caught a 12.6s HLS fetch here
- * overlapping with fresh WHEP negotiations that then failed outright, both
- * hitting the same single Render server at once. Gating just the WHEP side
- * never actually capped total concurrent capture load.
+ * Runs behind its own single-flight gate (see captureConcurrency.ts) —
+ * serialized against other HLS captures, but deliberately a separate lane
+ * from captureWhepSnapshot's, not a shared one. They were merged into one
+ * slot for a while (a HAR had caught a 12.6s HLS fetch overlapping fresh
+ * WHEP negotiations that failed outright), but that starved the rest of
+ * the grid instead: a single codec-fallback camera's HLS turn routinely
+ * takes ~57s end-to-end on this slow origin, and holding one shared slot
+ * for that long blocked every other tile — including fast WHEP cameras —
+ * from getting a turn at all. Two independent lanes keep both problems
+ * fixed: HLS no longer runs unthrottled, and it no longer blocks WHEP.
  */
 export function captureHlsSnapshot(
   url: string,
@@ -72,7 +77,7 @@ export function captureHlsSnapshot(
       }, 900);
     };
 
-    acquireCaptureSlot().then((release) => {
+    hlsCaptureGate.acquire().then((release) => {
       // Settled (timed out, aborted) while still queued for a slot — hand
       // the slot straight back instead of starting a fetch nothing is
       // waiting on anymore.
