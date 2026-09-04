@@ -180,6 +180,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // signaling slot for a couple of seconds rather than a decode session
   // indefinitely, so this scales to however many tiles are in the current
   // page/viewport regardless of total registry size.
+  //
+  // This is the target cadence each tile asks for independently — it is
+  // not the cadence actually achieved on a full page. captureWhepSnapshot's
+  // own concurrency gate (MAX_CONCURRENT_CAPTURES, currently 1: see its doc
+  // comment in whepClient.ts) serializes every tile's actual connect
+  // attempt behind however many others also want a turn right now, to
+  // avoid the resource contention that was starving most of a full grid
+  // page out of ever getting a real frame. That trades cadence for
+  // reliability: with N tiles all wanting a turn, a tile's realized refresh
+  // interval is roughly N times one capture's duration, not a flat 20s —
+  // slower to look fresh, but every tile gets its own uncontended shot
+  // instead of most of them losing a fight for bandwidth/CPU forever.
   const SNAPSHOT_REFRESH_MS = 20_000;
   // Same throttled Cloudflare-fronted origin the live-video HLS fallback
   // uses (see fallbackToHls below) — its manifests/segments routinely take

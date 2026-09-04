@@ -240,13 +240,19 @@ export function startWhep(
 const WHEP_SNAPSHOT_TIMEOUT_MS = 25_000;
 
 // See WHEP_SNAPSHOT_TIMEOUT_MS above — this is the actual fix for the
-// contention it documents, not the timeout itself. Sized to the same
+// contention it documents, not the timeout itself. 6 was a first cut (the
 // "how many concurrent sustained WebRTC decodes can one browser tab do"
-// constraint MAX_CONCURRENT_NEGOTIATIONS's own history already identifies
-// (its comment: this used to be 6, before it was repurposed for the much
-// cheaper signaling-only step and raised to 16) — that original number
-// belongs here now, gating the part it was actually describing.
-const MAX_CONCURRENT_CAPTURES = 6;
+// figure MAX_CONCURRENT_NEGOTIATIONS's own history names as its original,
+// pre-signaling-only value) — a follow-up HAR with that cap in place still
+// showed the same camera's duration swinging from ~2.5s to ~22s between
+// cycles purely based on how many of its up-to-5 neighbors happened to be
+// active at that moment, i.e. still real contention, just less of it. One
+// at a time removes the variable entirely: every capture gets the full tab
+// to itself, so success depends only on real network conditions. The cost
+// is cadence, not reliability — see SNAPSHOT_REFRESH_MS's doc comment in
+// CameraFeed for how this trades against the 20s refresh target on a full
+// page of tiles all wanting a turn.
+const MAX_CONCURRENT_CAPTURES = 1;
 let activeCaptureSlots = 0;
 const captureQueue: Array<() => void> = [];
 
