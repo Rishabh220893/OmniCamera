@@ -14,6 +14,7 @@
  * only the signaling handshake is relayed.
  */
 import { whepCaptureGate } from './captureConcurrency';
+import { captureFrameAllowingSettle } from './frameCapture';
 
 export interface WhepSession {
   pc: RTCPeerConnection;
@@ -325,17 +326,18 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
       // corrupt/black decoder frame that self-corrects almost immediately —
       // a brief settle after 'playing' fires (rather than capturing the
       // instant a frame exists) keeps thumbnails from being a coin flip on
-      // catching that exact moment.
+      // catching that exact moment. captureFrameAllowingSettle also checks
+      // the frame isn't still blank once that settle elapses (a screen
+      // recording caught a tile stuck showing solid black, accepted as a
+      // completely normal successful capture — the fixed 900ms alone
+      // wasn't reliably enough) and gives it a couple more short waits
+      // before finally accepting whatever it gets.
       video.addEventListener('playing', () => {
         settleTimer = setTimeout(() => {
-          if (!video.videoWidth) { finish(new Error('No frame available to capture')); return; }
-          const canvas = document.createElement('canvas');
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) { finish(new Error('Canvas unavailable')); return; }
-          ctx.drawImage(video, 0, 0);
-          finish(undefined, canvas.toDataURL('image/jpeg', 0.6));
+          captureFrameAllowingSettle(video).then(
+            (dataUrl) => finish(undefined, dataUrl),
+            (err) => finish(err instanceof Error ? err : new Error('Capture failed'))
+          );
         }, 900);
       }, { once: true });
 

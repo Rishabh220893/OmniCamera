@@ -1,5 +1,6 @@
 import Hls from 'hls.js';
 import { hlsCaptureGate } from './captureConcurrency';
+import { captureFrameAllowingSettle } from './frameCapture';
 
 /**
  * One-shot HLS snapshot: connect, capture a single frame, tear down.
@@ -64,16 +65,17 @@ export function captureHlsSnapshot(
 
     const proxiedUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${password ? `&password=${encodeURIComponent(password)}` : ''}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
 
+    // See captureWhepSnapshot's identical use of this — a fixed settle
+    // delay alone wasn't reliably enough to skip a transient black
+    // decoder frame (a screen recording caught one accepted as a normal
+    // successful capture), so this also checks the frame isn't still
+    // blank once the settle elapses before accepting it.
     const capture = () => {
       settleTimer = setTimeout(() => {
-        if (!video.videoWidth) { finish(new Error('No frame available to capture')); return; }
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { finish(new Error('Canvas unavailable')); return; }
-        ctx.drawImage(video, 0, 0);
-        finish(undefined, canvas.toDataURL('image/jpeg', 0.6));
+        captureFrameAllowingSettle(video).then(
+          (dataUrl) => finish(undefined, dataUrl),
+          (err) => finish(err instanceof Error ? err : new Error('Capture failed'))
+        );
       }, 900);
     };
 

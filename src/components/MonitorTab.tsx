@@ -86,17 +86,27 @@ function CameraTile({
   // same click after a stretch with no recovery, rather than requiring a
   // person to notice and act — remounting is a full reset (fresh effects,
   // fresh AbortControllers), so it recovers regardless of what actually
-  // wedged the internal loop. 45s is comfortably longer than a legitimate
-  // in-progress attempt should ever take (a queued capture waiting its
-  // turn behind others, plus WHEP's own 25s timeout — see
-  // captureConcurrency.ts/whepClient.ts), so this shouldn't fire while a
-  // real attempt is still honestly working.
+  // wedged the internal loop.
+  //
+  // First shipped at 45s, which turned out to be self-defeating: a
+  // follow-up HAR showed one camera failing on an almost exact 45-second
+  // cadence, over and over, for the whole session — a dead giveaway that
+  // this watchdog itself was the cause, not a coincidence. With only 1
+  // capture slot per transport (see captureConcurrency.ts) and up to a
+  // couple dozen tiles competing for a turn, a tile can legitimately sit
+  // queued well past 45s — long enough that this watchdog was yanking it
+  // out and sending it to the back of the line right as its turn was
+  // approaching, before it ever got a real shot, forever. 120s gives
+  // genuine queueing (including a slow ~57s HLS-fallback turn or two
+  // ahead of it) much more realistic room, while still capping the worst
+  // case at "under 2 minutes," not the 5+ minutes of total silence this
+  // watchdog exists to prevent in the first place.
   useEffect(() => {
     if (status !== 'error' || !shouldConnect) return;
     const timer = setTimeout(() => {
       setStatus('connecting');
       setRetryToken((t) => t + 1);
-    }, 45_000);
+    }, 120_000);
     return () => clearTimeout(timer);
   }, [status, shouldConnect]);
 
