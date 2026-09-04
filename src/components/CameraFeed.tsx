@@ -216,6 +216,23 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // (an AbortController is one-shot) — cleanup always aborts whichever
     // one is currently in flight via this binding.
     let currentAbortController: AbortController | null = null;
+    // A real-network HAR (scripts/verify-live-grid.mjs) traced "Snapshot
+    // timed out" all the way through: TURN relay candidates are gathered
+    // correctly now, the origin's answer does include a host candidate on
+    // its real public IP, and ICE still never completes — the signature
+    // of the origin's firewall only accepting inbound media traffic
+    // (UDP/TCP 8189) from specific source IPs, which a TURN relay's IP is
+    // no more likely to be on than anyone else's. That's not fixable from
+    // here. HLS (cctv.corp8.cloud, Cloudflare-fronted, already proven
+    // working — see fetchSentinelCatalogue/hlsSnapshot) is a completely
+    // different host and doesn't hit that port at all, so it keeps
+    // working regardless. This tracks consecutive non-permanent WHEP
+    // failures (timeouts, ICE/connection failures — anything other than
+    // the codec-unsupported 400 case just below, which already switches
+    // immediately) and falls back the same way once they look
+    // structural rather than a one-off blip.
+    let whepFailureStreak = 0;
+    const WHEP_FAILURE_STREAK_BEFORE_HLS_FALLBACK = 2;
 
     const captureLoop = async () => {
       if (cancelled) return;
@@ -232,6 +249,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword, streamAccessEmail });
         if (cancelled) return;
         hasSnapshot = true;
+        whepFailureStreak = 0;
         setSnapshotUrl(url);
         setStatus('live');
         setRemoteError(null);
@@ -243,7 +261,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         // camera's source codec has no match in our WebRTC offer, so every
         // future WHEP attempt would fail the exact same way. Switch this
         // tile's snapshot loop to HLS instead of retrying WHEP forever.
-        if (playbackMode === 'whep' && /WHEP negotiation failed \(400\)/.test(message)) {
+        const isPermanentCodecRejection = playbackMode === 'whep' && /WHEP negotiation failed \(400\)/.test(message);
+        if (playbackMode === 'whep' && !isPermanentCodecRejection) whepFailureStreak++;
+        if (isPermanentCodecRejection || whepFailureStreak >= WHEP_FAILURE_STREAK_BEFORE_HLS_FALLBACK) {
           switchingToHls = true;
           setPlaybackMode('hls');
         } else {
