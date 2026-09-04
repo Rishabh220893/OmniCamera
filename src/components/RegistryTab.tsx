@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Search, Upload, Download, Plus, Trash2, MapPin, Building2, ShieldAlert,
-  AlertTriangle, Clock3, History, ChevronRight, Wrench, LayoutGrid
+  AlertTriangle, Clock3, History, ChevronRight, Wrench, LayoutGrid, Loader2, CheckCircle2
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig, RoutePoint, RegistryAuditEntry } from '../types';
@@ -22,6 +22,8 @@ interface RegistryTabProps {
   onCsvUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onExportCsv: () => void;
   onLoadDemoGrid: () => void;
+  isLoadingDemoGrid?: boolean;
+  demoGridStatus?: { type: 'live' | 'fallback'; message: string } | null;
   gapReport: GapAnalysisReport;
   auditTrail: RegistryAuditEntry[];
 }
@@ -35,7 +37,8 @@ const MAINTENANCE_BADGE: Record<string, string> = {
 
 export default function RegistryTab({
   cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute,
-  isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, onLoadDemoGrid, gapReport, auditTrail
+  isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, onLoadDemoGrid, isLoadingDemoGrid, demoGridStatus,
+  gapReport, auditTrail
 }: RegistryTabProps) {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('all');
@@ -84,8 +87,15 @@ export default function RegistryTab({
         <div className="flex items-center gap-2 flex-wrap">
           {isAdmin && (
             <>
-              <button onClick={onLoadDemoGrid} className="btn-secondary !py-2 text-xs" title="Add every camera from the Corp8 demo grid that isn't already registered">
-                <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> Load demo grid
+              <button
+                onClick={onLoadDemoGrid}
+                disabled={isLoadingDemoGrid}
+                className="btn-secondary !py-2 text-xs disabled:opacity-60"
+                title="Fetches the current camera list live from the grid's own catalogue, falling back to a bundled list if that's unreachable"
+              >
+                {isLoadingDemoGrid
+                  ? <><Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.75} /> Loading grid...</>
+                  : <><LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> Load demo grid</>}
               </button>
               <div className="relative">
                 <input type="file" id="registry-csv-upload" className="hidden" accept=".csv" onChange={onCsvUpload} />
@@ -99,6 +109,16 @@ export default function RegistryTab({
           <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
         </div>
       </div>
+
+      {demoGridStatus && (
+        <div className={cn(
+          'flex items-center gap-2.5 px-4 py-3 rounded-2xl text-xs font-semibold',
+          demoGridStatus.type === 'live' ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
+        )}>
+          {demoGridStatus.type === 'live' ? <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={1.75} /> : <AlertTriangle className="w-4 h-4 shrink-0" strokeWidth={1.75} />}
+          {demoGridStatus.message}
+        </div>
+      )}
 
       {/* Filter bar */}
       <div className="card p-4 flex flex-wrap items-center gap-3">

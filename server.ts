@@ -502,8 +502,16 @@ async function startServer() {
   // blocking. The signaling POST/DELETE themselves ARE plain http:// and
   // WOULD be blocked as mixed content if the browser called them directly
   // from our https:// page — hence proxying just that exchange server-side.
-  const WHEP_ORIGIN = 'http://103.250.160.189:8889';
-  const CAM_ID_RE = /^cam\d{1,3}$/;
+  const SENTINEL_GRID_HOST = '103.250.160.189';
+  const WHEP_ORIGIN = `http://${SENTINEL_GRID_HOST}:8889`;
+  // Was /^cam\d{1,3}$/ — too narrow once camera ids started coming from the
+  // live catalogue (/api/sentinel-catalogue) instead of only the old
+  // hardcoded "camNN" scheme; the catalogue's real id format isn't
+  // something this code has been able to observe directly. Widened to
+  // "alphanumeric plus dash/underscore, reasonable length" — permissive
+  // enough for an id in any plausible scheme, still tight enough to block
+  // path traversal or header/URL injection through this query param.
+  const CAM_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
   app.post('/api/whep-proxy', express.text({ type: 'application/sdp', limit: '256kb' }), async (req, res) => {
     const camId = req.query.camId as string;
@@ -578,6 +586,44 @@ async function startServer() {
       console.error('[WHEP PROXY] Session cleanup failed (non-fatal):', err);
     }
     res.status(204).end();
+  });
+
+  // Dedicated catalogue fetch for the specific Sentinel grid this app's
+  // demo data points at (same host as WHEP_ORIGIN above) — separate from
+  // the generic /api/camera-catalogue below, which targets an
+  // arbitrary caller-supplied HTTPS host with optional Cloudflare-style
+  // password auth (built for the corp8.cloud vanity/proxy layer this grid
+  // used to be fronted by). The Sentinel integrator guide is explicit that
+  // RTSP/WHEP/HLS *and* this catalogue are plain, unauthenticated endpoints
+  // on the raw origin — no password, no Cloudflare — so this hits that
+  // origin directly rather than assuming either.
+  //
+  // Every camera failing identically, all at once, on the exact same day
+  // the app's hardcoded demo grid — 30 camera ids/URLs baked into
+  // demoGridCameras.ts, pointed at a *different* host pattern
+  // (cctv.corp8.cloud/camNN/index.m3u8) than this guide documents
+  // (<host>/live/stream/<id>/index.m3u8) — is much better explained by
+  // "the grid's real camera ids/URLs moved and our hardcoded copy is
+  // stale" than by "every credential we have is suddenly wrong." The guide
+  // itself says as much: "the catalogue is the contract, the URL pattern
+  // is not." This route lets the client ask the grid directly instead of
+  // guessing.
+  app.get('/api/sentinel-catalogue', async (req, res) => {
+    try {
+      const upstream = await fetchUpstream(`http://${SENTINEL_GRID_HOST}/api/ingest`, {}, { timeoutMs: 15_000, retries: 1 });
+      const text = await upstream.text();
+      if (!upstream.ok) {
+        console.error(`[SENTINEL CATALOGUE] Upstream rejected -> ${upstream.status}. Body: ${text.slice(0, 500)}`);
+        res.status(upstream.status).send(text);
+        return;
+      }
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(200).send(text);
+    } catch (err: unknown) {
+      console.error('[SENTINEL CATALOGUE] Error:', err);
+      res.status(502).send(err instanceof Error ? err.message : 'Error fetching Sentinel camera catalogue');
+    }
   });
 
   // The grid's own integrator guide: "Start from the catalogue rather than

@@ -11,6 +11,7 @@ import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
 import { parseCsv, toCsv, downloadCsv } from './lib/csv';
 import { computeGapAnalysis } from './lib/registryReport';
 import { DEMO_GRID_CAMERAS } from './data/demoGridCameras';
+import { fetchSentinelCatalogue } from './lib/sentinelCatalogue';
 
 import OnboardingScreen from './components/OnboardingScreen';
 import AuthScreen from './components/AuthScreen';
@@ -136,6 +137,8 @@ export default function App() {
   const [streamAccessPassword, setStreamAccessPassword] = useState<string>('');
   const [isSaveLoading, setIsSaveLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
+  const [isLoadingDemoGrid, setIsLoadingDemoGrid] = useState(false);
+  const [demoGridStatus, setDemoGridStatus] = useState<{ type: 'live' | 'fallback'; message: string } | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -942,7 +945,31 @@ export default function App() {
     await bulkImportCameras(parseCsv(text));
   };
 
-  const loadDemoGrid = () => bulkImportCameras(DEMO_GRID_CAMERAS);
+  // Tries the grid's own live catalogue first (see fetchSentinelCatalogue) —
+  // per its integrator guide, hardcoded camera ids/URLs go stale, and
+  // demoGridCameras.ts is exactly that. Falls back to the static list only
+  // if the live fetch itself fails (network error, unparseable response),
+  // so the button still does something useful when the grid — or this
+  // sandbox's ability to reach it — is unavailable, rather than going dead.
+  const loadDemoGrid = async () => {
+    setIsLoadingDemoGrid(true);
+    setDemoGridStatus(null);
+    try {
+      const live = await fetchSentinelCatalogue();
+      await bulkImportCameras(live.map(c => ({
+        name: c.name, remoteStreamUrl: c.remoteStreamUrl,
+        connectivityStatus: c.isLive === true ? 'online' : c.isLive === false ? 'offline' : 'unknown',
+      })));
+      setDemoGridStatus({ type: 'live', message: `Loaded ${live.length} cameras from the live grid catalogue.` });
+    } catch (err) {
+      console.error('Live Sentinel catalogue fetch failed, falling back to the bundled demo list:', err);
+      await bulkImportCameras(DEMO_GRID_CAMERAS);
+      setDemoGridStatus({ type: 'fallback', message: 'Could not reach the live grid catalogue — loaded the bundled demo list instead, which may be stale.' });
+    } finally {
+      setIsLoadingDemoGrid(false);
+      setTimeout(() => setDemoGridStatus(null), 8000);
+    }
+  };
 
   const exportRegistryCsv = () => {
     const rows = cameras.map(c => ({
@@ -1070,7 +1097,8 @@ export default function App() {
                       routePlate={routePlate} routePoints={routePoints} onClearRoute={() => setRoutePlate(null)}
                       isAdmin={isAdmin} onAddCamera={() => { addCamera(); handleJumpToSetup(); }}
                       onRemoveCamera={removeCamera} onCsvUpload={handleRegistryCsvUpload} onExportCsv={exportRegistryCsv}
-                      onLoadDemoGrid={loadDemoGrid} gapReport={gapReport} auditTrail={auditTrail}
+                      onLoadDemoGrid={loadDemoGrid} isLoadingDemoGrid={isLoadingDemoGrid} demoGridStatus={demoGridStatus}
+                      gapReport={gapReport} auditTrail={auditTrail}
                     />
                   )}
                   {activeTab === 'settings' && (

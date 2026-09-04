@@ -68,15 +68,27 @@ export function unsupportedReason(url: string): string {
  * more heavily). The same cameras are also served as WHEP (WebRTC) straight
  * off the raw origin (confirmed directly against the grid's MediaMTX
  * instance at 103.250.160.189, via /api/whep-proxy), bypassing Cloudflare
- * entirely. Only recognizes this specific grid's URL shape — any other
- * camera's HLS URL still plays through the HLS path unchanged.
+ * entirely.
+ *
+ * Recognizes two URL shapes for the same grid: the older Cloudflare-fronted
+ * corp8.cloud vanity path (/camNN/index.m3u8), and the grid's own
+ * documented pattern straight off the raw origin
+ * (<host>/live/stream/<id>/index.m3u8, per its integrator guide) — cameras
+ * pulled from /api/sentinel-catalogue use the latter. Any other camera's
+ * HLS URL still plays through the plain HLS path unchanged.
  */
 export function deriveWhepCamId(hlsUrl: string): string | null {
   try {
     const parsed = new URL(hlsUrl);
-    if (!/(^|\.)corp8\.cloud$/i.test(parsed.hostname)) return null;
-    const match = parsed.pathname.match(/\/(cam\d{1,3})\/index\.m3u8$/i);
-    return match ? match[1] : null;
+    if (/(^|\.)corp8\.cloud$/i.test(parsed.hostname)) {
+      const match = parsed.pathname.match(/\/(cam\d{1,3})\/index\.m3u8$/i);
+      return match ? match[1] : null;
+    }
+    if (parsed.hostname === '103.250.160.189') {
+      const match = parsed.pathname.match(/\/live\/stream\/([^/]+)\/index\.m3u8$/i);
+      return match ? match[1] : null;
+    }
+    return null;
   } catch {
     return null;
   }
