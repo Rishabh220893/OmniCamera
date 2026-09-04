@@ -104,15 +104,32 @@ export function startWhep(
   // gathers "host" candidates (this machine's own local network interfaces),
   // never server-reflexive ones. That's enough to connect only when a direct
   // path to the origin's raw IP happens to exist; anyone behind ordinary
-  // home/office NAT gets no candidate that can actually reach it. Matches
-  // the reported symptom exactly: connects briefly (whatever host candidate
-  // partially worked), then drops once that path proves unusable, retries,
-  // repeats. A public STUN server is enough here — media still flows
-  // straight to the origin's public IP once each side learns its
-  // reflexive address; no TURN relay needed unless that IP itself is
-  // unreachable from the viewer's network for other reasons.
+  // home/office NAT gets no candidate that can actually reach it. Adding
+  // STUN alone (an earlier fix here) was assumed enough — "no TURN relay
+  // needed unless that IP itself is unreachable from the viewer's network
+  // for other reasons" — but a real-network run (via
+  // scripts/verify-live-grid.mjs, not this sandbox, which can't reach the
+  // origin's media path at all) showed exactly that: every WHEP session
+  // negotiated fine (a clean 201) and then sat for the full capture
+  // timeout without ever completing — the signature of ICE stuck
+  // indefinitely in "checking," not a fast, decisive failure. That's what
+  // a NAT a plain STUN reflexive address can't satisfy looks like (a
+  // symmetric NAT, or a firewall that only allows connections it
+  // initiated). The grid's own integrator guide (hackathon-provided) never
+  // documents a TURN server, so this is added from our side — a free,
+  // rate-limited public relay (OpenRelay's; credentials are intentionally
+  // public, published for this exact use), fine for validating the fix
+  // and a hackathon demo, not a promise of reliability at real load. If
+  // this holds up, swapping in a paid/dedicated TURN provider later is a
+  // one-line change here.
   const pc = new RTCPeerConnection({
-    iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      { urls: 'stun:stun.relay.metered.ca:80' },
+      { urls: 'turn:relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    ],
   });
   const abortController = new AbortController();
   let resourceUrl: string | null = null;
