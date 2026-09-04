@@ -536,7 +536,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // The guide: "Reconnect automatically, with backoff (~2s → cap ~30s).
     // Do not reconnect in a tight loop." A manual-only retry button doesn't
     // meet that, and hls.js only reports a fatal error after exhausting its
-    // own retry budget — which at this origin's ~45-50s per-attempt timeouts
+    // own retry budget — which at this origin's ~45-75s per-attempt timeouts
     // can take minutes — so a watchdog also triggers reconnection if nothing
     // has actually confirmed live by then.
     const scheduleReconnect = (message: string) => {
@@ -550,9 +550,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         setRetryGeneration((g) => g + 1);
       }, retryDelayRef.current);
     };
+    // Above the manifest and fragment stage timeouts (75s each) combined —
+    // a genuinely slow-but-succeeding manifest followed by a slow segment
+    // can legitimately eat close to 150s before decode ever starts, and the
+    // watchdog reconnecting mid-fetch would just restart that same slow
+    // cycle from zero instead of letting it land.
     const watchdog = setTimeout(() => {
       scheduleReconnect('Timed out waiting for a real picture from this stream.');
-    }, 90_000);
+    }, 150_000);
     const clearWatchdog = () => clearTimeout(watchdog);
     video.addEventListener('playing', clearWatchdog);
 
@@ -580,21 +585,26 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         // timeout ever got a chance to respond. These give the real
         // round-trip room to complete instead of racing it.
         // maxRetry is 0 everywhere — hls.js retrying internally at the full
-        // 50s timeout, on top of the backoff-reconnect wrapper below (which
-        // fully re-creates hls.js after a fatal error), was compounding:
-        // a single failing camera could pay a 2-retry, ~100s+ tax per
+        // stage timeout, on top of the backoff-reconnect wrapper below
+        // (which fully re-creates hls.js after a fatal error), was
+        // compounding: a single failing camera could pay a 2-retry tax per
         // stage before ever reaching fatal and letting the backoff logic
         // run at all. One clean attempt per stage, then hand off to the
         // properly-paced (2s → 30s) reconnect instead.
-        manifestLoadingTimeOut: 50_000,
+        //
+        // Matches /api/proxy-hls's own fetch timeout (server.ts) — a real
+        // HAR (scripts/verify-live-grid.mjs) caught the previous 45s proxy
+        // ceiling itself being the cause of failures on manifests that had
+        // taken up to 39.7s to *succeed*, so the proxy timeout was raised
+        // to 70s; a client-side stage timeout shorter than that would just
+        // cut a request off before the server had even given up on it.
+        manifestLoadingTimeOut: 75_000,
         manifestLoadingMaxRetry: 0,
-        levelLoadingTimeOut: 50_000,
+        levelLoadingTimeOut: 75_000,
         levelLoadingMaxRetry: 0,
         // A HAR capture showed every segment request needing as long as a
-        // manifest fetch on this origin (both ~20-45s) — matching that here
-        // too, since 25s was cutting segments off before the proxy's own
-        // (now 45s) attempt could ever complete.
-        fragLoadingTimeOut: 50_000,
+        // manifest fetch on this origin — matching that here too.
+        fragLoadingTimeOut: 75_000,
         fragLoadingMaxRetry: 0,
         xhrSetup: (xhr) => {
           if (streamAccessPassword) xhr.setRequestHeader('X-Stream-Password', streamAccessPassword);

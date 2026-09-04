@@ -378,7 +378,15 @@ async function startServer() {
       // apparently needs as long to serve one segment as a whole manifest,
       // so both get the same generous, no-retry budget now (retrying a
       // systemically slow origin just triples the wait for no benefit).
-      const fetchOpts = { timeoutMs: 45_000, retries: 0 };
+      //
+      // 45s turned out to still be too tight: a later HAR (scripts/
+      // verify-live-grid.mjs) caught every failing manifest in that run
+      // coming back 502 at 45-47s — this abort firing, not the upstream
+      // itself rejecting anything — while the manifests that *did* succeed
+      // took as long as 39.7s, uncomfortably close to that same ceiling.
+      // Raised to give genuinely slow-but-alive responses more room to
+      // land instead of being cut off right as they'd have finished.
+      const fetchOpts = { timeoutMs: 70_000, retries: 0 };
 
       const cacheKey = password ? `${new URL(targetUrl).host}|${email || ''}|${password}` : null;
 

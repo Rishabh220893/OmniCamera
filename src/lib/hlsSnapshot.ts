@@ -23,12 +23,30 @@ import { captureFrameAllowingSettle } from './frameCapture';
  * for that long blocked every other tile — including fast WHEP cameras —
  * from getting a turn at all. Two independent lanes keep both problems
  * fixed: HLS no longer runs unthrottled, and it no longer blocks WHEP.
+ *
+ * That ~57s end-to-end figure was already on record here, yet the overall
+ * timeoutMs below was still only 50s — a real HAR from this exact origin
+ * (scripts/verify-live-grid.mjs) later caught the consequence directly: a
+ * manifest fetch that took 24.9s, then a key (12.2s) and segment (12.7s)
+ * that both came back 200 with real bytes — genuinely successful, ~49.7s
+ * in — only for the wrapper's own 50s deadline to fire a beat later and
+ * discard all of it as "Snapshot timed out" before decode ever reached
+ * 'playing'. STAGE_TIMEOUT_MS below is what actually bounds each fetch —
+ * matching our own /api/proxy-hls's fetch timeout (server.ts), since a
+ * client-side stage timeout shorter than the server's own abort ceiling
+ * would just cut a request off before the server had even given up on it.
+ * The overall budget needs enough room for manifest + key + segment +
+ * decode to land in sequence without the wrapper cutting it off first, so
+ * it's set well above their observed combined worst case rather than
+ * equal to one stage.
  */
+const STAGE_TIMEOUT_MS = 75_000;
+
 export function captureHlsSnapshot(
   url: string,
   opts: { password?: string; email?: string; timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<string> {
-  const { password, email, timeoutMs = 50_000, signal } = opts;
+  const { password, email, timeoutMs = 160_000, signal } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
 
@@ -91,11 +109,11 @@ export function captureHlsSnapshot(
         video.addEventListener('playing', capture, { once: true });
       } else if (Hls.isSupported()) {
         hls = new Hls({
-          manifestLoadingTimeOut: timeoutMs,
+          manifestLoadingTimeOut: STAGE_TIMEOUT_MS,
           manifestLoadingMaxRetry: 0,
-          levelLoadingTimeOut: timeoutMs,
+          levelLoadingTimeOut: STAGE_TIMEOUT_MS,
           levelLoadingMaxRetry: 0,
-          fragLoadingTimeOut: timeoutMs,
+          fragLoadingTimeOut: STAGE_TIMEOUT_MS,
           fragLoadingMaxRetry: 0,
           xhrSetup: (xhr) => {
             if (password) xhr.setRequestHeader('X-Stream-Password', password);
