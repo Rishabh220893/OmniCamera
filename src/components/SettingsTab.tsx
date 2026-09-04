@@ -258,7 +258,7 @@ export default function SettingsTab(props: SettingsTabProps) {
               autoComplete="off"
             />
             <p className="text-[10px] text-ink-muted leading-relaxed">
-              Some remote grids pair this with the password below (as email:password Basic auth) for their direct RTSP/WebRTC endpoints — separate from the plain password some hosts use for HLS.
+              Some remote grids pair this with the password below — as email:password Basic auth for their direct RTSP/WebRTC endpoints, and as the login field for their HLS CDN.
             </p>
           </div>
           <div className="space-y-1.5">

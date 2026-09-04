@@ -16,9 +16,9 @@ export interface UserPreferences {
    *  through the server the way other secrets in this app are. */
   streamAccessPassword?: string;
   /** Registered email for grids whose direct RTSP/WebRTC endpoints
-   *  authenticate as email:password (HTTP Basic auth, email as username) —
-   *  a separate credential from streamAccessPassword's password-only HLS
-   *  scheme. */
+   *  authenticate as email:password (HTTP Basic auth, email as username),
+   *  and whose HLS CDN's cookie login form also takes an email field
+   *  alongside streamAccessPassword. */
   streamAccessEmail?: string;
   /** Pilot-scale RBAC stand-in — a Firestore field checked by firestore.rules,
    *  not a real custom-claims/OIDC role. See Sentinel Mesh roadmap for the

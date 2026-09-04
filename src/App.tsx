@@ -970,7 +970,7 @@ export default function App() {
     setIsLoadingDemoGrid(true);
     setDemoGridStatus(null);
     try {
-      const live = await fetchSentinelCatalogue(streamAccessPassword);
+      const live = await fetchSentinelCatalogue(streamAccessPassword, streamAccessEmail);
       await bulkImportCameras(live.map(c => ({
         name: c.name, remoteStreamUrl: c.remoteStreamUrl,
         connectivityStatus: c.isLive === true ? 'online' : c.isLive === false ? 'offline' : 'unknown',

@@ -13,9 +13,9 @@ import Hls from 'hls.js';
  */
 export function captureHlsSnapshot(
   url: string,
-  opts: { password?: string; timeoutMs?: number; signal?: AbortSignal } = {}
+  opts: { password?: string; email?: string; timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<string> {
-  const { password, timeoutMs = 50_000, signal } = opts;
+  const { password, email, timeoutMs = 50_000, signal } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
 
@@ -46,7 +46,7 @@ export function captureHlsSnapshot(
 
     const overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
 
-    const proxiedUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${password ? `&password=${encodeURIComponent(password)}` : ''}`;
+    const proxiedUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${password ? `&password=${encodeURIComponent(password)}` : ''}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
 
     const capture = () => {
       settleTimer = setTimeout(() => {
@@ -74,6 +74,7 @@ export function captureHlsSnapshot(
         fragLoadingMaxRetry: 0,
         xhrSetup: (xhr) => {
           if (password) xhr.setRequestHeader('X-Stream-Password', password);
+          if (email) xhr.setRequestHeader('X-Stream-Email', email);
         },
       });
       hls.loadSource(proxiedUrl);

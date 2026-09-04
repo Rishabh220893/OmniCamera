@@ -312,18 +312,26 @@ async function startServer() {
   // redirected (session expired/invalid) instead of served.
   const sessionCookieCache = new Map<string, string>();
 
-  async function loginForSessionCookie(targetUrl: string, password: string): Promise<string | null> {
-    // Keyed by host+password, not password alone — a shared password across
-    // multiple camera hosts (common on a bulk-onboarded test grid) would
-    // otherwise reuse host A's session cookie against host B and get
+  async function loginForSessionCookie(targetUrl: string, password: string, email?: string): Promise<string | null> {
+    // Keyed by host+email+password, not password alone — a shared password
+    // across multiple camera hosts (common on a bulk-onboarded test grid)
+    // would otherwise reuse host A's session cookie against host B and get
     // rejected as an invalid session there.
-    const cacheKey = `${new URL(targetUrl).host}|${password}`;
+    const cacheKey = `${new URL(targetUrl).host}|${email || ''}|${password}`;
     try {
       const loginUrl = new URL('/auth/login', targetUrl).toString();
+      // The login form (auth/login) now carries an email field alongside
+      // password — confirmed by fetching the form directly. Only WHEP/RTSP
+      // auth was documented as switching to email:password; this form
+      // shipping the same field alongside it, and every HLS login in a HAR
+      // capture failing with the exact same "redirected to a login page"
+      // symptom despite a correct password, is strong enough evidence this
+      // path needs it too.
+      const body = email ? `email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}` : `password=${encodeURIComponent(password)}`;
       const res = await fetchUpstream(loginUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UPSTREAM_USER_AGENT },
-        body: `password=${encodeURIComponent(password)}`,
+        body,
         redirect: 'manual',
       }, { timeoutMs: 20_000, retries: 1 });
       const setCookie = res.headers.get('set-cookie');
@@ -348,6 +356,7 @@ async function startServer() {
   app.get('/api/proxy-hls', async (req, res) => {
     const targetUrl = req.query.url as string;
     const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined));
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined));
     if (!targetUrl) {
       res.status(400).send("Parameter 'url' is required");
       return;
@@ -356,7 +365,7 @@ async function startServer() {
     try {
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
         const headers: Record<string, string> = { 'User-Agent': UPSTREAM_USER_AGENT };
-        if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+        if (password) headers['Authorization'] = 'Basic ' + Buffer.from(`${email || ''}:${password}`).toString('base64');
         if (cookie) headers['Cookie'] = cookie;
         return headers;
       };
@@ -371,11 +380,11 @@ async function startServer() {
       // systemically slow origin just triples the wait for no benefit).
       const fetchOpts = { timeoutMs: 45_000, retries: 0 };
 
-      const cacheKey = password ? `${new URL(targetUrl).host}|${password}` : null;
+      const cacheKey = password ? `${new URL(targetUrl).host}|${email || ''}|${password}` : null;
 
       let upstream: Response;
       if (password && cacheKey) {
-        const cachedCookie = sessionCookieCache.get(cacheKey) || (await loginForSessionCookie(targetUrl, password));
+        const cachedCookie = sessionCookieCache.get(cacheKey) || (await loginForSessionCookie(targetUrl, password, email));
         upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' }, fetchOpts);
         // A redirect with a password set means the session was invalid/expired
         // (or this is the first request and there was nothing cached) — log
@@ -389,7 +398,7 @@ async function startServer() {
         // previously had no retry path for at all.
         if ((upstream.status >= 300 && upstream.status < 400) || upstream.status === 401) {
           sessionCookieCache.delete(cacheKey);
-          const freshCookie = await loginForSessionCookie(targetUrl, password);
+          const freshCookie = await loginForSessionCookie(targetUrl, password, email);
           upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(freshCookie), redirect: 'manual' }, fetchOpts);
         }
       } else {
@@ -436,7 +445,8 @@ async function startServer() {
 
         const baseUrl = new URL(targetUrl);
         const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
-        const proxyLine = (uri: string) => `/api/proxy-hls?url=${encodeURIComponent(new URL(uri, baseUrl).toString())}${passwordQuery}`;
+        const emailQuery = email ? `&email=${encodeURIComponent(email)}` : '';
+        const proxyLine = (uri: string) => `/api/proxy-hls?url=${encodeURIComponent(new URL(uri, baseUrl).toString())}${passwordQuery}${emailQuery}`;
 
         const rewritten = sourceText.split('\n').map((line) => {
           const trimmed = line.trim();
@@ -600,6 +610,7 @@ async function startServer() {
   app.get('/api/camera-catalogue', async (req, res) => {
     const targetHost = req.query.host as string;
     const password = req.query.password as string | undefined;
+    const email = req.query.email as string | undefined;
     if (!targetHost) {
       res.status(400).send("Parameter 'host' is required");
       return;
@@ -609,15 +620,15 @@ async function startServer() {
       const base = `https://${targetHost}`;
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
         const headers: Record<string, string> = { 'User-Agent': UPSTREAM_USER_AGENT };
-        if (password) headers['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+        if (password) headers['Authorization'] = 'Basic ' + Buffer.from(`${email || ''}:${password}`).toString('base64');
         if (cookie) headers['Cookie'] = cookie;
         return headers;
       };
 
-      const cacheKey = password ? `${targetHost}|${password}` : null;
+      const cacheKey = password ? `${targetHost}|${email || ''}|${password}` : null;
       const fetchCatalogue = async (path: string, forceFreshLogin = false) => {
         const cookie = password
-          ? (forceFreshLogin ? null : sessionCookieCache.get(cacheKey!)) || (await loginForSessionCookie(`${base}${path}`, password))
+          ? (forceFreshLogin ? null : sessionCookieCache.get(cacheKey!)) || (await loginForSessionCookie(`${base}${path}`, password, email))
           : null;
         return fetchUpstream(`${base}${path}`, { headers: buildHeaders(cookie), redirect: 'manual' }, { timeoutMs: 20_000, retries: 0 });
       };

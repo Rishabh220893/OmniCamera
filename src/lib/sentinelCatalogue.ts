@@ -60,8 +60,8 @@ function extractCameraArray(payload: unknown): Record<string, unknown>[] {
   return [];
 }
 
-export async function fetchSentinelCatalogue(streamAccessPassword: string): Promise<SentinelCameraEntry[]> {
-  const res = await fetch(`/api/camera-catalogue?host=${encodeURIComponent('cctv.corp8.cloud')}${streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}`);
+export async function fetchSentinelCatalogue(streamAccessPassword: string, streamAccessEmail?: string): Promise<SentinelCameraEntry[]> {
+  const res = await fetch(`/api/camera-catalogue?host=${encodeURIComponent('cctv.corp8.cloud')}${streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}${streamAccessEmail ? `&email=${encodeURIComponent(streamAccessEmail)}` : ''}`);
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Catalogue request failed (${res.status}): ${text.slice(0, 200)}`);

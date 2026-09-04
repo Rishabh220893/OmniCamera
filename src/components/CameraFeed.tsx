@@ -22,12 +22,12 @@ interface CameraFeedProps {
   onCameraError?: (message: string | null) => void;
   onFallbackToSimulated?: () => void;
   /** Forwarded to the /api/proxy-hls server route, which sends it upstream
-   *  as HTTP Basic Auth (empty username) for password-gated CDN hosts. */
+   *  as HTTP Basic Auth and via the CDN's cookie login (email:password —
+   *  see streamAccessEmail) for password-gated CDN hosts. */
   streamAccessPassword?: string;
-  /** RTSP/WHEP on the grid's raw origin authenticate with email:password
-   *  (Basic auth, email as username) — a separate credential from
-   *  streamAccessPassword's password-only HLS scheme. Forwarded to
-   *  /api/whep-proxy alongside the password. */
+  /** Both RTSP/WHEP on the grid's raw origin and the HLS CDN's login form
+   *  authenticate with email:password (email as username / login field) —
+   *  forwarded to /api/whep-proxy and /api/proxy-hls alongside the password. */
   streamAccessEmail?: string;
   /** Lets a grid tile show a real connecting/live/error indicator instead of
    *  either playing video or nothing — a blank tile during a slow upstream
@@ -216,7 +216,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       let switchingToHls = false;
       try {
         const url = playbackMode === 'hls'
-          ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, signal: abortController.signal })
+          ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, email: streamAccessEmail, signal: abortController.signal })
           : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword, streamAccessEmail });
         if (cancelled) return;
         hasSnapshot = true;
@@ -522,7 +522,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // also keeps the access password off the wire between browser and
     // camera host entirely.
     const proxiedUrl = (url: string, extraPasswordQuery: boolean) =>
-      `/api/proxy-hls?url=${encodeURIComponent(url)}${extraPasswordQuery && streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}`;
+      `/api/proxy-hls?url=${encodeURIComponent(url)}${extraPasswordQuery && streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}${extraPasswordQuery && streamAccessEmail ? `&email=${encodeURIComponent(streamAccessEmail)}` : ''}`;
 
     let hls: Hls | null = null;
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -558,6 +558,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         fragLoadingMaxRetry: 0,
         xhrSetup: (xhr) => {
           if (streamAccessPassword) xhr.setRequestHeader('X-Stream-Password', streamAccessPassword);
+          if (streamAccessEmail) xhr.setRequestHeader('X-Stream-Email', streamAccessEmail);
         },
       });
       hls.loadSource(proxiedUrl(camera.remoteStreamUrl, false));
@@ -592,7 +593,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
-  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, retryGeneration, whepCamId, playbackMode, shouldConnect, liveVideo]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, streamAccessEmail, retryGeneration, whepCamId, playbackMode, shouldConnect, liveVideo]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.
