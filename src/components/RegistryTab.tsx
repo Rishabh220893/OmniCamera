@@ -135,7 +135,13 @@ export default function RegistryTab({
           <h3 className="text-sm font-bold text-ink">Camera list</h3>
           <span className="text-xs text-ink-muted">{filtered.length} of {cameras.length} camera{cameras.length !== 1 ? 's' : ''}</span>
         </div>
-        <div className="overflow-x-auto">
+        {/* A wide multi-column table has nowhere good to go on a phone —
+            even with horizontal scroll, only ~2 columns show at once and
+            there's no visible affordance that more exist off-screen. Below
+            md this becomes a stacked card list instead (a standard
+            "table becomes cards" responsive pattern), each one showing the
+            same fields in a layout that actually fits a narrow screen. */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr>
@@ -179,6 +185,39 @@ export default function RegistryTab({
               )}
             </tbody>
           </table>
+        </div>
+
+        <div className="md:hidden divide-y divide-border">
+          {pagedFiltered.map(c => (
+            <div
+              key={c.id}
+              onClick={() => onSelectCamera(c.id)}
+              className={cn('p-4 flex flex-col gap-2.5 cursor-pointer', c.id === activeCameraId && 'bg-accent-soft')}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-sm font-semibold text-ink truncate">{c.name}</span>
+                  {!c.location && <span title="Not located on the map" className="shrink-0"><MapPin className="w-3.5 h-3.5 text-ink-muted" strokeWidth={1.75} /></span>}
+                </div>
+                {isAdmin && cameras.length > 1 && (
+                  <button onClick={(e) => { e.stopPropagation(); onRemoveCamera(c.id); }} className="btn-ghost !p-1.5 hover:!text-critical shrink-0" title="Delete">
+                    <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className={cn('badge', STATUS_BADGE[c.connectivityStatus || 'unknown'])}>{c.connectivityStatus || 'unknown'}</span>
+                <span className={cn('badge', MAINTENANCE_BADGE[c.maintenanceStatus || 'operational'])}>{(c.maintenanceStatus || 'operational').replace('_', ' ')}</span>
+              </div>
+              <p className="text-xs text-ink-muted truncate">
+                {[c.department, c.ownership, c.cameraType].filter(Boolean).join(' · ') || 'No department, ownership, or type set'}
+              </p>
+              {c.installDate && <p className="text-[10px] font-mono text-ink-muted">Installed {c.installDate}</p>}
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <p className="px-6 py-10 text-center text-xs text-ink-muted">No cameras match these filters.</p>
+          )}
         </div>
         {filtered.length > PAGE_SIZE && (
           <div className="px-6 py-4 border-t border-border flex items-center justify-between text-xs">

@@ -74,7 +74,11 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
                         <div className="w-7 h-7 rounded-full bg-accent flex items-center justify-center text-white text-xs font-bold">{idx + 1}</div>
                         <h4 className="text-sm font-bold text-ink">{step.title}</h4>
                       </div>
-                      <p className="text-sm text-ink-muted leading-relaxed pl-10">{step.content}</p>
+                      {/* break-words: several steps embed a long unbroken
+                          rtsp:// URL — without it that single "word" just
+                          overflows the panel on a narrow screen instead of
+                          wrapping. */}
+                      <p className="text-sm text-ink-muted leading-relaxed pl-10 break-words">{step.content}</p>
                     </div>
                   ))
                 ) : (
@@ -86,11 +90,11 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
                       <div className="panel p-5 font-mono text-[11px] space-y-3">
                         <div className="space-y-1">
                           <div className="text-ink-muted italic">// Hikvision</div>
-                          <div className="text-accent">rtsp://admin:12345@192.168.1.10:554/Streaming/Channels/101</div>
+                          <div className="text-accent break-all">rtsp://admin:12345@192.168.1.10:554/Streaming/Channels/101</div>
                         </div>
                         <div className="space-y-1 pt-3 border-t border-border">
                           <div className="text-ink-muted italic">// Dahua / CP Plus</div>
-                          <div className="text-success">rtsp://admin:admin123@192.168.1.10:554/cam/realmonitor?channel=1&subtype=0</div>
+                          <div className="text-success break-all">rtsp://admin:admin123@192.168.1.10:554/cam/realmonitor?channel=1&subtype=0</div>
                         </div>
                       </div>
                     </section>

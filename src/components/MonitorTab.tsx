@@ -339,8 +339,16 @@ export default function MonitorTab({
         <p className="text-sm text-ink-muted">Live camera monitoring and AI analysis.</p>
       </div>
 
-      <div className="grid xl:grid-cols-4 gap-8">
-      <div className="xl:col-span-3 space-y-6">
+      {/* grid-cols-1 (not just the bare "grid" utility) is load-bearing:
+          without an explicit column count below xl, an implicit grid track
+          sizes to its content's max-content width instead of the container
+          width — with enough cameras in the quick-switch strip below, that
+          silently stretched this whole column thousands of pixels wide and
+          pushed the view-mode toggle off-screen. grid-cols-1 uses
+          minmax(0,1fr), which — like a flex column — actually clips to the
+          viewport. */}
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+      <div className="min-w-0 xl:col-span-3 space-y-6">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           {/* A mobile quick-switch strip, not the primary way to find a
               camera at scale — Registry's search is. Capped so a registry
