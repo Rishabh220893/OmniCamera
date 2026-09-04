@@ -1,4 +1,4 @@
-import { MutableRefObject, useMemo, useRef, useState } from 'react';
+import { MutableRefObject, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
@@ -75,6 +75,31 @@ function CameraTile({
   const containerRef = useRef<HTMLDivElement>(null);
   const inViewport = useInViewport(containerRef);
   const shouldConnect = isActive || isSelectedForAnalysis || inViewport;
+
+  // retryToken's own doc comment above says the quiet part out loud:
+  // "nothing auto-retries a failed remote connection on its own." A
+  // HAR-evidenced bug bore that out — some tiles' internal capture loop
+  // went permanently silent after a single failure, stuck on 'error' with
+  // zero further network activity for 5+ minutes, confirmed by direct
+  // observation to persist even while the tile stayed on-screen the whole
+  // time. The only way out was a manual Retry click. This automates that
+  // same click after a stretch with no recovery, rather than requiring a
+  // person to notice and act — remounting is a full reset (fresh effects,
+  // fresh AbortControllers), so it recovers regardless of what actually
+  // wedged the internal loop. 45s is comfortably longer than a legitimate
+  // in-progress attempt should ever take (a queued capture waiting its
+  // turn behind others, plus WHEP's own 25s timeout — see
+  // captureConcurrency.ts/whepClient.ts), so this shouldn't fire while a
+  // real attempt is still honestly working.
+  useEffect(() => {
+    if (status !== 'error' || !shouldConnect) return;
+    const timer = setTimeout(() => {
+      setStatus('connecting');
+      setRetryToken((t) => t + 1);
+    }, 45_000);
+    return () => clearTimeout(timer);
+  }, [status, shouldConnect]);
+
   // Live (persistent) video is reserved for the camera actually being
   // watched or analyzed — everything else runs as a rotating snapshot
   // (see CameraFeed's `liveVideo` prop doc). That's the difference between
