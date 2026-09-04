@@ -221,22 +221,52 @@ export function startWhep(
  * concurrency slot and origin resources a scrolled-away or unmounted
  * tile has no more use for.
  */
-// Now that WHEP auth actually succeeds (see /api/whep-proxy's email:password
-// fix), a HAR capture with a full 30-camera grid connecting at once showed
-// most connect-to-disconnect durations bunched up in the last ~1s before
-// this used to be 12s, with none landing between 12s and 20s — the
-// signature of a timeout cutting sessions off, not of them completing
-// naturally. Signaling (the SDP POST) itself answers in well under a
-// second; what actually eats the time is the ICE/DTLS/SRTP handshake that
-// follows it, done straight from the viewer's own browser to the origin
-// (see startWhep's doc comment) — with 16 of these racing concurrently
-// (MAX_CONCURRENT_NEGOTIATIONS) each fighting the same viewer-side
-// bandwidth/CPU for STUN checks and decode, 12s was tuned for a
-// low-concurrency case that stopped being the common one. Matches the
-// grid's own connect timeout for the focused/live path (30s, tuned against
-// the same thundering-herd queueing delay) far more closely than the old
-// snapshot-path value did.
+// Signaling (the SDP POST) answers in well under a second; what actually
+// eats time is the ICE/DTLS/SRTP handshake and decode that follow it, done
+// straight from the viewer's own browser to the origin (see startWhep's doc
+// comment) — and MAX_CONCURRENT_NEGOTIATIONS only gates the signaling step,
+// releasing the slot the instant that exchange completes. Nothing gated the
+// far more expensive part after it, so a full grid page (24 tiles) landing
+// on the same ~20s refresh cadence sent a real HAR capture showing 14
+// cameras POSTing within the same 2-second window — a genuine thundering
+// herd of concurrent ICE+decode work fighting over one browser tab's
+// bandwidth/CPU. Durations bunched up hard at this timeout across nearly
+// every camera during that pile-up, while the few that got a fast frame
+// did so early, before the herd built up — the signature of contention, not
+// of individual cameras being unreachable. acquireCaptureSlot below throttles
+// how many tiles are actively past-signaling-and-decoding at once, closer to
+// what a browser tab can really sustain concurrently, so each gets a real
+// shot instead of all of them starving each other into this timeout.
 const WHEP_SNAPSHOT_TIMEOUT_MS = 25_000;
+
+// See WHEP_SNAPSHOT_TIMEOUT_MS above — this is the actual fix for the
+// contention it documents, not the timeout itself. Sized to the same
+// "how many concurrent sustained WebRTC decodes can one browser tab do"
+// constraint MAX_CONCURRENT_NEGOTIATIONS's own history already identifies
+// (its comment: this used to be 6, before it was repurposed for the much
+// cheaper signaling-only step and raised to 16) — that original number
+// belongs here now, gating the part it was actually describing.
+const MAX_CONCURRENT_CAPTURES = 6;
+let activeCaptureSlots = 0;
+const captureQueue: Array<() => void> = [];
+
+function acquireCaptureSlot(): Promise<() => void> {
+  return new Promise((resolve) => {
+    const grant = () => {
+      activeCaptureSlots++;
+      let released = false;
+      resolve(() => {
+        if (released) return;
+        released = true;
+        activeCaptureSlots--;
+        const next = captureQueue.shift();
+        if (next) next();
+      });
+    };
+    if (activeCaptureSlots < MAX_CONCURRENT_CAPTURES) grant();
+    else captureQueue.push(grant);
+  });
+}
 
 export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal; streamAccessPassword?: string; streamAccessEmail?: string } = {}): Promise<string> {
   const { timeoutMs = WHEP_SNAPSHOT_TIMEOUT_MS, signal, streamAccessPassword, streamAccessEmail } = opts;
@@ -257,6 +287,12 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
     document.body.appendChild(video);
     let settled = false;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    // Not assigned until the capture slot below comes through — a tile
+    // queued behind MAX_CONCURRENT_CAPTURES others hasn't started
+    // negotiating yet, so there's nothing to close if it's aborted or times
+    // out while still waiting its turn.
+    let session: WhepSession | null = null;
+    let releaseCaptureSlot: (() => void) | null = null;
 
     const finish = (err?: Error, dataUrl?: string) => {
       if (settled) return;
@@ -264,7 +300,8 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
       if (settleTimer) clearTimeout(settleTimer);
       clearTimeout(overallTimeout);
       signal?.removeEventListener('abort', onAbort);
-      session.close();
+      session?.close();
+      releaseCaptureSlot?.();
       video.remove();
       if (err) reject(err); else resolve(dataUrl!);
     };
@@ -274,30 +311,38 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
 
     const overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
 
-    const session = startWhep(camId, video, (state) => {
-      if (state === 'failed' || state === 'closed') finish(new Error(`WebRTC connection ${state}`));
-    }, streamAccessPassword, streamAccessEmail);
+    acquireCaptureSlot().then((release) => {
+      // Settled (timed out, aborted) while still queued for a slot — hand
+      // the slot straight back instead of starting a negotiation nothing is
+      // waiting on anymore.
+      if (settled) { release(); return; }
+      releaseCaptureSlot = release;
 
-    // The integrator guide is explicit that a join can start on a
-    // corrupt/black decoder frame that self-corrects almost immediately —
-    // a brief settle after 'playing' fires (rather than capturing the
-    // instant a frame exists) keeps thumbnails from being a coin flip on
-    // catching that exact moment.
-    video.addEventListener('playing', () => {
-      settleTimer = setTimeout(() => {
-        if (!video.videoWidth) { finish(new Error('No frame available to capture')); return; }
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { finish(new Error('Canvas unavailable')); return; }
-        ctx.drawImage(video, 0, 0);
-        finish(undefined, canvas.toDataURL('image/jpeg', 0.6));
-      }, 900);
-    }, { once: true });
+      session = startWhep(camId, video, (state) => {
+        if (state === 'failed' || state === 'closed') finish(new Error(`WebRTC connection ${state}`));
+      }, streamAccessPassword, streamAccessEmail);
 
-    session.ready.catch((err: unknown) => {
-      finish(err instanceof Error ? err : new Error('WHEP negotiation failed'));
+      // The integrator guide is explicit that a join can start on a
+      // corrupt/black decoder frame that self-corrects almost immediately —
+      // a brief settle after 'playing' fires (rather than capturing the
+      // instant a frame exists) keeps thumbnails from being a coin flip on
+      // catching that exact moment.
+      video.addEventListener('playing', () => {
+        settleTimer = setTimeout(() => {
+          if (!video.videoWidth) { finish(new Error('No frame available to capture')); return; }
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { finish(new Error('Canvas unavailable')); return; }
+          ctx.drawImage(video, 0, 0);
+          finish(undefined, canvas.toDataURL('image/jpeg', 0.6));
+        }, 900);
+      }, { once: true });
+
+      session.ready.catch((err: unknown) => {
+        finish(err instanceof Error ? err : new Error('WHEP negotiation failed'));
+      });
     });
   });
 }
