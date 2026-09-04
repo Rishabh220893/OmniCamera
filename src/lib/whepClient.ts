@@ -97,7 +97,20 @@ export function startWhep(
   streamAccessPassword?: string,
   streamAccessEmail?: string,
 ): WhepSession {
-  const pc = new RTCPeerConnection();
+  // No iceServers previously — with none at all, RTCPeerConnection only
+  // gathers "host" candidates (this machine's own local network interfaces),
+  // never server-reflexive ones. That's enough to connect only when a direct
+  // path to the origin's raw IP happens to exist; anyone behind ordinary
+  // home/office NAT gets no candidate that can actually reach it. Matches
+  // the reported symptom exactly: connects briefly (whatever host candidate
+  // partially worked), then drops once that path proves unusable, retries,
+  // repeats. A public STUN server is enough here — media still flows
+  // straight to the origin's public IP once each side learns its
+  // reflexive address; no TURN relay needed unless that IP itself is
+  // unreachable from the viewer's network for other reasons.
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
+  });
   const abortController = new AbortController();
   let resourceUrl: string | null = null;
   let closed = false;
