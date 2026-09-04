@@ -13,6 +13,8 @@
  * (ICE/DTLS/SRTP) still flows straight from the browser to the origin —
  * only the signaling handshake is relayed.
  */
+import { acquireCaptureSlot } from './captureConcurrency';
+
 export interface WhepSession {
   pc: RTCPeerConnection;
   /** Resolves once negotiation completes, or rejects if it fails. Ignore
@@ -252,27 +254,15 @@ const WHEP_SNAPSHOT_TIMEOUT_MS = 25_000;
 // is cadence, not reliability — see SNAPSHOT_REFRESH_MS's doc comment in
 // CameraFeed for how this trades against the 20s refresh target on a full
 // page of tiles all wanting a turn.
-const MAX_CONCURRENT_CAPTURES = 1;
-let activeCaptureSlots = 0;
-const captureQueue: Array<() => void> = [];
-
-function acquireCaptureSlot(): Promise<() => void> {
-  return new Promise((resolve) => {
-    const grant = () => {
-      activeCaptureSlots++;
-      let released = false;
-      resolve(() => {
-        if (released) return;
-        released = true;
-        activeCaptureSlots--;
-        const next = captureQueue.shift();
-        if (next) next();
-      });
-    };
-    if (activeCaptureSlots < MAX_CONCURRENT_CAPTURES) grant();
-    else captureQueue.push(grant);
-  });
-}
+//
+// Shared with captureHlsSnapshot (see captureConcurrency.ts) — a single
+// slot scoped to just this transport still let an HLS fallback capture run
+// fully concurrently with a WHEP one, since they're separate code paths.
+// A HAR caught that overlap directly: a 12.6s HLS fetch in flight at the
+// same moment three separate WHEP POSTs in a row failed outright before
+// ever reaching the network (status 0, 100% "blocked" timing) — both
+// transports hit the same single Render server, so gating them separately
+// never actually delivered "one capture at a time" system-wide.
 
 export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal; streamAccessPassword?: string; streamAccessEmail?: string } = {}): Promise<string> {
   const { timeoutMs = WHEP_SNAPSHOT_TIMEOUT_MS, signal, streamAccessPassword, streamAccessEmail } = opts;
