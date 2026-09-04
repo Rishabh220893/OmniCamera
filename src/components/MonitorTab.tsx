@@ -31,6 +31,7 @@ interface CameraTileProps {
   onCameraError?: (msg: string | null) => void;
   onFallbackToSimulated?: () => void;
   streamAccessPassword: string;
+  streamAccessEmail: string;
   onSelect: () => void;
   onToggleAnalysis: () => void;
   onStatusChange: (cameraId: string, status: FeedStatus) => void;
@@ -48,7 +49,7 @@ interface CameraTileProps {
 // a perfectly good HLS connection and restarting it from zero.
 function CameraTile({
   camera, layout, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
-  mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onSelect, onToggleAnalysis,
+  mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onSelect, onToggleAnalysis,
   onStatusChange, cameraError, isFullscreen, onToggleFullscreen, onToggleCameraFacing, hidden
 }: CameraTileProps) {
   const [status, setStatus] = useState<FeedStatus>('connecting');
@@ -96,6 +97,7 @@ function CameraTile({
       onCameraError={onCameraError}
       onFallbackToSimulated={onFallbackToSimulated}
       streamAccessPassword={streamAccessPassword}
+      streamAccessEmail={streamAccessEmail}
       onStatusChange={(s) => { setStatus(s); onStatusChange(camera.id, s); }}
     />
   );
@@ -258,6 +260,7 @@ interface MonitorTabProps {
   onFallbackToSimulated: () => void;
   onChangeTab: (tab: TabId) => void;
   streamAccessPassword: string;
+  streamAccessEmail: string;
   /** Cameras currently running the capture/analysis loop — always includes
    *  the active camera; grid-view checkboxes add more on top of it. */
   analysisCameraIds: Set<string>;
@@ -271,7 +274,7 @@ export default function MonitorTab({
   cameras, activeCameraId, onSelectCamera, onAddCamera, isCapturing,
   cameraError, analysisError, logs, viewMode, onChangeViewMode, containerRef,
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
-  onFallbackToSimulated, onChangeTab, streamAccessPassword,
+  onFallbackToSimulated, onChangeTab, streamAccessPassword, streamAccessEmail,
   analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
@@ -423,6 +426,7 @@ export default function MonitorTab({
               onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
               onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
               streamAccessPassword={streamAccessPassword}
+              streamAccessEmail={streamAccessEmail}
               onSelect={() => onSelectCamera(cam.id)}
               onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
               onStatusChange={onCameraStatusChange}

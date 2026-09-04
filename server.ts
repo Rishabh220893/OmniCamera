@@ -523,18 +523,21 @@ async function startServer() {
       res.status(400).send('Request body must be an SDP offer (Content-Type: application/sdp)');
       return;
     }
-    // Was previously never forwarded at all — this proxy signaled every
-    // camera unauthenticated, which worked while the origin allowed it, but
-    // a HAR capture showed it now uniformly rejecting every camId with
-    // {"status":"error","error":"authentication error"} (MediaMTX's own
-    // auth-failure body), including cameras that used to negotiate
-    // successfully with no credentials. Forward the same Stream Access
-    // Password already used for the HLS path as HTTP Basic auth (empty
-    // username), MediaMTX's standard scheme for a single shared password —
-    // matching the pattern already proven against this grid's other paths.
+    // Per the grid's integrator guide: RTSP/WHEP on the raw origin now
+    // authenticate every connection with the caller's *registered email*
+    // and access password, embedded in the URL as
+    // rtsp://email:password@host:port/... — i.e. HTTP Basic auth with the
+    // email as username, not an empty one. An earlier fix here guessed
+    // empty-username Basic auth (reusing the HLS path's password-only
+    // scheme) since that was the only precedent available at the time —
+    // confirmed wrong once the actual guide was obtained. Only attaches
+    // auth when both are present: a partial credential (email with no
+    // password, or vice versa) is guaranteed-wrong per the documented
+    // format, so sending nothing is more honest than sending that.
+    const email = req.header('X-Stream-Email') || (req.query.email as string | undefined);
     const password = req.header('X-Stream-Password') || (req.query.password as string | undefined);
     const upstreamHeaders: Record<string, string> = { 'Content-Type': 'application/sdp' };
-    if (password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+    if (email && password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
 
     try {
       const upstream = await fetchUpstream(`${WHEP_ORIGIN}/stream/${camId}/whep`, {
@@ -545,7 +548,7 @@ async function startServer() {
 
       const answer = await upstream.text();
       if (!upstream.ok) {
-        console.error(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${password ? 'password sent' : 'no password sent'}). Body: ${answer.slice(0, 300)}`);
+        console.error(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
         res.status(upstream.status).send(answer);
         return;
       }
@@ -586,44 +589,6 @@ async function startServer() {
       console.error('[WHEP PROXY] Session cleanup failed (non-fatal):', err);
     }
     res.status(204).end();
-  });
-
-  // Dedicated catalogue fetch for the specific Sentinel grid this app's
-  // demo data points at (same host as WHEP_ORIGIN above) — separate from
-  // the generic /api/camera-catalogue below, which targets an
-  // arbitrary caller-supplied HTTPS host with optional Cloudflare-style
-  // password auth (built for the corp8.cloud vanity/proxy layer this grid
-  // used to be fronted by). The Sentinel integrator guide is explicit that
-  // RTSP/WHEP/HLS *and* this catalogue are plain, unauthenticated endpoints
-  // on the raw origin — no password, no Cloudflare — so this hits that
-  // origin directly rather than assuming either.
-  //
-  // Every camera failing identically, all at once, on the exact same day
-  // the app's hardcoded demo grid — 30 camera ids/URLs baked into
-  // demoGridCameras.ts, pointed at a *different* host pattern
-  // (cctv.corp8.cloud/camNN/index.m3u8) than this guide documents
-  // (<host>/live/stream/<id>/index.m3u8) — is much better explained by
-  // "the grid's real camera ids/URLs moved and our hardcoded copy is
-  // stale" than by "every credential we have is suddenly wrong." The guide
-  // itself says as much: "the catalogue is the contract, the URL pattern
-  // is not." This route lets the client ask the grid directly instead of
-  // guessing.
-  app.get('/api/sentinel-catalogue', async (req, res) => {
-    try {
-      const upstream = await fetchUpstream(`http://${SENTINEL_GRID_HOST}/api/ingest`, {}, { timeoutMs: 15_000, retries: 1 });
-      const text = await upstream.text();
-      if (!upstream.ok) {
-        console.error(`[SENTINEL CATALOGUE] Upstream rejected -> ${upstream.status}. Body: ${text.slice(0, 500)}`);
-        res.status(upstream.status).send(text);
-        return;
-      }
-      res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Cache-Control', 'no-store');
-      res.status(200).send(text);
-    } catch (err: unknown) {
-      console.error('[SENTINEL CATALOGUE] Error:', err);
-      res.status(502).send(err instanceof Error ? err.message : 'Error fetching Sentinel camera catalogue');
-    }
   });
 
   // The grid's own integrator guide: "Start from the catalogue rather than

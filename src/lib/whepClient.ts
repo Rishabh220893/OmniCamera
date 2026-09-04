@@ -95,6 +95,7 @@ export function startWhep(
   video: HTMLVideoElement,
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void,
   streamAccessPassword?: string,
+  streamAccessEmail?: string,
 ): WhepSession {
   const pc = new RTCPeerConnection();
   const abortController = new AbortController();
@@ -152,6 +153,7 @@ export function startWhep(
 
       const headers: Record<string, string> = { 'Content-Type': 'application/sdp' };
       if (streamAccessPassword) headers['X-Stream-Password'] = streamAccessPassword;
+      if (streamAccessEmail) headers['X-Stream-Email'] = streamAccessEmail;
       const res = await fetch(`/api/whep-proxy?camId=${encodeURIComponent(camId)}`, {
         method: 'POST',
         headers,
@@ -206,8 +208,8 @@ export function startWhep(
  * concurrency slot and origin resources a scrolled-away or unmounted
  * tile has no more use for.
  */
-export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal; streamAccessPassword?: string } = {}): Promise<string> {
-  const { timeoutMs = 12_000, signal, streamAccessPassword } = opts;
+export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; signal?: AbortSignal; streamAccessPassword?: string; streamAccessEmail?: string } = {}): Promise<string> {
+  const { timeoutMs = 12_000, signal, streamAccessPassword, streamAccessEmail } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
 
@@ -244,7 +246,7 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
 
     const session = startWhep(camId, video, (state) => {
       if (state === 'failed' || state === 'closed') finish(new Error(`WebRTC connection ${state}`));
-    }, streamAccessPassword);
+    }, streamAccessPassword, streamAccessEmail);
 
     // The integrator guide is explicit that a join can start on a
     // corrupt/black decoder frame that self-corrects almost immediately —

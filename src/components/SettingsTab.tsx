@@ -22,6 +22,8 @@ interface SettingsTabProps {
   onChangeGoogleSheetsId: (v: string) => void;
   streamAccessPassword: string;
   onChangeStreamAccessPassword: (v: string) => void;
+  streamAccessEmail: string;
+  onChangeStreamAccessEmail: (v: string) => void;
   cameras: CameraConfig[];
   activeCameraId: string;
   onSelectCamera: (id: string) => void;
@@ -47,7 +49,7 @@ export default function SettingsTab(props: SettingsTabProps) {
   const {
     theme, onToggleTheme, notificationPrefs, onUpdateNotifyPrefs, user, onSaveSettings,
     isSaveLoading, saveSuccess, googleSheetsId, onChangeGoogleSheetsId,
-    streamAccessPassword, onChangeStreamAccessPassword, cameras, activeCameraId,
+    streamAccessPassword, onChangeStreamAccessPassword, streamAccessEmail, onChangeStreamAccessEmail, cameras, activeCameraId,
     onSelectCamera, onAddCamera, onRemoveCamera, onUpdateActiveCamera, onOpenSetupGuides,
     webhookStatus, onTestWebhook, knownFaces, onFaceUpload, onRemoveFace,
     watchlist, onAddWatchlistEntry, onRemoveWatchlistEntry,
@@ -233,38 +235,55 @@ export default function SettingsTab(props: SettingsTabProps) {
         </div>
       </div>
 
-      {/* Remote stream access password */}
+      {/* Remote stream access credentials */}
       <div className="card p-8">
         <div className="flex items-center gap-4 mb-6">
           <div className="w-11 h-11 rounded-2xl bg-accent-soft flex items-center justify-center text-accent">
             <KeyRound className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink">Stream access password</h2>
+            <h2 className="text-lg font-bold text-ink">Stream access credentials</h2>
             <p className="text-xs text-ink-muted">Sent to password-protected remote feed hosts (applies to every Remote Link Feed camera)</p>
           </div>
         </div>
-        <div className="p-5 panel space-y-3">
-          <div className="relative">
+        <div className="p-5 panel space-y-4">
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Access email</label>
             <input
-              type={showStreamPassword ? 'text' : 'password'}
-              placeholder="Access password for your camera CDN"
-              value={streamAccessPassword}
-              onChange={(e) => onChangeStreamAccessPassword(e.target.value)}
-              className="input font-mono text-xs !pr-11"
+              type="email"
+              placeholder="Registered email for your camera grid access"
+              value={streamAccessEmail}
+              onChange={(e) => onChangeStreamAccessEmail(e.target.value)}
+              className="input font-mono text-xs"
               autoComplete="off"
             />
-            <button
-              type="button"
-              onClick={() => setShowStreamPassword(v => !v)}
-              className="btn-ghost !absolute !right-1.5 !top-1/2 !-translate-y-1/2 !p-1.5"
-              title={showStreamPassword ? 'Hide' : 'Show'}
-            >
-              {showStreamPassword ? <EyeOff className="w-3.5 h-3.5" strokeWidth={1.75} /> : <Eye className="w-3.5 h-3.5" strokeWidth={1.75} />}
-            </button>
+            <p className="text-[10px] text-ink-muted leading-relaxed">
+              Some remote grids pair this with the password below (as email:password Basic auth) for their direct RTSP/WebRTC endpoints — separate from the plain password some hosts use for HLS.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Access password</label>
+            <div className="relative">
+              <input
+                type={showStreamPassword ? 'text' : 'password'}
+                placeholder="Access password for your camera CDN"
+                value={streamAccessPassword}
+                onChange={(e) => onChangeStreamAccessPassword(e.target.value)}
+                className="input font-mono text-xs !pr-11"
+                autoComplete="off"
+              />
+              <button
+                type="button"
+                onClick={() => setShowStreamPassword(v => !v)}
+                className="btn-ghost !absolute !right-1.5 !top-1/2 !-translate-y-1/2 !p-1.5"
+                title={showStreamPassword ? 'Hide' : 'Show'}
+              >
+                {showStreamPassword ? <EyeOff className="w-3.5 h-3.5" strokeWidth={1.75} /> : <Eye className="w-3.5 h-3.5" strokeWidth={1.75} />}
+              </button>
+            </div>
           </div>
           <p className="text-[10px] text-ink-muted leading-relaxed italic">
-            Remote feeds are relayed through this server (needed for CDNs that don't send CORS headers), so this password is sent to your camera host server-side and never appears in your browser's network requests. Change or clear it here anytime.
+            Remote feeds are relayed through this server (needed for CDNs that don't send CORS headers), so these credentials are sent to your camera host server-side and never appear in your browser's network requests. Change or clear them here anytime.
           </p>
         </div>
       </div>

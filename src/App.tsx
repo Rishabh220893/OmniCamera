@@ -135,6 +135,10 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [googleSheetsId, setGoogleSheetsId] = useState<string>('');
   const [streamAccessPassword, setStreamAccessPassword] = useState<string>('');
+  // RTSP/WHEP on the grid's raw origin authenticate with email:password
+  // (Basic auth, email as username) — a separate credential from the HLS
+  // path's password-only login, per the grid's integrator guide.
+  const [streamAccessEmail, setStreamAccessEmail] = useState<string>('');
   const [isSaveLoading, setIsSaveLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
   const [isLoadingDemoGrid, setIsLoadingDemoGrid] = useState(false);
@@ -259,6 +263,12 @@ export default function App() {
             if (data.notificationPrefs) setNotificationPrefs(data.notificationPrefs);
             setGoogleSheetsId(data.googleSheetsId || '');
             setStreamAccessPassword(data.streamAccessPassword || '');
+            // Pre-fills with the signed-in Google email on a first read (a
+            // reasonable default — the two are often the same person's
+            // email) if nothing's been explicitly set yet; still editable
+            // in Settings since the grid-registered email isn't guaranteed
+            // to match the login email.
+            setStreamAccessEmail(data.streamAccessEmail || firebaseUser.email || '');
             setUserDepartment(data.department || '');
             setUserRole(data.role || 'admin');
             localStorage.setItem(`user-${firebaseUser.uid}-googleSheetsId`, data.googleSheetsId || '');
@@ -269,8 +279,10 @@ export default function App() {
             try {
               await setDoc(doc(db, 'users', firebaseUser.uid), {
                 theme: 'dark', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '', streamAccessPassword: '',
+                streamAccessEmail: firebaseUser.email || '',
                 department: '', role: 'admin', updatedAt: serverTimestamp()
               });
+              setStreamAccessEmail(firebaseUser.email || '');
               // Camera seeding happens once in the cameras registry listener
               // below (it fires for both brand-new users and any existing
               // account that has zero camera docs) — not duplicated here.
@@ -456,6 +468,8 @@ export default function App() {
     if (guestSheetsId) setGoogleSheetsId(guestSheetsId);
     const guestStreamPw = localStorage.getItem('demo-guest-streamAccessPassword');
     if (guestStreamPw) setStreamAccessPassword(guestStreamPw);
+    const guestStreamEmail = localStorage.getItem('demo-guest-streamAccessEmail');
+    if (guestStreamEmail) setStreamAccessEmail(guestStreamEmail);
     const guestCams = localStorage.getItem('demo-guest-cameras');
     if (guestCams) {
       try {
@@ -505,15 +519,16 @@ export default function App() {
 
     if (user.uid === 'demo-guest') {
       // Guest mode is entirely local by design, so this is the only place
-      // the stream password is persisted at all for that path.
+      // the stream credentials are persisted at all for that path.
       localStorage.setItem('demo-guest-streamAccessPassword', streamAccessPassword);
+      localStorage.setItem('demo-guest-streamAccessEmail', streamAccessEmail);
       setTimeout(() => { setIsSaveLoading(false); setSaveSuccess(true); setIsOfflineMode(true); setTimeout(() => setSaveSuccess(null), 3000); }, 600);
       return;
     }
 
     try {
       await setDoc(doc(db, 'users', user.uid), {
-        theme, notificationPrefs, googleSheetsId, streamAccessPassword, department: userDepartment, role: userRole, updatedAt: serverTimestamp()
+        theme, notificationPrefs, googleSheetsId, streamAccessPassword, streamAccessEmail, department: userDepartment, role: userRole, updatedAt: serverTimestamp()
       });
 
       const batch = writeBatch(db);
@@ -955,7 +970,7 @@ export default function App() {
     setIsLoadingDemoGrid(true);
     setDemoGridStatus(null);
     try {
-      const live = await fetchSentinelCatalogue();
+      const live = await fetchSentinelCatalogue(streamAccessPassword);
       await bulkImportCameras(live.map(c => ({
         name: c.name, remoteStreamUrl: c.remoteStreamUrl,
         connectivityStatus: c.isLive === true ? 'online' : c.isLive === false ? 'offline' : 'unknown',
@@ -1081,7 +1096,7 @@ export default function App() {
                     isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
                     onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}
                     onCameraError={setCameraError} onFallbackToSimulated={handleFallbackToSimulated}
-                    onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword}
+                    onChangeTab={setActiveTab} streamAccessPassword={streamAccessPassword} streamAccessEmail={streamAccessEmail}
                     analysisCameraIds={analysisCameraIds} analyzingCameraIds={analyzingCameraIds}
                     onToggleAnalysisCamera={toggleAnalysisCamera} onJumpToLog={handleJumpToLog}
                     onCameraStatusChange={handleCameraStatusChange}
@@ -1107,6 +1122,7 @@ export default function App() {
                       user={user} onSaveSettings={handleSaveSettings} isSaveLoading={isSaveLoading} saveSuccess={saveSuccess}
                       googleSheetsId={googleSheetsId} onChangeGoogleSheetsId={setGoogleSheetsId}
                       streamAccessPassword={streamAccessPassword} onChangeStreamAccessPassword={setStreamAccessPassword}
+                      streamAccessEmail={streamAccessEmail} onChangeStreamAccessEmail={setStreamAccessEmail}
                       cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
                       onAddCamera={addCamera} onRemoveCamera={removeCamera} onUpdateActiveCamera={updateActiveCamera}
                       onOpenSetupGuides={() => setShowDVRGuide(true)} webhookStatus={webhookStatus} onTestWebhook={testWebhook}

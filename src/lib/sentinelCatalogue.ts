@@ -1,20 +1,24 @@
 /**
- * Fetches the live camera list from the Sentinel grid's own catalogue
- * (/api/sentinel-catalogue, proxied server-side from the grid's documented
- * /api/ingest endpoint) instead of relying on a hardcoded URL list.
+ * Fetches the live camera list from the grid's own catalogue
+ * (https://cctv.corp8.cloud/cameras.json, per its integrator guide) instead
+ * of relying only on the hardcoded list in demoGridCameras.ts.
  *
- * The grid's integrator guide is explicit: "Always start from the
- * catalogue rather than hard-coding endpoints... camera ids and the set of
- * available cameras can change; the catalogue is the contract, the URL
- * pattern is not." demoGridCameras.ts's static list is exactly the thing
- * that guide warns against — this is what replaces it as the primary
- * source, falling back to that static list only if the live fetch fails.
+ * The guide: "Start from the catalogue rather than hard-coding — the
+ * camera set can change." Routed through the existing server-side
+ * /api/camera-catalogue proxy (not called directly) for the same reasons
+ * the HLS/WHEP paths are proxied: avoiding CORS, and keeping the access
+ * password off the browser's network tab. That route already tries
+ * /cameras.json before falling back to /api/ingest, and authenticates the
+ * same way the confirmed-working HLS path does (password, session-cookie
+ * login) — no separate email credential needed here, unlike WHEP/RTSP.
  *
- * The exact JSON shape returned by /api/ingest isn't something this code
- * has been able to observe directly (this grid's host isn't reachable from
- * the environment this was written in), so field lookup is deliberately
- * tolerant of several plausible naming conventions rather than assuming
- * one exact schema.
+ * The exact cameras.json shape isn't something this code has observed
+ * directly, so field lookup is deliberately tolerant of a few plausible
+ * naming conventions. Per the guide, <id> is "cam01 … cam30" and HLS lives
+ * at https://cctv.corp8.cloud/<id>/index.m3u8 — that URL is constructed
+ * directly from the id rather than trusting a possibly-differently-shaped
+ * URL field in the catalogue response, since the id->URL mapping is the
+ * one thing the guide states outright.
  */
 
 export interface SentinelCameraEntry {
@@ -22,8 +26,6 @@ export interface SentinelCameraEntry {
   remoteStreamUrl: string;
   isLive: boolean | null;
 }
-
-const SENTINEL_HOST = '103.250.160.189';
 
 function firstString(obj: Record<string, unknown>, keys: string[]): string | null {
   for (const key of keys) {
@@ -58,8 +60,8 @@ function extractCameraArray(payload: unknown): Record<string, unknown>[] {
   return [];
 }
 
-export async function fetchSentinelCatalogue(): Promise<SentinelCameraEntry[]> {
-  const res = await fetch('/api/sentinel-catalogue');
+export async function fetchSentinelCatalogue(streamAccessPassword: string): Promise<SentinelCameraEntry[]> {
+  const res = await fetch(`/api/camera-catalogue?host=${encodeURIComponent('cctv.corp8.cloud')}${streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}`);
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Catalogue request failed (${res.status}): ${text.slice(0, 200)}`);
@@ -84,15 +86,7 @@ export async function fetchSentinelCatalogue(): Promise<SentinelCameraEntry[]> {
 
     const label = firstString(cam, ['location', 'name', 'label', 'site', 'title']) || `Camera ${id}`;
     const isLive = firstBoolean(cam, ['live', 'is_live', 'status', 'online']);
-
-    // Prefer an explicit URL the catalogue hands us directly; only fall
-    // back to constructing one from the documented pattern (and this
-    // fetch's own host) if the entry doesn't include one — the catalogue
-    // is the source of truth per the guide, not a pattern we should
-    // assume even here.
-    const explicitHls = firstString(cam, ['hls', 'hls_url', 'hlsUrl']) ||
-      firstString((cam.urls as Record<string, unknown>) || {}, ['hls', 'hls_url', 'hlsUrl']);
-    const remoteStreamUrl = explicitHls || `http://${SENTINEL_HOST}/live/stream/${id}/index.m3u8`;
+    const remoteStreamUrl = `https://cctv.corp8.cloud/${id}/index.m3u8`;
 
     entries.push({ name: `${id} ${label}`.trim(), remoteStreamUrl, isLive });
   }

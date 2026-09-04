@@ -24,6 +24,11 @@ interface CameraFeedProps {
   /** Forwarded to the /api/proxy-hls server route, which sends it upstream
    *  as HTTP Basic Auth (empty username) for password-gated CDN hosts. */
   streamAccessPassword?: string;
+  /** RTSP/WHEP on the grid's raw origin authenticate with email:password
+   *  (Basic auth, email as username) — a separate credential from
+   *  streamAccessPassword's password-only HLS scheme. Forwarded to
+   *  /api/whep-proxy alongside the password. */
+  streamAccessEmail?: string;
   /** Lets a grid tile show a real connecting/live/error indicator instead of
    *  either playing video or nothing — a blank tile during a slow upstream
    *  connection otherwise reads as broken rather than working. */
@@ -62,7 +67,7 @@ const SIM_SEED: SimEntity[] = [
 const BASE_RETRY_DELAY_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 30_000;
 
-export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, onStatusChange, shouldConnect = true, liveVideo = true }: CameraFeedProps) {
+export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onStatusChange, shouldConnect = true, liveVideo = true }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -212,7 +217,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       try {
         const url = playbackMode === 'hls'
           ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, signal: abortController.signal })
-          : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword });
+          : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword, streamAccessEmail });
         if (cancelled) return;
         hasSnapshot = true;
         setSnapshotUrl(url);
@@ -250,7 +255,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       if (timer) clearTimeout(timer);
       currentAbortController?.abort();
     };
-  }, [liveVideo, isRemote, streamType, whepCamId, shouldConnect, playbackMode, camera.remoteStreamUrl, streamAccessPassword]);
+  }, [liveVideo, isRemote, streamType, whepCamId, shouldConnect, playbackMode, camera.remoteStreamUrl, streamAccessPassword, streamAccessEmail]);
 
   // WHEP (WebRTC) playback — tried before HLS for any camera on the demo
   // grid (see whepCamId). Falls back to the existing HLS path only after
@@ -392,7 +397,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           scheduleWhepRetry('WebRTC connection disconnected.');
         }, DISCONNECTED_GRACE_MS);
       }
-    }, streamAccessPassword);
+    }, streamAccessPassword, streamAccessEmail);
     session.ready.catch((err: unknown) => {
       if (cancelled) return;
       clearTimeout(connectTimeout);
@@ -420,7 +425,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', handlePlaying);
       session.close();
     };
-  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect, liveVideo, streamAccessPassword]);
+  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect, liveVideo, streamAccessPassword, streamAccessEmail]);
 
   // HLS playback — browsers don't decode .m3u8 natively (except Safari),
   // so this feeds the same <video> element via MediaSource Extensions.
