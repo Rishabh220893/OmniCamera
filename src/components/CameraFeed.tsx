@@ -212,7 +212,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       try {
         const url = playbackMode === 'hls'
           ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, signal: abortController.signal })
-          : await captureWhepSnapshot(whepCamId, { signal: abortController.signal });
+          : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword });
         if (cancelled) return;
         hasSnapshot = true;
         setSnapshotUrl(url);
@@ -392,7 +392,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           scheduleWhepRetry('WebRTC connection disconnected.');
         }, DISCONNECTED_GRACE_MS);
       }
-    });
+    }, streamAccessPassword);
     session.ready.catch((err: unknown) => {
       if (cancelled) return;
       clearTimeout(connectTimeout);
@@ -420,7 +420,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', handlePlaying);
       session.close();
     };
-  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect, liveVideo]);
+  }, [isRemote, streamType, whepCamId, playbackMode, whepRetryGeneration, camera.id, shouldConnect, liveVideo, streamAccessPassword]);
 
   // HLS playback — browsers don't decode .m3u8 natively (except Safari),
   // so this feeds the same <video> element via MediaSource Extensions.

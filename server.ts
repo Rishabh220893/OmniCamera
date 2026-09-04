@@ -379,8 +379,15 @@ async function startServer() {
         upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' }, fetchOpts);
         // A redirect with a password set means the session was invalid/expired
         // (or this is the first request and there was nothing cached) — log
-        // in fresh and retry exactly once before giving up.
-        if (upstream.status >= 300 && upstream.status < 400) {
+        // in fresh and retry exactly once before giving up. Also retry on a
+        // direct 401 (not just a 3xx redirect to a login page): a stale
+        // cached cookie, or loginForSessionCookie having silently failed and
+        // left `cachedCookie` null, both surface as the upstream flatly
+        // rejecting the request rather than redirecting it — a real HAR
+        // capture showed exactly this (401 on every request despite a
+        // correct password being sent), which the redirect-only check here
+        // previously had no retry path for at all.
+        if ((upstream.status >= 300 && upstream.status < 400) || upstream.status === 401) {
           sessionCookieCache.delete(cacheKey);
           const freshCookie = await loginForSessionCookie(targetUrl, password);
           upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(freshCookie), redirect: 'manual' }, fetchOpts);
@@ -508,16 +515,29 @@ async function startServer() {
       res.status(400).send('Request body must be an SDP offer (Content-Type: application/sdp)');
       return;
     }
+    // Was previously never forwarded at all — this proxy signaled every
+    // camera unauthenticated, which worked while the origin allowed it, but
+    // a HAR capture showed it now uniformly rejecting every camId with
+    // {"status":"error","error":"authentication error"} (MediaMTX's own
+    // auth-failure body), including cameras that used to negotiate
+    // successfully with no credentials. Forward the same Stream Access
+    // Password already used for the HLS path as HTTP Basic auth (empty
+    // username), MediaMTX's standard scheme for a single shared password —
+    // matching the pattern already proven against this grid's other paths.
+    const password = req.header('X-Stream-Password') || (req.query.password as string | undefined);
+    const upstreamHeaders: Record<string, string> = { 'Content-Type': 'application/sdp' };
+    if (password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(':' + password).toString('base64');
+
     try {
       const upstream = await fetchUpstream(`${WHEP_ORIGIN}/stream/${camId}/whep`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/sdp' },
+        headers: upstreamHeaders,
         body: req.body,
       }, { timeoutMs: 15_000, retries: 0 });
 
       const answer = await upstream.text();
       if (!upstream.ok) {
-        console.error(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status}. Body: ${answer.slice(0, 300)}`);
+        console.error(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${password ? 'password sent' : 'no password sent'}). Body: ${answer.slice(0, 300)}`);
         res.status(upstream.status).send(answer);
         return;
       }
