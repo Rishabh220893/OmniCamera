@@ -252,6 +252,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           // we've never managed to get a picture at all.
           if (!hasSnapshot) setStatus('error');
           setRemoteError(message);
+          // Grid tiles only ever show a generic "Connection failed" — this
+          // message is otherwise visible nowhere but the Focus view (see
+          // remoteError's render below), which made a real HAR-plus-video
+          // debugging session blind to *why* captures were failing beyond
+          // "not live." Console output costs nothing and is exactly what
+          // a HAR/script-based check (scripts/verify-live-grid.mjs) already
+          // captures.
+          console.error(`[CameraFeed] ${camera.id} (${playbackMode}) capture failed: ${message}`);
         }
       } finally {
         if (!cancelled && !switchingToHls) {

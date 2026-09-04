@@ -24,7 +24,16 @@ export interface WhepSession {
   close: () => void;
 }
 
-const ICE_GATHERING_TIMEOUT_MS = 4_000;
+// A real-network HAR (via scripts/verify-live-grid.mjs) showed why TURN
+// alone didn't fix anything: the browser's own offer SDP had host and
+// srflx (STUN) candidates, but zero relay (TURN) ones — gathering was
+// non-trickle (see startWhep's doc comment: waits for every candidate up
+// front, one offer) and cut off at 4s before the extra TURN
+// Allocate round-trip(s) ever finished, especially plausible against a
+// free/rate-limited public relay. Without a relay candidate, adding the
+// TURN server changed nothing — this is the actual fix for that, not the
+// TURN server itself.
+const ICE_GATHERING_TIMEOUT_MS = 8_000;
 
 // All cameras on a grid page auto-connect on mount (see MonitorTab) — every
 // RTCPeerConnection starting negotiation in the same tick is a thundering
