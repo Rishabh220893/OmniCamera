@@ -16,6 +16,40 @@
 import { whepCaptureGate } from './captureConcurrency';
 import { captureFrameAllowingSettle } from './frameCapture';
 
+// The static openrelayproject/openrelayproject TURN credentials this used
+// to hardcode turned out to be dead — metered.ca moved that free tier
+// behind account signup + a dynamic credentials API, so every TURN
+// Allocate with the old static creds was silently rejected (a real HAR
+// showed zero relay candidates ever appearing in the offer, confirming
+// this rather than assuming it). Switched to turn.elixir-webrtc.org's
+// public, no-signup credential endpoint instead — explicitly documented
+// as dev/test-only, not a production guarantee, but it needs no account
+// and matches this project's hackathon scope. Fetched once at module
+// load and cached; credentials are valid ~28 minutes (they return a
+// 1728s ttl) and only need refreshing if unused for 3+ hours, so a
+// proactive refresh well before the ttl elapses is more than enough —
+// no need to re-fetch per connection.
+interface TurnCredentials { uris: string[]; username: string; password: string }
+let cachedTurnCredentials: TurnCredentials | null = null;
+
+function refreshTurnCredentials(): void {
+  const clientId = `omnisee-${Math.random().toString(36).slice(2)}`;
+  fetch(`https://turn.elixir-webrtc.org/?service=turn&username=${clientId}`, { method: 'POST' })
+    .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`status ${res.status}`))))
+    .then((data: { uris: string[]; username: string; password: string; ttl: number }) => {
+      cachedTurnCredentials = { uris: data.uris, username: data.username, password: data.password };
+      const refreshInMs = Math.max(60_000, (data.ttl - 300) * 1000);
+      setTimeout(refreshTurnCredentials, refreshInMs);
+    })
+    .catch((err: unknown) => {
+      // Non-fatal — startWhep below just falls back to STUN-only (the
+      // pre-TURN behavior) for any connection that starts before this
+      // resolves or if the free relay is ever unreachable.
+      console.error('[WHEP] Failed to fetch TURN credentials, continuing STUN-only:', err);
+    });
+}
+refreshTurnCredentials();
+
 export interface WhepSession {
   pc: RTCPeerConnection;
   /** Resolves once negotiation completes, or rejects if it fails. Ignore
@@ -109,7 +143,7 @@ export function startWhep(
   streamAccessPassword?: string,
   streamAccessEmail?: string,
 ): WhepSession {
-  // No iceServers previously — with none at all, RTCPeerConnection only
+  // No iceServers originally — with none at all, RTCPeerConnection only
   // gathers "host" candidates (this machine's own local network interfaces),
   // never server-reflexive ones. That's enough to connect only when a direct
   // path to the origin's raw IP happens to exist; anyone behind ordinary
@@ -125,21 +159,22 @@ export function startWhep(
   // a NAT a plain STUN reflexive address can't satisfy looks like (a
   // symmetric NAT, or a firewall that only allows connections it
   // initiated). The grid's own integrator guide (hackathon-provided) never
-  // documents a TURN server, so this is added from our side — a free,
-  // rate-limited public relay (OpenRelay's; credentials are intentionally
-  // public, published for this exact use), fine for validating the fix
-  // and a hackathon demo, not a promise of reliability at real load. If
-  // this holds up, swapping in a paid/dedicated TURN provider later is a
-  // one-line change here.
-  const pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-      { urls: 'stun:stun.relay.metered.ca:80' },
-      { urls: 'turn:relay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:relay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-      { urls: 'turn:relay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    ],
-  });
+  // documents a TURN server, so one is added from our side — see
+  // refreshTurnCredentials above for where it comes from and why (the
+  // first attempt, static OpenRelay credentials, turned out to be dead —
+  // confirmed by a real HAR showing zero relay candidates ever appearing
+  // in the offer, not just assumed).
+  const iceServers: RTCIceServer[] = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  ];
+  if (cachedTurnCredentials) {
+    iceServers.push({
+      urls: cachedTurnCredentials.uris,
+      username: cachedTurnCredentials.username,
+      credential: cachedTurnCredentials.password,
+    });
+  }
+  const pc = new RTCPeerConnection({ iceServers });
   const abortController = new AbortController();
   let resourceUrl: string | null = null;
   let closed = false;
