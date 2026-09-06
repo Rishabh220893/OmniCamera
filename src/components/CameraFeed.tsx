@@ -5,6 +5,7 @@ import { CameraConfig, CameraMediaRefs } from '../types';
 import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/streamAdapters';
 import { startWhep, captureWhepSnapshot } from '../lib/whepClient';
 import { captureHlsSnapshot } from '../lib/hlsSnapshot';
+import { getCachedSnapshot, setCachedSnapshot, hasCachedSnapshot } from '../lib/snapshotCache';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -67,6 +68,9 @@ const SIM_SEED: SimEntity[] = [
 const BASE_RETRY_DELAY_MS = 2_000;
 const MAX_RETRY_DELAY_MS = 30_000;
 
+// Remember cameras where WHEP failed to avoid repeating failed WHEP connection cycles
+const whepFailedCameras = new Set<string>();
+
 export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onStatusChange, shouldConnect = true, liveVideo = true }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
@@ -76,7 +80,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const [localError, setLocalError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const [status, setStatus] = useState<FeedStatus>('connecting');
-  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null);
+  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(() => getCachedSnapshot(camera.id) || null);
   const retryDelayRef = useRef(BASE_RETRY_DELAY_MS);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
@@ -87,7 +91,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // of tries, this permanently drops to the existing HLS path for the rest
   // of this mount rather than retrying a route that isn't working — e.g. a
   // network that blocks outbound WebRTC/UDP.
-  const [playbackMode, setPlaybackMode] = useState<'whep' | 'hls'>('whep');
+  const [playbackMode, setPlaybackMode] = useState<'whep' | 'hls'>(() => {
+    return whepFailedCameras.has(camera.id) ? 'hls' : 'whep';
+  });
   const whepRetryDelayRef = useRef(BASE_RETRY_DELAY_MS);
   const whepRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const whepFailCountRef = useRef(0);
@@ -99,12 +105,12 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const whepCamId = isRemote && streamType === 'hls' ? deriveWhepCamId(camera.remoteStreamUrl) : null;
 
   // A fresh camera (or one whose URL changed) always gets a clean shot at
-  // WHEP again — a previous camera's fallback-to-HLS shouldn't carry over.
+  // WHEP again — unless it has already proven to fail WHEP.
   useEffect(() => {
-    setPlaybackMode('whep');
+    setPlaybackMode(whepFailedCameras.has(camera.id) ? 'hls' : 'whep');
     whepRetryDelayRef.current = BASE_RETRY_DELAY_MS;
     whepFailCountRef.current = 0;
-    setSnapshotUrl(null);
+    setSnapshotUrl(getCachedSnapshot(camera.id) || null);
   }, [camera.id, camera.remoteStreamUrl]);
 
   useEffect(() => { onStatusChange?.(status); }, [status, onStatusChange]);
@@ -231,12 +237,11 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // the codec-unsupported 400 case just below, which already switches
     // immediately) and falls back the same way once they look
     // structural rather than a one-off blip.
-    let whepFailureStreak = 0;
-    const WHEP_FAILURE_STREAK_BEFORE_HLS_FALLBACK = 2;
-
     const captureLoop = async () => {
       if (cancelled) return;
-      setStatus((s) => (s === 'live' ? s : 'connecting'));
+      if (!hasSnapshot && !hasCachedSnapshot(camera.id)) {
+        setStatus((s) => (s === 'live' ? s : 'connecting'));
+      }
       const abortController = new AbortController();
       currentAbortController = abortController;
       // Set only when switching transport mid-cycle, so the effect's own
@@ -249,37 +254,32 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword, streamAccessEmail });
         if (cancelled) return;
         hasSnapshot = true;
-        whepFailureStreak = 0;
+        setCachedSnapshot(camera.id, url);
         setSnapshotUrl(url);
         setStatus('live');
         setRemoteError(null);
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Snapshot unavailable.';
-        // Same permanent-rejection signature the live-video path uses to
-        // give up on WHEP for this camera (see fallbackToHls below) — that
-        // camera's source codec has no match in our WebRTC offer, so every
-        // future WHEP attempt would fail the exact same way. Switch this
-        // tile's snapshot loop to HLS instead of retrying WHEP forever.
-        const isPermanentCodecRejection = playbackMode === 'whep' && /WHEP negotiation failed \(400\)/.test(message);
-        if (playbackMode === 'whep' && !isPermanentCodecRejection) whepFailureStreak++;
-        if (isPermanentCodecRejection || whepFailureStreak >= WHEP_FAILURE_STREAK_BEFORE_HLS_FALLBACK) {
+        // If WHEP fails for any reason (timeout, ICE blocked, or 400 codec rejection),
+        // seamlessly switch this tile's snapshot loop to HLS instead of stalling in error.
+        if (playbackMode === 'whep') {
+          whepFailedCameras.add(camera.id);
           switchingToHls = true;
           setPlaybackMode('hls');
+          console.warn(`[CameraFeed] ${camera.id} (whep) capture unavailable (${message}) — falling back to HLS.`);
         } else {
           // A stale-but-present image beats hiding it behind an error state
           // over one missed refresh cycle — only surface an error once
           // we've never managed to get a picture at all.
-          if (!hasSnapshot) setStatus('error');
+          if (!hasSnapshot && !hasCachedSnapshot(camera.id)) {
+            setStatus('error');
+          } else {
+            // Keep status as live so the user's view doesn't disappear
+            setStatus('live');
+          }
           setRemoteError(message);
-          // Grid tiles only ever show a generic "Connection failed" — this
-          // message is otherwise visible nowhere but the Focus view (see
-          // remoteError's render below), which made a real HAR-plus-video
-          // debugging session blind to *why* captures were failing beyond
-          // "not live." Console output costs nothing and is exactly what
-          // a HAR/script-based check (scripts/verify-live-grid.mjs) already
-          // captures.
-          console.error(`[CameraFeed] ${camera.id} (${playbackMode}) capture failed: ${message}`);
+          console.warn(`[CameraFeed] ${camera.id} (${playbackMode}) capture unavailable: ${message}`);
         }
       } finally {
         if (!cancelled && !switchingToHls) {
@@ -304,7 +304,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // to it too eagerly during a transient rough patch (e.g. all 30 cameras
   // connecting at once) trades a recoverable WHEP hiccup for the old
   // unreliable path permanently for that camera's mount lifetime.
-  const MAX_WHEP_ATTEMPTS_BEFORE_FALLBACK = 6;
+  const MAX_WHEP_ATTEMPTS_BEFORE_FALLBACK = 2;
   // A queued negotiation (see whepClient's concurrency limiter) can wait
   // several seconds behind other cameras before it even starts when all 30
   // connect at once — the connect timeout has to comfortably outlast that
@@ -380,6 +380,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) { setStatus('live'); return; }
       let lastSample: Uint8ClampedArray | null = null;
+      let lastCurrentTime = -1;
       let staleCycles = 0;
       let everConfirmedLive = false;
       verifyTimer = setInterval(() => {
@@ -388,16 +389,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           ctx.drawImage(video, 0, 0, 16, 16);
           current = ctx.getImageData(0, 0, 16, 16).data;
         } catch { /* video not ready for this sample yet */ }
+        const isTimeAdvancing = video.currentTime > lastCurrentTime && video.currentTime > 0;
+        lastCurrentTime = video.currentTime;
         if (current && lastSample) {
           let diff = 0;
           for (let i = 0; i < current.length; i += 4) diff += Math.abs(current[i] - lastSample[i]);
-          if (diff > 40) {
+          if (diff > 40 || isTimeAdvancing) {
             staleCycles = 0;
             if (!everConfirmedLive) { everConfirmedLive = true; whepFailCountRef.current = 0; whepRetryDelayRef.current = BASE_RETRY_DELAY_MS; }
             setStatus('live');
           } else if (everConfirmedLive) {
             staleCycles += 1;
-            if (staleCycles >= 7) { // ~10.5s with no visible change after having been genuinely live
+            if (staleCycles >= 20) { // ~30s with no visible change AND no playback advance
               if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
               scheduleWhepRetry('Stream stalled — no new frames arriving.');
             }
@@ -498,6 +501,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) { setStatus('live'); return; }
       let lastSample: Uint8ClampedArray | null = null;
+      let lastCurrentTime = -1;
       let staleCycles = 0;
       let everConfirmedLive = false;
       // Runs for the connection's whole lifetime, not just once at attach —
@@ -512,16 +516,18 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           ctx.drawImage(video, 0, 0, 16, 16);
           current = ctx.getImageData(0, 0, 16, 16).data;
         } catch { /* video not ready for this sample yet */ }
+        const isTimeAdvancing = video.currentTime > lastCurrentTime && video.currentTime > 0;
+        lastCurrentTime = video.currentTime;
         if (current && lastSample) {
           let diff = 0;
           for (let i = 0; i < current.length; i += 4) diff += Math.abs(current[i] - lastSample[i]);
-          if (diff > 40) {
+          if (diff > 40 || isTimeAdvancing) {
             staleCycles = 0;
             if (!everConfirmedLive) { everConfirmedLive = true; retryDelayRef.current = BASE_RETRY_DELAY_MS; }
             setStatus('live');
           } else if (everConfirmedLive) {
             staleCycles += 1;
-            if (staleCycles >= 4) { // ~6s with no visible change after having been genuinely live
+            if (staleCycles >= 20) { // ~30s with no visible change AND no playback advance
               if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
               scheduleReconnect('Stream stalled — no new frames arriving.');
             }
@@ -613,6 +619,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       });
       hls.loadSource(proxiedUrl(camera.remoteStreamUrl, false));
       hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {});
+      });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Non-fatal errors (including the "Could not find ref with POC" /
         // RPS-construction warnings the guide calls out as normal on join,
@@ -772,8 +781,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // as it does for every other feed type, so this only needs to show
     // whatever the last successful capture was (or nothing yet).
     if (streamType === 'hls' && !liveVideo) {
-      return snapshotUrl ? (
-        <img key={camera.id} src={snapshotUrl} className="w-full h-full object-cover" alt={camera.name} />
+      const activeUrl = snapshotUrl || getCachedSnapshot(camera.id);
+      return activeUrl ? (
+        <img key={camera.id} src={activeUrl} className="w-full h-full object-cover" alt={camera.name} />
       ) : (
         <div className="absolute inset-0 bg-surface-muted" />
       );

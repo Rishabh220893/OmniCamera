@@ -40,13 +40,13 @@ import { captureFrameAllowingSettle } from './frameCapture';
  * it's set well above their observed combined worst case rather than
  * equal to one stage.
  */
-const STAGE_TIMEOUT_MS = 75_000;
+const STAGE_TIMEOUT_MS = 38_000;
 
 export function captureHlsSnapshot(
   url: string,
   opts: { password?: string; email?: string; timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<string> {
-  const { password, email, timeoutMs = 160_000, signal } = opts;
+  const { password, email, timeoutMs = 90_000, signal } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
 
@@ -59,6 +59,8 @@ export function captureHlsSnapshot(
 
     let settled = false;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    let overallTimeout: ReturnType<typeof setTimeout> | null = null;
+    let queueTimeout: ReturnType<typeof setTimeout> | null = null;
     let hls: Hls | null = null;
     // Not assigned until the capture slot below comes through — see the
     // identical pattern (and its reasoning) in captureWhepSnapshot.
@@ -68,7 +70,8 @@ export function captureHlsSnapshot(
       if (settled) return;
       settled = true;
       if (settleTimer) clearTimeout(settleTimer);
-      clearTimeout(overallTimeout);
+      if (overallTimeout) clearTimeout(overallTimeout);
+      if (queueTimeout) clearTimeout(queueTimeout);
       signal?.removeEventListener('abort', onAbort);
       hls?.destroy();
       releaseCaptureSlot?.();
@@ -79,7 +82,8 @@ export function captureHlsSnapshot(
     const onAbort = () => finish(new Error('Snapshot aborted'));
     signal?.addEventListener('abort', onAbort);
 
-    const overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
+    // Queue wait timeout prevents getting queued indefinitely behind other cameras
+    queueTimeout = setTimeout(() => finish(new Error('Snapshot queue wait timed out')), 180_000);
 
     const proxiedUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${password ? `&password=${encodeURIComponent(password)}` : ''}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
 
@@ -89,24 +93,33 @@ export function captureHlsSnapshot(
     // successful capture), so this also checks the frame isn't still
     // blank once the settle elapses before accepting it.
     const capture = () => {
+      if (settleTimer || settled) return;
       settleTimer = setTimeout(() => {
         captureFrameAllowingSettle(video).then(
           (dataUrl) => finish(undefined, dataUrl),
           (err) => finish(err instanceof Error ? err : new Error('Capture failed'))
         );
-      }, 900);
+      }, 500);
     };
 
     hlsCaptureGate.acquire().then((release) => {
+      if (queueTimeout) { clearTimeout(queueTimeout); queueTimeout = null; }
       // Settled (timed out, aborted) while still queued for a slot — hand
       // the slot straight back instead of starting a fetch nothing is
       // waiting on anymore.
       if (settled) { release(); return; }
       releaseCaptureSlot = release;
 
+      overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
+
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = proxiedUrl;
         video.addEventListener('playing', capture, { once: true });
+        video.addEventListener('loadeddata', () => { video.play().catch(() => {}); });
+        video.addEventListener('timeupdate', () => {
+          if (video.currentTime > 0.05) capture();
+        });
+        video.play().catch(() => {});
       } else if (Hls.isSupported()) {
         hls = new Hls({
           manifestLoadingTimeOut: STAGE_TIMEOUT_MS,
@@ -122,10 +135,20 @@ export function captureHlsSnapshot(
         });
         hls.loadSource(proxiedUrl);
         hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => {});
+        });
+        hls.on(Hls.Events.FRAG_LOADED, () => {
+          video.play().catch(() => {});
+        });
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) finish(new Error(`HLS playback error (${data.type}): ${data.details}`));
         });
         video.addEventListener('playing', capture, { once: true });
+        video.addEventListener('loadeddata', () => { video.play().catch(() => {}); });
+        video.addEventListener('timeupdate', () => {
+          if (video.currentTime > 0.05) capture();
+        });
       } else {
         finish(new Error('This browser does not support HLS playback.'));
       }

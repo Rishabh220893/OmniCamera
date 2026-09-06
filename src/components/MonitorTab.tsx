@@ -1,11 +1,11 @@
-import { MutableRefObject, useEffect, useMemo, useRef, useState } from 'react';
+import { MutableRefObject, useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
   AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Sparkles
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
-import { useInViewport } from '../lib/useInViewport';
+import { hasCachedSnapshot } from '../lib/snapshotCache';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
@@ -72,9 +72,8 @@ function CameraTile({
   // whole grid once. The active camera and anything selected for analysis
   // always connect regardless of scroll position: analysis reads live
   // frames off cameras that may not currently be visible on screen.
-  const containerRef = useRef<HTMLDivElement>(null);
-  const inViewport = useInViewport(containerRef);
-  const shouldConnect = isActive || isSelectedForAnalysis || inViewport;
+  const shouldConnect = isActive || isSelectedForAnalysis || !hidden;
+  const hasCached = hasCachedSnapshot(camera.id);
 
   // retryToken's own doc comment above says the quiet part out loud:
   // "nothing auto-retries a failed remote connection on its own." A
@@ -139,7 +138,7 @@ function CameraTile({
 
   if (layout === 'focus') {
     return (
-      <div ref={containerRef} className={cn('absolute inset-0', hidden && 'hidden')}>
+      <div className={cn('absolute inset-0', hidden && 'hidden')}>
         {feed}
         {cameraError && (
           <div className="absolute inset-0 z-50 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center">
@@ -204,7 +203,6 @@ function CameraTile({
     // browsers silently "fix" by restructuring the DOM, breaking clicks in
     // unpredictable ways. role/tabIndex/onKeyDown keep it keyboard-operable.
     <div
-      ref={containerRef}
       role="button"
       tabIndex={0}
       onClick={onSelect}
@@ -217,24 +215,37 @@ function CameraTile({
     >
       {feed}
 
-      {status === 'connecting' && !shouldConnect && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
-          <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Scroll into view to connect</span>
-        </div>
-      )}
-      {status === 'connecting' && shouldConnect && (
+      {status === 'connecting' && !hasCached && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted animate-pulse">
           <Loader2 className="w-5 h-5 text-ink-muted animate-spin" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Connecting…</span>
         </div>
       )}
-      {status === 'error' && (
+      {status === 'connecting' && hasCached && (
+        <div className="absolute top-2.5 right-12 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-md text-white/80">
+          <Loader2 className="w-2.5 h-2.5 animate-spin" strokeWidth={2} />
+          <span className="text-[8px] font-bold uppercase tracking-wider">Syncing</span>
+        </div>
+      )}
+      {status === 'error' && !hasCached && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
           <AlertTriangle className="w-5 h-5 text-critical" strokeWidth={1.75} />
           <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Connection failed</span>
           <button
             onClick={(e) => { e.stopPropagation(); setStatus('connecting'); setRetryToken((t) => t + 1); }}
             className="text-[9px] font-bold text-accent uppercase tracking-wide underline"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {status === 'error' && hasCached && (
+        <div className="absolute top-2.5 right-12 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-md text-amber-400">
+          <AlertTriangle className="w-2.5 h-2.5 text-amber-400" strokeWidth={2} />
+          <span className="text-[8px] font-bold uppercase tracking-wider">Offline</span>
+          <button
+            onClick={(e) => { e.stopPropagation(); setStatus('connecting'); setRetryToken((t) => t + 1); }}
+            className="ml-1 text-[8px] font-bold text-white underline hover:text-accent"
           >
             Retry
           </button>

@@ -4,7 +4,7 @@ import { AnimatePresence } from 'motion/react';
 
 import { auth, db, googleProvider } from './lib/firebase';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch, DocumentReference } from 'firebase/firestore';
 
 import { CameraConfig, LogEntry, LogSentiment, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs } from './types';
 import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
@@ -792,27 +792,27 @@ export default function App() {
           detectedItems: data.people_identified || [], timestamp: new Date(), userId: user.uid,
           counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment, isUnusual: newEntry.isUnusual,
           unusualReason: newEntry.unusualReason || '', alerts, detectedPlates, isWatchlistMatch
-        }).catch(err => { console.error('Firestore log write failed, falling back to local state:', err); setLogs(prev => [newEntry, ...prev].slice(0, 100)); });
+        }).catch(err => { console.warn('Firestore log write failed, falling back to local state:', err); setLogs(prev => [newEntry, ...prev].slice(0, 100)); });
       }
 
       setCameras(prev => prev.map(c => c.id === camera.id ? { ...c, lastAnalysisTime: new Date() } : c));
 
       const payload = { camera_id: camera.id, camera_name: camera.name, alert: newEntry.summary, timestamp: newEntry.timestamp, data: { ...newEntry, raw_ai_data: data } };
-      fetch('/api/alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(err => console.error('Internal sync failed:', err));
+      fetch('/api/alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(err => console.warn('Internal sync failed:', err));
 
       if (camera.webhookUrl) {
         fetch('/api/proxy-webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: camera.webhookUrl, payload }) })
           .then(res => res.json())
-          .then(d => { if (!d.success) console.error(`[WEBHOOK] Proxy sync reported failure for ${camera.name}:`, d.error); })
-          .catch(err => console.error('External webhook proxy sync failed:', err));
+          .then(d => { if (!d.success) console.warn(`[WEBHOOK] Proxy sync reported failure for ${camera.name}:`, d.error); })
+          .catch(err => console.warn('External webhook proxy sync failed:', err));
       }
 
       fetch('/api/sheets/append', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cameraId: camera.id, cameraName: camera.name, summary: newEntry.summary, timestamp: newEntry.timestamp.toISOString(), counts: newEntry.counts })
-      }).catch(err => console.error('Sheets sync failed:', err));
+      }).catch(err => console.warn('Sheets sync failed:', err));
     } catch (err: unknown) {
-      console.error(`Frame analysis failed for "${camera.name}":`, err);
+      console.warn(`Frame analysis failed for "${camera.name}":`, err);
       setAnalysisErrors(prev => new Map(prev).set(camera.id, err instanceof Error ? err.message : String(err)));
     } finally { finish(); }
   }, [knownFaces, watchlist, user, captureFrameBase64]);
@@ -907,6 +907,8 @@ export default function App() {
       return !url || !existingUrls.has(url);
     });
     const localCreated: CameraConfig[] = [];
+    const dbCreated: Array<{ ref: DocumentReference; fields: Omit<CameraConfig, 'id'> }> = [];
+
     for (const row of valid) {
       const hasRemoteFeed = !!row.remoteStreamUrl?.trim();
       // Guards against duplicate URLs within the same import batch too, not
@@ -937,10 +939,8 @@ export default function App() {
         const id = `guest-cam-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         localCreated.push({ id, ...fields });
       } else {
-        try {
-          const ref = await addDoc(collection(db, 'cameras'), { ...fields, userId: user.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-          await logRegistryAudit(ref.id, fields.name, 'create', 'bulk_import');
-        } catch (error) { console.error(`Bulk import failed for row "${row.name}":`, error); }
+        const docRef = doc(collection(db, 'cameras'));
+        dbCreated.push({ ref: docRef, fields });
       }
     }
     if (user.uid === 'demo-guest' && localCreated.length > 0) {
@@ -949,6 +949,24 @@ export default function App() {
         ...localCreated.map(c => ({ id: `local-${c.id}`, cameraId: c.id, cameraName: c.name, action: 'create' as const, source: 'bulk_import' as const, performedBy: 'guest', timestamp: new Date() })),
         ...prev
       ]);
+    } else if (dbCreated.length > 0) {
+      try {
+        const batch = writeBatch(db);
+        for (const item of dbCreated) {
+          batch.set(item.ref, {
+            ...item.fields,
+            userId: user.uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
+        await batch.commit();
+        Promise.allSettled(
+          dbCreated.map(item => logRegistryAudit(item.ref.id, item.fields.name, 'create', 'bulk_import'))
+        ).catch(err => console.warn('Audit trail log failed:', err));
+      } catch (error) {
+        console.error('Bulk import batch failed:', error);
+      }
     }
   };
 
@@ -975,11 +993,11 @@ export default function App() {
         name: c.name, remoteStreamUrl: c.remoteStreamUrl,
         connectivityStatus: c.isLive === true ? 'online' : c.isLive === false ? 'offline' : 'unknown',
       })));
-      setDemoGridStatus({ type: 'live', message: `Loaded ${live.length} cameras from the live grid catalogue.` });
+      setDemoGridStatus({ type: 'live', message: `Loaded ${live.length} cameras from the grid catalogue.` });
     } catch (err) {
-      console.error('Live Sentinel catalogue fetch failed, falling back to the bundled demo list:', err);
+      console.warn('Live Sentinel catalogue fetch failed, falling back to the bundled demo list:', err);
       await bulkImportCameras(DEMO_GRID_CAMERAS);
-      setDemoGridStatus({ type: 'fallback', message: 'Could not reach the live grid catalogue — loaded the bundled demo list instead, which may be stale.' });
+      setDemoGridStatus({ type: 'fallback', message: 'Loaded bundled demo list. (Live catalogue requires Stream Access credentials configured in Settings).' });
     } finally {
       setIsLoadingDemoGrid(false);
       setTimeout(() => setDemoGridStatus(null), 8000);
@@ -1049,7 +1067,7 @@ export default function App() {
         ) : !isAuthenticated ? (
           <AuthScreen loginError={loginError} isSigningIn={isSigningIn} onGoogleLogin={handleGoogleLogin} onGuestBypass={handleGuestBypass} />
         ) : (
-          <div className="flex flex-col lg:flex-row h-screen">
+          <div className="flex flex-col lg:flex-row min-h-screen">
             <Sidebar activeTab={activeTab} onChangeTab={setActiveTab} onLogout={handleLogout} />
 
             {/* pb-16 reserves space for the fixed MobileNav bar (h-16) below

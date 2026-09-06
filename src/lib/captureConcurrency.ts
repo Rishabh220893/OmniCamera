@@ -53,5 +53,5 @@ function createCaptureGate(maxConcurrent: number): CaptureGate {
   };
 }
 
-export const whepCaptureGate = createCaptureGate(1);
-export const hlsCaptureGate = createCaptureGate(1);
+export const whepCaptureGate = createCaptureGate(6);
+export const hlsCaptureGate = createCaptureGate(6);

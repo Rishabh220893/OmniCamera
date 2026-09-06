@@ -45,7 +45,7 @@ function refreshTurnCredentials(): void {
       // Non-fatal — startWhep below just falls back to STUN-only (the
       // pre-TURN behavior) for any connection that starts before this
       // resolves or if the free relay is ever unreachable.
-      console.error('[WHEP] Failed to fetch TURN credentials, continuing STUN-only:', err);
+      console.warn('[WHEP] Failed to fetch TURN credentials, continuing STUN-only:', err);
     });
 }
 refreshTurnCredentials();
@@ -183,7 +183,10 @@ export function startWhep(
   pc.addTransceiver('audio', { direction: 'recvonly' });
 
   pc.ontrack = (event) => {
-    if (video.srcObject !== event.streams[0]) video.srcObject = event.streams[0];
+    if (video.srcObject !== event.streams[0]) {
+      video.srcObject = event.streams[0];
+      video.play().catch(() => {});
+    }
   };
   if (onConnectionStateChange) {
     pc.onconnectionstatechange = () => onConnectionStateChange(pc.connectionState);
@@ -301,7 +304,7 @@ export function startWhep(
 // how many tiles are actively past-signaling-and-decoding at once, closer to
 // what a browser tab can really sustain concurrently, so each gets a real
 // shot instead of all of them starving each other into this timeout.
-const WHEP_SNAPSHOT_TIMEOUT_MS = 25_000;
+const WHEP_SNAPSHOT_TIMEOUT_MS = 8_000;
 
 // See WHEP_SNAPSHOT_TIMEOUT_MS above — this is the actual fix for the
 // contention it documents, not the timeout itself. 6 was a first cut (the
@@ -348,8 +351,10 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
     document.body.appendChild(video);
     let settled = false;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    let overallTimeout: ReturnType<typeof setTimeout> | null = null;
+    let queueTimeout: ReturnType<typeof setTimeout> | null = null;
     // Not assigned until the capture slot below comes through — a tile
-    // queued behind MAX_CONCURRENT_CAPTURES others hasn't started
+    // queued behind others hasn't started
     // negotiating yet, so there's nothing to close if it's aborted or times
     // out while still waiting its turn.
     let session: WhepSession | null = null;
@@ -359,7 +364,8 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
       if (settled) return;
       settled = true;
       if (settleTimer) clearTimeout(settleTimer);
-      clearTimeout(overallTimeout);
+      if (overallTimeout) clearTimeout(overallTimeout);
+      if (queueTimeout) clearTimeout(queueTimeout);
       signal?.removeEventListener('abort', onAbort);
       session?.close();
       releaseCaptureSlot?.();
@@ -370,14 +376,19 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
     const onAbort = () => finish(new Error('Snapshot aborted'));
     signal?.addEventListener('abort', onAbort);
 
-    const overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
+    // Queue wait timeout prevents getting queued indefinitely behind other cameras
+    queueTimeout = setTimeout(() => finish(new Error('Snapshot queue wait timed out')), 180_000);
 
     whepCaptureGate.acquire().then((release) => {
+      if (queueTimeout) { clearTimeout(queueTimeout); queueTimeout = null; }
       // Settled (timed out, aborted) while still queued for a slot — hand
       // the slot straight back instead of starting a negotiation nothing is
       // waiting on anymore.
       if (settled) { release(); return; }
       releaseCaptureSlot = release;
+
+      // Start the snapshot capture timeout only once the execution slot is actually acquired
+      overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
 
       session = startWhep(camId, video, (state) => {
         if (state === 'failed' || state === 'closed') finish(new Error(`WebRTC connection ${state}`));
@@ -393,14 +404,22 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
       // completely normal successful capture — the fixed 900ms alone
       // wasn't reliably enough) and gives it a couple more short waits
       // before finally accepting whatever it gets.
-      video.addEventListener('playing', () => {
+      const triggerCapture = () => {
+        if (settleTimer || settled) return;
         settleTimer = setTimeout(() => {
           captureFrameAllowingSettle(video).then(
             (dataUrl) => finish(undefined, dataUrl),
             (err) => finish(err instanceof Error ? err : new Error('Capture failed'))
           );
-        }, 900);
-      }, { once: true });
+        }, 500);
+      };
+
+      video.addEventListener('playing', triggerCapture, { once: true });
+      video.addEventListener('loadeddata', () => { video.play().catch(() => {}); });
+      video.addEventListener('canplay', () => { video.play().catch(() => {}); });
+      video.addEventListener('timeupdate', () => {
+        if (video.currentTime > 0.05) triggerCapture();
+      });
 
       session.ready.catch((err: unknown) => {
         finish(err instanceof Error ? err : new Error('WHEP negotiation failed'));

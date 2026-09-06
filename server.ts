@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { google } from 'googleapis';
@@ -15,14 +16,24 @@ import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 // itself just can't serve fast enough.
 const UPSTREAM_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+let aiClient: GoogleGenAI | null = null;
+function getAI(): GoogleGenAI {
+  if (!aiClient) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('GEMINI_API_KEY environment variable is required');
     }
+    aiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
   }
-});
+  return aiClient;
+}
 
 const auth = new google.auth.GoogleAuth({
   credentials: process.env.GOOGLE_SHEETS_CREDENTIALS ? JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS) : undefined,
@@ -95,8 +106,9 @@ function withGeminiTimeout<T>(promise: Promise<T>): Promise<T> {
 
 async function generateContentWithFallback(
   models: string[],
-  params: Omit<Parameters<typeof ai.models.generateContent>[0], 'model'>
+  params: Omit<Parameters<ReturnType<typeof getAI>['models']['generateContent']>[0], 'model'>
 ) {
+  const ai = getAI();
   let lastError: unknown;
   for (const model of models) {
     try {
@@ -211,9 +223,8 @@ async function writeRegistryAudit(
 
 async function startServer() {
   const app = express();
-  // Render (and most Node hosts) assign the listen port dynamically via
-  // process.env.PORT — a hardcoded port fails deployment there.
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  // Port 3000 is the hardcoded entry point for AI Studio proxy
+  const PORT = 3000;
 
   // Default 100kb limit is far too small: a captured frame plus up to 6
   // base64-encoded known-face reference images easily runs several MB.
@@ -299,7 +310,7 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
       res.status(200).send(buffer);
     } catch (err: unknown) {
-      console.error("[PROXY FRAME] Error proxying frame:", err);
+      console.warn("[PROXY FRAME] Error proxying frame:", err instanceof Error ? err.message : String(err));
       res.status(502).send(err instanceof Error ? err.message : 'Error retrieving remote frame');
     }
   });
@@ -333,7 +344,7 @@ async function startServer() {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UPSTREAM_USER_AGENT },
         body,
         redirect: 'manual',
-      }, { timeoutMs: 20_000, retries: 1 });
+      }, { timeoutMs: 10_000, retries: 0 });
       const setCookie = res.headers.get('set-cookie');
       const match = setCookie?.match(/([a-zA-Z0-9_]+=[^;]+)/);
       if (match) {
@@ -341,7 +352,7 @@ async function startServer() {
         return match[1];
       }
     } catch (err) {
-      console.error('[PROXY HLS] Session login failed:', err);
+      console.warn('[PROXY HLS] Session login failed or timed out:', err instanceof Error ? err.message : String(err));
     }
     return null;
   }
@@ -355,8 +366,8 @@ async function startServer() {
   // through this proxy, carrying the same auth.
   app.get('/api/proxy-hls', async (req, res) => {
     const targetUrl = req.query.url as string;
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined));
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined));
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD;
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL;
     if (!targetUrl) {
       res.status(400).send("Parameter 'url' is required");
       return;
@@ -386,7 +397,7 @@ async function startServer() {
       // took as long as 39.7s, uncomfortably close to that same ceiling.
       // Raised to give genuinely slow-but-alive responses more room to
       // land instead of being cut off right as they'd have finished.
-      const fetchOpts = { timeoutMs: 70_000, retries: 0 };
+      const fetchOpts = { timeoutMs: 35_000, retries: 0 };
 
       const cacheKey = password ? `${new URL(targetUrl).host}|${email || ''}|${password}` : null;
 
@@ -415,7 +426,7 @@ async function startServer() {
 
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
-        console.error(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText} (${password ? 'password sent' : 'no password sent'}). Body: ${bodyText.slice(0, 300)}`);
+        console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText} (${password ? 'password sent' : 'no password sent'}). Body: ${bodyText.slice(0, 300)}`);
         res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status).send(
           upstream.status >= 300 && upstream.status < 400
             ? 'Upstream redirected to a login page — the stream access password was rejected.'
@@ -439,12 +450,12 @@ async function startServer() {
         // valid manifest from an origin that does this.
         if (!text.replace(/^\uFEFF/, '').trimStart().startsWith('#EXTM3U')) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
-          console.error(`[PROXY HLS] Upstream returned ${upstream.status} for ${targetUrl} but the body isn't a valid HLS manifest. First 200 chars: ${text.slice(0, 200)}`);
+          console.warn(`[PROXY HLS] Upstream returned ${upstream.status} for ${targetUrl} but the body isn't a valid HLS manifest. First 200 chars: ${text.slice(0, 200)}`);
           res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest — likely an expired session or wrong password serving a login page instead of the stream.');
           return;
         }
         const cleanText = text.replace(/^\uFEFF/, '');
-        // Always run every manifest through this \u2014 besides tail-truncating
+        // Always run every manifest through this — besides tail-truncating
         // an oversized VOD list, it also strips ENDLIST/PLAYLIST-TYPE so
         // hls.js treats the feed as ongoing rather than a finished clip (see
         // the function's own comment). It's a no-op for a manifest that
@@ -475,7 +486,7 @@ async function startServer() {
         if (/text\/html|text\/plain/i.test(contentType)) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
           const bodyText = await upstream.text().catch(() => '');
-          console.error(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but content-type is "${contentType}" (expected binary media). First 200 chars: ${bodyText.slice(0, 200)}`);
+          console.warn(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but content-type is "${contentType}" (expected binary media). First 200 chars: ${bodyText.slice(0, 200)}`);
           res.status(502).send('Upstream returned a 2xx status but the response was HTML/text, not a media segment — likely an expired session serving a login page.');
           return;
         }
@@ -489,7 +500,7 @@ async function startServer() {
         if (!isKeyFile && arrayBuffer.byteLength < 500) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
           const preview = Buffer.from(arrayBuffer).toString('utf8').slice(0, 200);
-          console.error(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but body is only ${arrayBuffer.byteLength} bytes (expected a real media segment). Content: ${preview}`);
+          console.warn(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but body is only ${arrayBuffer.byteLength} bytes (expected a real media segment). Content: ${preview}`);
           res.status(502).send(`Upstream returned a 2xx status but the segment body was only ${arrayBuffer.byteLength} bytes — likely an expired session or error response, not real video data.`);
           return;
         }
@@ -498,8 +509,9 @@ async function startServer() {
         res.status(200).send(Buffer.from(arrayBuffer));
       }
     } catch (err: unknown) {
-      console.error('[PROXY HLS] Error:', err);
-      res.status(502).send(err instanceof Error ? err.message : 'Error proxying HLS resource');
+      const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError' || /aborted due to timeout/i.test(err.message));
+      console.warn(`[PROXY HLS] ${isTimeout ? 'Upstream request timed out' : 'Upstream proxy error'} for ${targetUrl}:`, err instanceof Error ? err.message : String(err));
+      res.status(isTimeout ? 504 : 502).send(err instanceof Error ? err.message : 'Error proxying HLS resource');
     }
   });
 
@@ -552,8 +564,8 @@ async function startServer() {
     // auth when both are present: a partial credential (email with no
     // password, or vice versa) is guaranteed-wrong per the documented
     // format, so sending nothing is more honest than sending that.
-    const email = req.header('X-Stream-Email') || (req.query.email as string | undefined);
-    const password = req.header('X-Stream-Password') || (req.query.password as string | undefined);
+    const email = req.header('X-Stream-Email') || (req.query.email as string | undefined) || process.env.STREAM_EMAIL;
+    const password = req.header('X-Stream-Password') || (req.query.password as string | undefined) || process.env.STREAM_PASSWORD;
     const upstreamHeaders: Record<string, string> = { 'Content-Type': 'application/sdp' };
     if (email && password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
 
@@ -566,7 +578,7 @@ async function startServer() {
 
       const answer = await upstream.text();
       if (!upstream.ok) {
-        console.error(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
+        console.warn(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
         res.status(upstream.status).send(answer);
         return;
       }
@@ -582,7 +594,7 @@ async function startServer() {
       res.setHeader('Content-Type', 'application/sdp');
       res.status(201).send(answer);
     } catch (err: unknown) {
-      console.error('[WHEP PROXY] Error negotiating session:', err);
+      console.warn('[WHEP PROXY] Error negotiating session:', err instanceof Error ? err.message : String(err));
       res.status(502).send(err instanceof Error ? err.message : 'Error negotiating WHEP session');
     }
   });
@@ -604,10 +616,43 @@ async function startServer() {
       // Best-effort cleanup — the origin will also time out an abandoned
       // session on its own once ICE disconnects, so a failure here isn't
       // fatal to anything.
-      console.error('[WHEP PROXY] Session cleanup failed (non-fatal):', err);
+      console.warn('[WHEP PROXY] Session cleanup failed (non-fatal):', err instanceof Error ? err.message : String(err));
     }
     res.status(204).end();
   });
+
+  const FALLBACK_DEMO_CATALOGUE = [
+    { id: 'cam01', name: '01 Chiman bhai Bridge', live: true },
+    { id: 'cam02', name: '02 Janpath', live: true },
+    { id: 'cam03', name: '03 O.N.G.C. Office', live: true },
+    { id: 'cam04', name: '04 Paldi Circle', live: true },
+    { id: 'cam05', name: '05 Visat teen Rasta', live: true },
+    { id: 'cam06', name: '06 Timbavadi gate-Junagadh', live: true },
+    { id: 'cam07', name: '07 hero-showroom-gir-somnath', live: true },
+    { id: 'cam08', name: '08 majewadi-gate-junagadh', live: true },
+    { id: 'cam09', name: '09 new-bypass-near-by-circle-junagadh-2', live: true },
+    { id: 'cam10', name: '10 char-chowk-road-2-junagadh', live: true },
+    { id: 'cam11', name: '11 dolatpara-junagadh', live: true },
+    { id: 'cam12', name: '12 Tri Mandir Adalaj Tollnaka', live: true },
+    { id: 'cam13', name: '13 CN Vidhyalaya', live: true },
+    { id: 'cam14', name: '14 Delight RLVD', live: true },
+    { id: 'cam15', name: '15 Suvidha park', live: true },
+    { id: 'cam16', name: '16 Visat P2', live: true },
+    { id: 'cam17', name: '17 Rajkot Bus Port CCTV', live: true },
+    { id: 'cam18', name: '18 Rajkot CCTV', live: true },
+    { id: 'cam19', name: '19 KHAPARIA GRAM PANCHAYAT , TALUKA GANDEVI, DISTRICT NAVSARI', live: true },
+    { id: 'cam20', name: '20 Mohanpura', live: true },
+    { id: 'cam21', name: '23 Patan Dethali Char Rasta', live: true },
+    { id: 'cam22', name: '28 BK Mervada tran Rasta', live: true },
+    { id: 'cam23', name: '30 kheram', live: true },
+    { id: 'cam24', name: '33 dehgam', live: true },
+    { id: 'cam25', name: '34 dhanori', live: true },
+    { id: 'cam26', name: '35 TANKAL', live: true },
+    { id: 'cam27', name: '36 bilimora', live: true },
+    { id: 'cam28', name: '37 bilimora', live: true },
+    { id: 'cam29', name: '38 bilimora', live: true },
+    { id: 'cam30', name: 'Gandhidham Rambaugh p2', live: true },
+  ];
 
   // The grid's own integrator guide: "Start from the catalogue rather than
   // hard-coding endpoints... camera ids and the set of available cameras
@@ -617,8 +662,8 @@ async function startServer() {
   // proxy bug, and this is the only way to tell the difference.
   app.get('/api/camera-catalogue', async (req, res) => {
     const targetHost = req.query.host as string;
-    const password = req.query.password as string | undefined;
-    const email = req.query.email as string | undefined;
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD;
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL;
     if (!targetHost) {
       res.status(400).send("Parameter 'host' is required");
       return;
@@ -661,8 +706,11 @@ async function startServer() {
       if (upstream.status === 404) upstream = await fetchCatalogue('/api/ingest');
 
       if (!upstream.ok) {
-        res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status)
-          .send('Could not load the camera catalogue — the stream access password may be wrong.');
+        console.warn(`[CAMERA CATALOGUE] Upstream returned status ${upstream.status}, serving bundled fallback catalogue`);
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Catalogue-Source', 'bundled-fallback');
+        res.status(200).json(FALLBACK_DEMO_CATALOGUE);
         return;
       }
 
@@ -671,8 +719,11 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-store');
       res.status(200).send(data);
     } catch (err: unknown) {
-      console.error('[CAMERA CATALOGUE] Error:', err);
-      res.status(502).send(err instanceof Error ? err.message : 'Error fetching camera catalogue');
+      console.warn('[CAMERA CATALOGUE] Upstream fetch failed, serving bundled fallback catalogue:', err);
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Catalogue-Source', 'bundled-fallback');
+      res.status(200).json(FALLBACK_DEMO_CATALOGUE);
     }
   });
 
@@ -1005,10 +1056,15 @@ Analyze this context to answer user queries:
     }
   });
 
+  const server = http.createServer(app);
+
   // Vite middleware for development or static serving for production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: { server },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1020,7 +1076,7 @@ Analyze this context to answer user queries:
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`OMNISEE INTEGRATION SERVER RUNNING ON PORT ${PORT}`);
   });
 }

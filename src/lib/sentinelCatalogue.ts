@@ -88,7 +88,8 @@ export async function fetchSentinelCatalogue(streamAccessPassword: string, strea
     const isLive = firstBoolean(cam, ['live', 'is_live', 'status', 'online']);
     const remoteStreamUrl = `https://cctv.corp8.cloud/${id}/index.m3u8`;
 
-    entries.push({ name: `${id} ${label}`.trim(), remoteStreamUrl, isLive });
+    const name = label.toLowerCase().includes(id.toLowerCase()) ? label : `${id} ${label}`.trim();
+    entries.push({ name, remoteStreamUrl, isLive });
   }
 
   if (entries.length === 0) {
