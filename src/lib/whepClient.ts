@@ -180,7 +180,6 @@ export function startWhep(
   let closed = false;
 
   pc.addTransceiver('video', { direction: 'recvonly' });
-  pc.addTransceiver('audio', { direction: 'recvonly' });
 
   pc.ontrack = (event) => {
     if (video.srcObject !== event.streams[0]) {
@@ -375,6 +374,25 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
 
     const onAbort = () => finish(new Error('Snapshot aborted'));
     signal?.addEventListener('abort', onAbort);
+
+    // Fast server-side snapshot endpoint extracts a pristine RTSP frame in ~1.5s
+    const fastSnapshotUrl = `/api/camera-snapshot?camId=${encodeURIComponent(camId)}`;
+    fetch(fastSnapshotUrl, { signal })
+      .then(async (res) => {
+        if (res.ok && !settled) {
+          const blob = await res.blob();
+          if (blob && blob.size > 500) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (reader.result && typeof reader.result === 'string' && !settled) {
+                finish(undefined, reader.result);
+              }
+            };
+            reader.readAsDataURL(blob);
+          }
+        }
+      })
+      .catch(() => {});
 
     // Queue wait timeout prevents getting queued indefinitely behind other cameras
     queueTimeout = setTimeout(() => finish(new Error('Snapshot queue wait timed out')), 180_000);

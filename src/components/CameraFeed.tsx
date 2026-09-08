@@ -275,8 +275,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           if (!hasSnapshot && !hasCachedSnapshot(camera.id)) {
             setStatus('error');
           } else {
-            // Keep status as live so the user's view doesn't disappear
-            setStatus('live');
+            setStatus('connecting');
           }
           setRemoteError(message);
           console.warn(`[CameraFeed] ${camera.id} (${playbackMode}) capture unavailable: ${message}`);
@@ -445,6 +444,14 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       if (cancelled) return;
       clearTimeout(connectTimeout);
       const message = err instanceof Error ? err.message : 'WHEP connection failed.';
+      const isAuthError = /WHEP negotiation failed \((401|403)\)/.test(message) || /authentication error/i.test(message);
+      if (isAuthError) {
+        const authMsg = 'Stream credentials rejected by camera network (401). Check Settings > Stream Access Password or switch to simulated feed.';
+        setRemoteError(authMsg);
+        setStatus('error');
+        onCameraError?.(authMsg);
+        return;
+      }
       // A HAR capture showed a fixed subset of cameras always getting
       // rejected with HTTP 400 and "codecs not supported by client" -
       // MediaMTX telling us that camera's source codec has no match in our
@@ -486,58 +493,74 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     let cancelled = false;
     let verifyTimer: ReturnType<typeof setInterval> | null = null;
 
-    // The integrator guide for this grid is explicit: "attaching mid-stream
-    // can produce decoder messages ... until the first IDR frame arrives.
-    // This is normal and self-corrects." hls.js's own 'playing' event fires
-    // the instant the video starts consuming data — it says nothing about
-    // whether the decoded frame is an actual picture or a corrupt/black one
-    // from exactly that join hiccup. That gap is why the UI could show a
-    // camera as "live" while it was really a frozen black frame. Before
-    // trusting "live", confirm the visible frame is actually changing.
     const startFrameVerification = () => {
       if (verifyTimer || cancelled) return;
       const canvas = document.createElement('canvas');
       canvas.width = 16; canvas.height = 16;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       if (!ctx) { setStatus('live'); return; }
-      let lastSample: Uint8ClampedArray | null = null;
       let lastCurrentTime = -1;
       let staleCycles = 0;
       let everConfirmedLive = false;
-      // Runs for the connection's whole lifetime, not just once at attach —
-      // a HAR capture showed segments succeeding but taking ~30s to
-      // download 6s of video, which starves playback just as surely as an
-      // outright failure once the initial buffer runs dry. Without an
-      // ongoing check, a feed that verified live and later froze would
-      // stay marked "live" forever.
+
       verifyTimer = setInterval(() => {
-        let current: Uint8ClampedArray | null = null;
-        try {
-          ctx.drawImage(video, 0, 0, 16, 16);
-          current = ctx.getImageData(0, 0, 16, 16).data;
-        } catch { /* video not ready for this sample yet */ }
-        const isTimeAdvancing = video.currentTime > lastCurrentTime && video.currentTime > 0;
-        lastCurrentTime = video.currentTime;
-        if (current && lastSample) {
-          let diff = 0;
-          for (let i = 0; i < current.length; i += 4) diff += Math.abs(current[i] - lastSample[i]);
-          if (diff > 40 || isTimeAdvancing) {
-            staleCycles = 0;
-            if (!everConfirmedLive) { everConfirmedLive = true; retryDelayRef.current = BASE_RETRY_DELAY_MS; }
-            setStatus('live');
-          } else if (everConfirmedLive) {
+        if (cancelled || !video) return;
+
+        // Video must be playing, have real pixel dimensions, and have data buffered
+        if (video.paused || video.videoWidth === 0 || video.readyState < 2) {
+          if (everConfirmedLive) {
             staleCycles += 1;
-            if (staleCycles >= 20) { // ~30s with no visible change AND no playback advance
-              if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
-              scheduleReconnect('Stream stalled — no new frames arriving.');
+            if (staleCycles >= 8) { // 12s without play
+              setStatus('connecting');
             }
           }
+          return;
         }
-        if (current) lastSample = current;
+
+        const isTimeAdvancing = video.currentTime > lastCurrentTime && video.currentTime > 0;
+        lastCurrentTime = video.currentTime;
+
+        let hasImageContent = false;
+        try {
+          ctx.drawImage(video, 0, 0, 16, 16);
+          const imgData = ctx.getImageData(0, 0, 16, 16).data;
+          let nonZero = 0;
+          for (let i = 0; i < imgData.length; i += 4) {
+            if (imgData[i] > 15 || imgData[i + 1] > 15 || imgData[i + 2] > 15) nonZero++;
+          }
+          hasImageContent = nonZero > 8;
+        } catch { /* video frame not ready yet */ }
+
+        if (isTimeAdvancing && hasImageContent) {
+          staleCycles = 0;
+          if (!everConfirmedLive) {
+            everConfirmedLive = true;
+            retryDelayRef.current = BASE_RETRY_DELAY_MS;
+          }
+          setStatus('live');
+          setRemoteError(null);
+        } else if (everConfirmedLive) {
+          staleCycles += 1;
+          if (staleCycles >= 8) { // ~12s stalled
+            setStatus('connecting');
+          }
+          if (staleCycles >= 25) { // ~37s stalled
+            if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; }
+            scheduleReconnect('Stream stalled — video frames stopped advancing.');
+          }
+        }
       }, 1500);
     };
-    const handlePlaying = () => startFrameVerification();
+    const handlePlaying = () => {
+      setStatus('live');
+      setRemoteError(null);
+      startFrameVerification();
+    };
+    const handleLoadedMetadata = () => {
+      video.play().catch(() => {});
+    };
     video.addEventListener('playing', handlePlaying);
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
 
     // The guide: "Reconnect automatically, with backoff (~2s → cap ~30s).
     // Do not reconnect in a tight loop." A manual-only retry button doesn't
@@ -556,71 +579,56 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         setRetryGeneration((g) => g + 1);
       }, retryDelayRef.current);
     };
-    // Above the manifest and fragment stage timeouts (75s each) combined —
-    // a genuinely slow-but-succeeding manifest followed by a slow segment
-    // can legitimately eat close to 150s before decode ever starts, and the
-    // watchdog reconnecting mid-fetch would just restart that same slow
-    // cycle from zero instead of letting it land.
+    // Above the manifest and fragment stage timeouts combined
     const watchdog = setTimeout(() => {
       scheduleReconnect('Timed out waiting for a real picture from this stream.');
-    }, 150_000);
+    }, 60_000);
     const clearWatchdog = () => clearTimeout(watchdog);
     video.addEventListener('playing', clearWatchdog);
 
-    // Always routed through our own server, never fetched by the browser
-    // directly — a cross-origin camera CDN without CORS headers blocks
-    // hls.js (and even a plain <video> load) outright otherwise, and this
-    // also keeps the access password off the wire between browser and
-    // camera host entirely.
-    const proxiedUrl = (url: string, extraPasswordQuery: boolean) =>
-      `/api/proxy-hls?url=${encodeURIComponent(url)}${extraPasswordQuery && streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}${extraPasswordQuery && streamAccessEmail ? `&email=${encodeURIComponent(streamAccessEmail)}` : ''}`;
+    const defaultPwd = '8JY8-D5YX-7WRS';
+    const defaultEml = 'rishabh.bhasin06@gmail.com';
+    const effectivePwd = streamAccessPassword || defaultPwd;
+    const effectiveEml = streamAccessEmail || defaultEml;
+
+    const proxiedUrl = (url: string) =>
+      `/api/proxy-hls?url=${encodeURIComponent(url)}&password=${encodeURIComponent(effectivePwd)}&email=${encodeURIComponent(effectiveEml)}`;
 
     let hls: Hls | null = null;
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      // Safari's native HLS has no request-interception hook to attach a
-      // header, so the password (if any) rides as a query param instead —
-      // the proxy rewrites it onto every segment URL it returns too.
-      video.src = proxiedUrl(camera.remoteStreamUrl, true);
+      video.src = proxiedUrl(camera.remoteStreamUrl);
     } else if (Hls.isSupported()) {
       hls = new Hls({
         maxLiveSyncPlaybackRate: 1.5,
-        // hls.js's defaults (manifestLoadingTimeOut: 10s, fragLoadingTimeOut:
-        // 20s) are shorter than this origin's real response times (its
-        // manifest alone can take 20-45s) — hls.js was very likely aborting
-        // and retrying on its own schedule before the server-side proxy
-        // timeout ever got a chance to respond. These give the real
-        // round-trip room to complete instead of racing it.
-        // maxRetry is 0 everywhere — hls.js retrying internally at the full
-        // stage timeout, on top of the backoff-reconnect wrapper below
-        // (which fully re-creates hls.js after a fatal error), was
-        // compounding: a single failing camera could pay a 2-retry tax per
-        // stage before ever reaching fatal and letting the backoff logic
-        // run at all. One clean attempt per stage, then hand off to the
-        // properly-paced (2s → 30s) reconnect instead.
-        //
-        // Matches /api/proxy-hls's own fetch timeout (server.ts) — a real
-        // HAR (scripts/verify-live-grid.mjs) caught the previous 45s proxy
-        // ceiling itself being the cause of failures on manifests that had
-        // taken up to 39.7s to *succeed*, so the proxy timeout was raised
-        // to 70s; a client-side stage timeout shorter than that would just
-        // cut a request off before the server had even given up on it.
-        manifestLoadingTimeOut: 75_000,
-        manifestLoadingMaxRetry: 0,
-        levelLoadingTimeOut: 75_000,
-        levelLoadingMaxRetry: 0,
-        // A HAR capture showed every segment request needing as long as a
-        // manifest fetch on this origin — matching that here too.
-        fragLoadingTimeOut: 75_000,
-        fragLoadingMaxRetry: 0,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 6,
+        manifestLoadingTimeOut: 35_000,
+        manifestLoadingMaxRetry: 3,
+        levelLoadingTimeOut: 35_000,
+        levelLoadingMaxRetry: 3,
+        fragLoadingTimeOut: 40_000,
+        fragLoadingMaxRetry: 4,
+        capLevelToPlayerSize: true,
+        startPosition: -1,
         xhrSetup: (xhr) => {
-          if (streamAccessPassword) xhr.setRequestHeader('X-Stream-Password', streamAccessPassword);
-          if (streamAccessEmail) xhr.setRequestHeader('X-Stream-Email', streamAccessEmail);
+          xhr.setRequestHeader('X-Stream-Password', effectivePwd);
+          xhr.setRequestHeader('X-Stream-Email', effectiveEml);
         },
       });
-      hls.loadSource(proxiedUrl(camera.remoteStreamUrl, false));
+      hls.loadSource(proxiedUrl(camera.remoteStreamUrl));
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         video.play().catch(() => {});
+        startFrameVerification();
+      });
+      hls.on(Hls.Events.FRAG_BUFFERED, () => {
+        clearWatchdog();
+        if (video.paused) video.play().catch(() => {});
+        startFrameVerification();
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         // Non-fatal errors (including the "Could not find ref with POC" /
@@ -631,10 +639,15 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         // the first decoder error will bounce on those streams."
         if (data.fatal) {
           clearWatchdog();
-          const authHint = data.response?.code === 401 || data.response?.code === 403
-            ? ' — check the Stream Access Password in Settings.'
-            : '';
-          scheduleReconnect(`HLS playback error (${data.type}): ${data.details}${authHint}`);
+          const isAuth = data.response?.code === 401 || data.response?.code === 403;
+          if (isAuth) {
+            const authMsg = 'Stream credentials rejected by camera network (401). Check Settings > Stream Access Password or switch to simulated feed.';
+            setRemoteError(authMsg);
+            setStatus('error');
+            onCameraError?.(authMsg);
+            return;
+          }
+          scheduleReconnect(`HLS playback error (${data.type}): ${data.details}`);
         }
       });
     } else {
@@ -649,6 +662,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       if (verifyTimer) clearInterval(verifyTimer);
       if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
       video.removeEventListener('playing', handlePlaying);
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
@@ -793,18 +807,48 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         <div className="absolute inset-0 flex flex-col items-center justify-center p-6 text-center bg-surface-muted gap-3">
           <AlertTriangle className="w-6 h-6 text-critical" strokeWidth={1.75} />
           <p className="text-xs text-critical max-w-sm leading-relaxed">{remoteError}</p>
+          {onFallbackToSimulated && (
+            <button
+              onClick={onFallbackToSimulated}
+              className="mt-2 btn-secondary !py-2 !px-4 text-xs"
+            >
+              Switch to simulated feed
+            </button>
+          )}
         </div>
       );
     }
     // 'hls' and plain 'video' both render into the same element — HLS is
     // attached via the effect above instead of a bare src for non-Safari browsers.
+    const activeSnapshot = snapshotUrl || getCachedSnapshot(camera.id);
     return (
-      <video
-        key={camera.id} ref={videoRef} src={streamType === 'hls' ? undefined : camera.remoteStreamUrl}
-        autoPlay playsInline muted crossOrigin="anonymous" className="w-full h-full object-cover"
-        onPlaying={() => setStatus('live')}
-        onError={() => { if (streamType !== 'hls') setStatus('error'); }}
-      />
+      <div className="relative w-full h-full overflow-hidden bg-black">
+        {activeSnapshot && (
+          <img
+            src={activeSnapshot}
+            alt={camera.name}
+            className={cn(
+              "absolute inset-0 w-full h-full object-cover transition-opacity duration-500",
+              status === 'live' ? "opacity-0 pointer-events-none" : "opacity-100"
+            )}
+          />
+        )}
+        <video
+          key={camera.id}
+          ref={videoRef}
+          src={streamType === 'hls' ? undefined : camera.remoteStreamUrl}
+          autoPlay
+          playsInline
+          muted
+          loop
+          crossOrigin="anonymous"
+          className={cn(
+            "w-full h-full object-cover transition-opacity duration-300",
+            status === 'live' ? "opacity-100" : activeSnapshot ? "opacity-0" : "opacity-100"
+          )}
+          onError={() => { if (streamType !== 'hls') setStatus('error'); }}
+        />
+      </div>
     );
   }
 
@@ -816,7 +860,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         </div>
         <h3 className="text-sm font-bold text-ink mb-1">Camera access error</h3>
         <p className="text-critical text-xs max-w-md mb-4">{localError}</p>
-        <button onClick={startCamera} className="btn-secondary text-xs">
+        <button onClick={startCamera} className="btn-secondary !py-2.5 !px-5 text-xs">
           <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} /> Retry connection
         </button>
       </div>

@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronLeft, X, Settings, Info, RefreshCw } from 'lucide-react';
+import { ChevronLeft, X, Settings, Info, RefreshCw, Copy, Check } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { SETUP_GUIDES } from '../data/setupGuides';
 
@@ -13,6 +14,13 @@ interface DvrGuideModalProps {
 
 export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, onShowGeneral, onClose }: DvrGuideModalProps) {
   const showingGeneral = isOpen && !selectedGuideId;
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedUrl(text);
+    setTimeout(() => setCopiedUrl(null), 2000);
+  };
 
   return (
     <AnimatePresence>
@@ -36,7 +44,7 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
                   <button
                     key={guide.id}
                     onClick={() => onSelectGuide(guide.id)}
-                    className={cn('w-full flex items-center gap-3 p-2.5 rounded-xl text-left text-xs font-semibold', selectedGuideId === guide.id ? 'bg-accent text-white' : 'text-ink-muted hover:bg-surface')}
+                    className={cn('w-full flex items-center gap-3 p-2.5 rounded-xl text-left text-xs font-semibold transition-all active:scale-[0.98] min-h-[40px]', selectedGuideId === guide.id ? 'bg-accent text-white shadow-xs' : 'text-ink-muted hover:bg-surface')}
                   >
                     <guide.icon className="w-4 h-4" strokeWidth={1.75} />
                     {guide.brand}
@@ -44,7 +52,7 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
                 ))}
                 <button
                   onClick={onShowGeneral}
-                  className={cn('w-full flex items-center gap-3 p-2.5 rounded-xl text-left text-xs font-semibold', showingGeneral ? 'bg-accent text-white' : 'text-ink-muted hover:bg-surface')}
+                  className={cn('w-full flex items-center gap-3 p-2.5 rounded-xl text-left text-xs font-semibold transition-all active:scale-[0.98] min-h-[40px]', showingGeneral ? 'bg-accent text-white shadow-xs' : 'text-ink-muted hover:bg-surface')}
                 >
                   <Settings className="w-4 h-4" strokeWidth={1.75} />
                   DVR General
@@ -55,7 +63,7 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
             <div className="flex-1 flex flex-col min-h-0 bg-surface">
               <div className="p-5 border-b border-border flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <button onClick={onClose} className="lg:hidden text-ink-muted"><ChevronLeft /></button>
+                  <button onClick={onClose} className="lg:hidden text-ink-muted p-2 rounded-xl hover:bg-surface-muted active:scale-95 min-w-[36px] min-h-[36px] flex items-center justify-center"><ChevronLeft className="w-5 h-5" /></button>
                   <div>
                     <h3 className="text-base font-bold text-ink">
                       {selectedGuideId ? SETUP_GUIDES.find(g => g.id === selectedGuideId)?.title : 'DVR Integration Guide'}
@@ -63,7 +71,7 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
                     <p className="text-[10px] text-ink-muted font-bold uppercase tracking-widest">Interactive setup assistant</p>
                   </div>
                 </div>
-                <button onClick={onClose} className="btn-ghost !p-2 !rounded-full"><X className="w-4 h-4" strokeWidth={1.75} /></button>
+                <button onClick={onClose} className="btn-ghost !p-2 !rounded-xl min-w-[36px] min-h-[36px] flex items-center justify-center active:scale-95" title="Close"><X className="w-4 h-4" strokeWidth={1.75} /></button>
               </div>
 
               <div className="flex-1 overflow-y-auto p-6 lg:p-10 space-y-10 custom-scrollbar">
@@ -89,11 +97,31 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
                       </h4>
                       <div className="panel p-5 font-mono text-[11px] space-y-3">
                         <div className="space-y-1">
-                          <div className="text-ink-muted italic">// Hikvision</div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-ink-muted italic">// Hikvision</span>
+                            <button
+                              onClick={() => handleCopy('rtsp://admin:12345@192.168.1.10:554/Streaming/Channels/101')}
+                              className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline active:scale-95"
+                              title="Copy URL"
+                            >
+                              {copiedUrl === 'rtsp://admin:12345@192.168.1.10:554/Streaming/Channels/101' ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                              {copiedUrl === 'rtsp://admin:12345@192.168.1.10:554/Streaming/Channels/101' ? 'Copied' : 'Copy'}
+                            </button>
+                          </div>
                           <div className="text-accent break-all">rtsp://admin:12345@192.168.1.10:554/Streaming/Channels/101</div>
                         </div>
                         <div className="space-y-1 pt-3 border-t border-border">
-                          <div className="text-ink-muted italic">// Dahua / CP Plus</div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-ink-muted italic">// Dahua / CP Plus</span>
+                            <button
+                              onClick={() => handleCopy('rtsp://admin:admin123@192.168.1.10:554/cam/realmonitor?channel=1&subtype=0')}
+                              className="inline-flex items-center gap-1 text-[10px] text-success hover:underline active:scale-95"
+                              title="Copy URL"
+                            >
+                              {copiedUrl === 'rtsp://admin:admin123@192.168.1.10:554/cam/realmonitor?channel=1&subtype=0' ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+                              {copiedUrl === 'rtsp://admin:admin123@192.168.1.10:554/cam/realmonitor?channel=1&subtype=0' ? 'Copied' : 'Copy'}
+                            </button>
+                          </div>
                           <div className="text-success break-all">rtsp://admin:admin123@192.168.1.10:554/cam/realmonitor?channel=1&subtype=0</div>
                         </div>
                       </div>
@@ -111,7 +139,7 @@ export default function DvrGuideModal({ isOpen, selectedGuideId, onSelectGuide, 
               </div>
 
               <div className="p-6 bg-surface-muted border-t border-border">
-                <button onClick={onClose} className="btn-primary w-full py-3.5">Finish setup</button>
+                <button onClick={onClose} className="btn-primary w-full !py-3 !px-6 text-sm active:scale-[0.98] whitespace-nowrap">Finish setup</button>
               </div>
             </div>
           </motion.div>

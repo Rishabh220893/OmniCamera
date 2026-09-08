@@ -16,8 +16,8 @@ export default function MobileNav({ activeTab, onChangeTab }: MobileNavProps) {
           key={tab.id}
           onClick={() => onChangeTab(tab.id)}
           className={cn(
-            'flex flex-col items-center justify-center gap-1 w-full h-full relative transition-colors',
-            activeTab === tab.id ? 'text-accent' : 'text-ink-muted'
+            'flex flex-col items-center justify-center gap-1 w-full h-full relative transition-all active:scale-95',
+            activeTab === tab.id ? 'text-accent' : 'text-ink-muted hover:text-ink'
           )}
         >
           <tab.icon className="w-5 h-5" strokeWidth={1.75} />

@@ -85,6 +85,25 @@ export function captureHlsSnapshot(
     // Queue wait timeout prevents getting queued indefinitely behind other cameras
     queueTimeout = setTimeout(() => finish(new Error('Snapshot queue wait timed out')), 180_000);
 
+    // Attempt fast server-side extraction first (< 2s), bypassing heavy browser MSE overhead
+    const fastSnapshotUrl = `/api/camera-snapshot?url=${encodeURIComponent(url)}`;
+    fetch(fastSnapshotUrl, { signal })
+      .then(async (res) => {
+        if (res.ok && !settled) {
+          const blob = await res.blob();
+          if (blob && blob.size > 500) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              if (reader.result && typeof reader.result === 'string' && !settled) {
+                finish(undefined, reader.result);
+              }
+            };
+            reader.readAsDataURL(blob);
+          }
+        }
+      })
+      .catch(() => {});
+
     const proxiedUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${password ? `&password=${encodeURIComponent(password)}` : ''}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
 
     // See captureWhepSnapshot's identical use of this — a fixed settle

@@ -46,7 +46,7 @@ export default function ChatWidget({ isOpen, onToggle, messages, input, onInputC
                   </div>
                 </div>
               </div>
-              <button onClick={onToggle} className="btn-ghost !p-1.5">
+              <button onClick={onToggle} className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center !rounded-xl active:scale-95" title="Close pilot">
                 <X className="w-4 h-4" strokeWidth={1.75} />
               </button>
             </div>
@@ -81,9 +81,9 @@ export default function ChatWidget({ isOpen, onToggle, messages, input, onInputC
                 onChange={(e) => onInputChange(e.target.value)}
                 placeholder="Ask about camera events..."
                 disabled={isSending}
-                className="input !py-2 !rounded-xl flex-1 text-xs"
+                className="input !py-2.5 !px-4 !rounded-xl flex-1 text-xs"
               />
-              <button type="submit" disabled={isSending || !input.trim()} className="btn-primary !p-0 w-9 h-9 !rounded-xl shrink-0">
+              <button type="submit" disabled={isSending || !input.trim()} className="btn-primary !p-0 w-10 h-10 !rounded-xl shrink-0 active:scale-95 transition-transform flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed" title="Send message">
                 <Send className="w-3.5 h-3.5" strokeWidth={1.75} />
               </button>
             </form>
@@ -95,7 +95,8 @@ export default function ChatWidget({ isOpen, onToggle, messages, input, onInputC
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         onClick={onToggle}
-        className="w-12 h-12 rounded-full bg-accent text-white flex items-center justify-center shadow-lg pointer-events-auto"
+        className="w-12 h-12 rounded-full bg-accent text-white flex items-center justify-center shadow-lg hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 pointer-events-auto transition-shadow"
+        title="Toggle AI Pilot"
       >
         <MessageSquare className="w-5 h-5" strokeWidth={1.75} />
       </motion.button>

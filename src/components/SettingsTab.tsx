@@ -77,7 +77,7 @@ export default function SettingsTab(props: SettingsTabProps) {
       key="settings" className="max-w-4xl mx-auto space-y-6 pb-24"
     >
       <div className="space-y-1">
-        <h2 className="text-xl font-bold text-ink">Settings</h2>
+        <h2 className="text-xl font-bold font-display text-ink">Settings</h2>
         <p className="text-sm text-ink-muted">System preferences, cameras, and security configuration.</p>
       </div>
 
@@ -88,7 +88,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <Settings2 className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink">System preferences</h2>
+            <h2 className="text-lg font-bold font-display text-ink">System preferences</h2>
             <p className="text-xs text-ink-muted">Global appearance and notification behavior</p>
           </div>
         </div>
@@ -101,7 +101,7 @@ export default function SettingsTab(props: SettingsTabProps) {
                 <Eye className="w-4.5 h-4.5 text-accent" strokeWidth={1.75} />
                 <span className="text-sm font-semibold text-ink">Interface theme</span>
               </div>
-              <button onClick={onToggleTheme} className="btn-secondary !py-1.5 !px-3.5 text-xs">
+              <button onClick={onToggleTheme} className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95">
                 {theme === 'dark' ? 'Dark mode' : 'Light mode'}
               </button>
             </div>
@@ -114,32 +114,37 @@ export default function SettingsTab(props: SettingsTabProps) {
                 { key: 'criticalAlerts', label: 'Critical alerts', icon: AlertTriangle },
                 { key: 'systemStatus', label: 'System status', icon: Activity },
                 { key: 'quietHoursEnabled', label: 'Quiet hours', icon: Clock },
-              ].map((pref) => (
-                <button
-                  key={pref.key}
-                  onClick={() => onUpdateNotifyPrefs({ [pref.key]: !notificationPrefs[pref.key as keyof NotificationPrefs] })}
-                  className="w-full flex items-center justify-between p-3.5 panel hover:border-accent/30 transition-colors text-left"
-                >
-                  <div className="flex items-center gap-3">
-                    <pref.icon className={cn('w-4.5 h-4.5', notificationPrefs[pref.key as keyof NotificationPrefs] ? 'text-accent' : 'text-ink-muted')} strokeWidth={1.75} />
-                    <span className="text-sm font-semibold text-ink">{pref.label}</span>
-                  </div>
-                  <div className={cn('w-9 h-5 rounded-full relative transition-colors', notificationPrefs[pref.key as keyof NotificationPrefs] ? 'bg-accent' : 'bg-border')}>
-                    <div className={cn('absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all', notificationPrefs[pref.key as keyof NotificationPrefs] ? 'left-4.5' : 'left-0.5')} />
-                  </div>
-                </button>
-              ))}
+              ].map((pref) => {
+                const isEnabled = Boolean(notificationPrefs[pref.key as keyof NotificationPrefs]);
+                return (
+                  <button
+                    key={pref.key}
+                    role="switch"
+                    aria-checked={isEnabled}
+                    onClick={() => onUpdateNotifyPrefs({ [pref.key]: !isEnabled })}
+                    className="w-full flex items-center justify-between p-3.5 panel hover:border-accent/40 active:scale-[0.99] transition-all text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <pref.icon className={cn('w-4.5 h-4.5 transition-colors', isEnabled ? 'text-accent' : 'text-ink-muted group-hover:text-ink')} strokeWidth={1.75} />
+                      <span className="text-sm font-semibold text-ink">{pref.label}</span>
+                    </div>
+                    <div className={cn('switch-track', isEnabled ? 'bg-accent' : 'bg-border')}>
+                      <span className={cn('switch-thumb', isEnabled ? 'translate-x-5' : 'translate-x-0.5')} />
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
             {notificationPrefs.quietHoursEnabled && (
               <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} className="grid grid-cols-2 gap-3 p-4 panel">
                 <div className="space-y-1.5">
                   <label className="text-[9px] font-bold text-ink-muted uppercase">Start time</label>
-                  <input type="time" value={notificationPrefs.quietHoursStart} onChange={(e) => onUpdateNotifyPrefs({ quietHoursStart: e.target.value })} className="input !py-2" />
+                  <input type="time" value={notificationPrefs.quietHoursStart} onChange={(e) => onUpdateNotifyPrefs({ quietHoursStart: e.target.value })} className="input !py-2 !px-4" />
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-[9px] font-bold text-ink-muted uppercase">End time</label>
-                  <input type="time" value={notificationPrefs.quietHoursEnd} onChange={(e) => onUpdateNotifyPrefs({ quietHoursEnd: e.target.value })} className="input !py-2" />
+                  <input type="time" value={notificationPrefs.quietHoursEnd} onChange={(e) => onUpdateNotifyPrefs({ quietHoursEnd: e.target.value })} className="input !py-2 !px-4" />
                 </div>
               </motion.div>
             )}
@@ -154,7 +159,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <Building2 className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink">Department &amp; access</h2>
+            <h2 className="text-lg font-bold font-display text-ink">Department &amp; access</h2>
             <p className="text-xs text-ink-muted">Used to group cameras on the Map and gate watchlist management</p>
           </div>
         </div>
@@ -183,17 +188,14 @@ export default function SettingsTab(props: SettingsTabProps) {
         <p className="text-[10px] text-ink-muted italic mt-4">Only Admin accounts can manage the vehicle watchlist below.</p>
       </div>
 
-      {/* Cloud sync status — the actual Save action lives in the sticky bar
-          at the bottom of the viewport (see below) so it's always reachable
-          regardless of how far down this page you've scrolled, instead of
-          being stranded in a card mid-page. */}
+      {/* Cloud sync status */}
       <div className="card p-8 relative overflow-hidden">
         <div className="flex items-center gap-4 text-left">
           <div className="w-11 h-11 rounded-2xl bg-accent-soft flex items-center justify-center text-accent">
             <FolderHeart className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-base font-bold text-ink">Cloud settings sync</h2>
+            <h2 className="text-base font-bold font-display text-ink">Cloud settings sync</h2>
             <p className="text-xs text-ink-muted">
               {user?.uid === 'demo-guest' ? 'Running in offline guest bypass mode' : `Signed in as: ${user?.email}`}
             </p>
@@ -208,7 +210,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <BarChart2 className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink">Google Sheets export</h2>
+            <h2 className="text-lg font-bold font-display text-ink">Google Sheets export</h2>
             <p className="text-xs text-ink-muted">Export surveillance logs to a spreadsheet</p>
           </div>
         </div>
@@ -216,7 +218,7 @@ export default function SettingsTab(props: SettingsTabProps) {
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <p className="text-xs font-semibold text-ink">Spreadsheet link</p>
             {googleSheetsId && (
-              <button onClick={() => window.open(`https://docs.google.com/spreadsheets/d/${googleSheetsId}`, '_blank')} className="btn-secondary !py-1.5 !px-3 text-xs">
+              <button onClick={() => window.open(`https://docs.google.com/spreadsheets/d/${googleSheetsId}`, '_blank')} className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95">
                 <ExternalLink className="w-3.5 h-3.5" strokeWidth={1.75} /> Open sheet
               </button>
             )}
@@ -242,7 +244,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <KeyRound className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink">Stream access credentials</h2>
+            <h2 className="text-lg font-bold font-display text-ink">Stream access credentials</h2>
             <p className="text-xs text-ink-muted">Sent to password-protected remote feed hosts (applies to every Remote Link Feed camera)</p>
           </div>
         </div>
@@ -275,7 +277,7 @@ export default function SettingsTab(props: SettingsTabProps) {
               <button
                 type="button"
                 onClick={() => setShowStreamPassword(v => !v)}
-                className="btn-ghost !absolute !right-1.5 !top-1/2 !-translate-y-1/2 !p-1.5"
+                className="btn-ghost !absolute !right-1.5 !top-1/2 !-translate-y-1/2 !p-1.5 min-w-[32px] min-h-[32px] flex items-center justify-center active:scale-95"
                 title={showStreamPassword ? 'Hide' : 'Show'}
               >
                 {showStreamPassword ? <EyeOff className="w-3.5 h-3.5" strokeWidth={1.75} /> : <Eye className="w-3.5 h-3.5" strokeWidth={1.75} />}
@@ -296,13 +298,13 @@ export default function SettingsTab(props: SettingsTabProps) {
               <Camera className="w-5.5 h-5.5" strokeWidth={1.75} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-ink">Camera management</h2>
+              <h2 className="text-lg font-bold font-display text-ink">Camera management</h2>
               <p className="text-xs text-ink-muted">Configure every camera in your fleet</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={onOpenSetupGuides} className="btn-secondary !py-2 text-xs"><HelpCircle className="w-3.5 h-3.5" strokeWidth={1.75} /> Setup guides</button>
-            <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
+            <button onClick={onOpenSetupGuides} className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"><HelpCircle className="w-3.5 h-3.5" strokeWidth={1.75} /> Setup guides</button>
+            <button onClick={onAddCamera} className="btn-primary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
           </div>
         </div>
 
@@ -311,14 +313,14 @@ export default function SettingsTab(props: SettingsTabProps) {
             <div
               key={cam.id}
               onClick={() => onSelectCamera(cam.id)}
-              className={cn('p-4 rounded-2xl border cursor-pointer relative group', activeCameraId === cam.id ? 'bg-accent border-accent' : 'bg-surface-muted border-border hover:border-accent/30')}
+              className={cn('p-4 rounded-xl border cursor-pointer relative group transition-all active:scale-[0.99]', activeCameraId === cam.id ? 'bg-accent border-accent' : 'bg-surface-muted border-border hover:border-accent/30')}
             >
               <div className="flex flex-col gap-0.5">
                 <span className={cn('text-xs font-bold', activeCameraId === cam.id ? 'text-white' : 'text-ink')}>{cam.name}</span>
                 <span className={cn('text-[9px] font-medium', activeCameraId === cam.id ? 'text-white/70' : 'text-ink-muted')}>{cam.useRemoteFeed ? 'Remote feed' : 'Local feed'}</span>
               </div>
               {isAdmin && cameras.length > 1 && (
-                <button onClick={(e) => { e.stopPropagation(); onRemoveCamera(cam.id); }} className="absolute top-3 right-3 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 bg-black/15 hover:bg-critical hover:text-white transition-all">
+                <button onClick={(e) => { e.stopPropagation(); onRemoveCamera(cam.id); }} className="absolute top-3 right-3 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 bg-black/15 hover:bg-critical hover:text-white transition-all active:scale-95 min-w-[32px] min-h-[32px] flex items-center justify-center" title="Delete camera">
                   <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
                 </button>
               )}
@@ -334,7 +336,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <Settings className="w-7 h-7 text-white" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-ink">Camera configuration</h2>
+            <h2 className="text-xl font-bold font-display text-ink">Camera configuration</h2>
             <p className="text-ink-muted text-sm">Editing: {activeCamera.name}</p>
           </div>
         </div>
@@ -459,10 +461,12 @@ export default function SettingsTab(props: SettingsTabProps) {
                 <span className="text-[10px] text-ink-muted">RTSP, snapshot, or WebRTC URL streaming.</span>
               </div>
               <button
+                role="switch"
+                aria-checked={Boolean(activeCamera.useRemoteFeed)}
                 onClick={() => onUpdateActiveCamera({ useRemoteFeed: !activeCamera.useRemoteFeed, useSimulatedFeed: false })}
-                className={cn('w-11 h-6 rounded-full relative transition-colors', activeCamera.useRemoteFeed ? 'bg-accent' : 'bg-border')}
+                className={cn('switch-track', activeCamera.useRemoteFeed ? 'bg-accent' : 'bg-border')}
               >
-                <div className={cn('absolute top-1 w-4 h-4 bg-white rounded-full transition-all', activeCamera.useRemoteFeed ? 'left-6' : 'left-1')} />
+                <span className={cn('switch-thumb', activeCamera.useRemoteFeed ? 'translate-x-5' : 'translate-x-0.5')} />
               </button>
             </div>
             {activeCamera.useRemoteFeed && (
@@ -479,10 +483,12 @@ export default function SettingsTab(props: SettingsTabProps) {
                 <span className="text-[10px] text-ink-muted">Run a demo feed, no camera hardware needed.</span>
               </div>
               <button
+                role="switch"
+                aria-checked={Boolean(activeCamera.useSimulatedFeed)}
                 onClick={() => onUpdateActiveCamera({ useSimulatedFeed: !activeCamera.useSimulatedFeed, useRemoteFeed: false })}
-                className={cn('w-11 h-6 rounded-full relative transition-colors', activeCamera.useSimulatedFeed ? 'bg-accent' : 'bg-border')}
+                className={cn('switch-track', activeCamera.useSimulatedFeed ? 'bg-accent' : 'bg-border')}
               >
-                <div className={cn('absolute top-1 w-4 h-4 bg-white rounded-full transition-all', activeCamera.useSimulatedFeed ? 'left-6' : 'left-1')} />
+                <span className={cn('switch-thumb', activeCamera.useSimulatedFeed ? 'translate-x-5' : 'translate-x-0.5')} />
               </button>
             </div>
           </div>
@@ -508,7 +514,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest flex items-center gap-1.5"><Users className="w-3.5 h-3.5" strokeWidth={1.75} /> Known family/members</label>
             <div className="relative">
               <input type="file" id="face-upload" className="hidden" accept="image/*" onChange={onFaceUpload} />
-              <label htmlFor="face-upload" className="btn-primary !py-2 !px-3.5 text-xs cursor-pointer">Add face</label>
+              <label htmlFor="face-upload" className="btn-primary !py-2 !px-4 text-xs cursor-pointer whitespace-nowrap active:scale-95 inline-flex items-center">Add face</label>
             </div>
           </div>
           {knownFaces.length > 0 ? (
@@ -516,7 +522,7 @@ export default function SettingsTab(props: SettingsTabProps) {
               {knownFaces.map(face => (
                 <div key={face.id} className="relative group aspect-square rounded-xl overflow-hidden border border-border">
                   <img src={face.imageData} alt={face.name} className="w-full h-full object-cover" />
-                  <button onClick={() => onRemoveFace(face.id)} className="absolute top-1.5 right-1.5 w-6 h-6 bg-critical rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={() => onRemoveFace(face.id)} className="absolute top-1.5 right-1.5 w-6 h-6 bg-critical rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity active:scale-95" title="Remove face">
                     <Trash2 className="w-3 h-3 text-white" strokeWidth={1.75} />
                   </button>
                   <div className="absolute inset-x-0 bottom-0 p-1.5 bg-black/60 text-[8px] font-bold text-white text-center truncate">{face.name}</div>
@@ -524,7 +530,7 @@ export default function SettingsTab(props: SettingsTabProps) {
               ))}
             </div>
           ) : (
-            <div className="p-6 border-2 border-dashed border-border rounded-2xl text-center text-ink-muted">
+            <div className="p-6 border-2 border-dashed border-border rounded-xl text-center text-ink-muted">
               <p className="text-xs italic">No known faces uploaded yet.</p>
             </div>
           )}
@@ -538,7 +544,7 @@ export default function SettingsTab(props: SettingsTabProps) {
             <ShieldAlert className="w-5.5 h-5.5" strokeWidth={1.75} />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-ink">Vehicle watchlist</h2>
+            <h2 className="text-lg font-bold font-display text-ink">Vehicle watchlist</h2>
             <p className="text-xs text-ink-muted">Plates flagged for real-time tracking across every camera</p>
           </div>
         </div>
@@ -552,10 +558,10 @@ export default function SettingsTab(props: SettingsTabProps) {
             <form onSubmit={handleAddWatchlist} className="flex flex-col sm:flex-row gap-3 mb-5">
               <input name="plate" placeholder="Plate, e.g. GJ01AB1234" className="input font-mono uppercase flex-1" />
               <input name="reason" placeholder="Reason (optional)" className="input flex-1" />
-              <button type="submit" className="btn-primary !px-5"><Plus className="w-4 h-4" strokeWidth={1.75} /> Add</button>
+              <button type="submit" className="btn-primary !py-2.5 !px-5 text-xs font-semibold whitespace-nowrap active:scale-95 flex items-center justify-center gap-1.5"><Plus className="w-4 h-4" strokeWidth={1.75} /> Add</button>
             </form>
             {watchlist.length === 0 ? (
-              <div className="p-6 border-2 border-dashed border-border rounded-2xl text-center text-ink-muted">
+              <div className="p-6 border-2 border-dashed border-border rounded-xl text-center text-ink-muted">
                 <p className="text-xs italic">No plates on the watchlist yet.</p>
               </div>
             ) : (
@@ -569,7 +575,7 @@ export default function SettingsTab(props: SettingsTabProps) {
                         {entry.reason && <span className="text-[10px] text-ink-muted">{entry.reason}</span>}
                       </div>
                     </div>
-                    <button onClick={() => onRemoveWatchlistEntry(entry.id)} className="btn-ghost !p-1.5 hover:!text-critical"><Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
+                    <button onClick={() => onRemoveWatchlistEntry(entry.id)} className="btn-ghost !p-2 hover:!text-critical min-w-[36px] min-h-[36px] flex items-center justify-center active:scale-95" title="Remove watchlist entry"><Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
                   </div>
                 ))}
               </div>
@@ -593,7 +599,7 @@ export default function SettingsTab(props: SettingsTabProps) {
         onClick={onSaveSettings}
         disabled={isSaveLoading}
         className={cn(
-          'w-full sm:w-auto ml-auto px-6 py-2.5 rounded-xl font-bold text-sm transition-all active:scale-95 flex items-center justify-center gap-2.5',
+          'w-full sm:w-auto ml-auto px-6 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 flex items-center justify-center gap-2.5',
           saveSuccess === true && 'bg-success text-white',
           saveSuccess === false && 'bg-critical text-white',
           saveSuccess === null && 'btn-primary'

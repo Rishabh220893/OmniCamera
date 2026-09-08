@@ -81,7 +81,7 @@ export default function RegistryTab({
     >
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="text-xl font-bold text-ink">Registry</h2>
+          <h2 className="text-xl font-bold font-display text-ink">Registry</h2>
           <p className="text-sm text-ink-muted">The single source of truth for every camera you manage — location, ownership, status, and maintenance in one place.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -90,7 +90,7 @@ export default function RegistryTab({
               <button
                 onClick={onLoadDemoGrid}
                 disabled={isLoadingDemoGrid}
-                className="btn-secondary !py-2 text-xs disabled:opacity-60"
+                className="btn-secondary !py-2 !px-4 text-xs disabled:opacity-60 whitespace-nowrap"
                 title="Fetches the current camera list live from the grid's own catalogue, falling back to a bundled list if that's unreachable"
               >
                 {isLoadingDemoGrid
@@ -99,20 +99,20 @@ export default function RegistryTab({
               </button>
               <div className="relative">
                 <input type="file" id="registry-csv-upload" className="hidden" accept=".csv" onChange={onCsvUpload} />
-                <label htmlFor="registry-csv-upload" className="btn-secondary !py-2 text-xs cursor-pointer">
+                <label htmlFor="registry-csv-upload" className="btn-secondary !py-2 !px-4 text-xs cursor-pointer whitespace-nowrap inline-flex items-center gap-2">
                   <Upload className="w-3.5 h-3.5" strokeWidth={1.75} /> Bulk import CSV
                 </label>
               </div>
             </>
           )}
-          <button onClick={onExportCsv} className="btn-secondary !py-2 text-xs"><Download className="w-3.5 h-3.5" strokeWidth={1.75} /> Export CSV</button>
-          <button onClick={onAddCamera} className="btn-primary !py-2 text-xs"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
+          <button onClick={onExportCsv} className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap"><Download className="w-3.5 h-3.5" strokeWidth={1.75} /> Export CSV</button>
+          <button onClick={onAddCamera} className="btn-primary !py-2 !px-4 text-xs whitespace-nowrap"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
         </div>
       </div>
 
       {demoGridStatus && (
         <div className={cn(
-          'flex items-center gap-2.5 px-4 py-3 rounded-2xl text-xs font-semibold',
+          'flex items-center gap-2.5 px-4 py-3 rounded-xl text-xs font-semibold',
           demoGridStatus.type === 'live' ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
         )}>
           {demoGridStatus.type === 'live' ? <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={1.75} /> : <AlertTriangle className="w-4 h-4 shrink-0" strokeWidth={1.75} />}
@@ -124,20 +124,20 @@ export default function RegistryTab({
       <div className="card p-4 flex flex-wrap items-center gap-3">
         <div className="relative flex-1 min-w-[180px]">
           <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
-          <input value={search} onChange={e => { setSearch(e.target.value); resetToFirstPage(); }} placeholder="Search name, department, ownership..." className="input !pl-10 !py-2.5 text-sm" />
+          <input value={search} onChange={e => { setSearch(e.target.value); resetToFirstPage(); }} placeholder="Search name, department, ownership..." className="input !pl-10 !pr-4 !py-2.5 text-sm" />
         </div>
-        <select value={departmentFilter} onChange={e => { setDepartmentFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !w-auto text-sm">
+        <select value={departmentFilter} onChange={e => { setDepartmentFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !px-4 !w-auto text-sm cursor-pointer">
           <option value="all">All departments</option>
           {departments.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
-        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !w-auto text-sm">
+        <select value={statusFilter} onChange={e => { setStatusFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !px-4 !w-auto text-sm cursor-pointer">
           <option value="all">All statuses</option>
           <option value="online">Online</option>
           <option value="offline">Offline</option>
           <option value="degraded">Degraded</option>
           <option value="unknown">Unknown</option>
         </select>
-        <select value={typeFilter} onChange={e => { setTypeFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !w-auto text-sm">
+        <select value={typeFilter} onChange={e => { setTypeFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !px-4 !w-auto text-sm cursor-pointer">
           <option value="all">All types</option>
           {types.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
@@ -152,7 +152,7 @@ export default function RegistryTab({
       {/* Registry table */}
       <div className="card overflow-hidden">
         <div className="p-6 border-b border-border flex items-center justify-between">
-          <h3 className="text-sm font-bold text-ink">Camera list</h3>
+          <h3 className="text-sm font-bold font-display text-ink">Camera list</h3>
           <span className="text-xs text-ink-muted">{filtered.length} of {cameras.length} camera{cameras.length !== 1 ? 's' : ''}</span>
         </div>
         {/* A wide multi-column table has nowhere good to go on a phone —
@@ -187,21 +187,29 @@ export default function RegistryTab({
                   <td className="px-6 py-4 text-xs text-ink-muted">{c.department || '—'}</td>
                   <td className="px-6 py-4 text-xs text-ink-muted">{c.ownership || '—'}</td>
                   <td className="px-6 py-4 text-xs text-ink-muted capitalize">{c.cameraType || '—'}</td>
-                  <td className="px-6 py-4"><span className={cn('badge', STATUS_BADGE[c.connectivityStatus || 'unknown'])}>{c.connectivityStatus || 'unknown'}</span></td>
-                  <td className="px-6 py-4"><span className={cn('badge', MAINTENANCE_BADGE[c.maintenanceStatus || 'operational'])}>{(c.maintenanceStatus || 'operational').replace('_', ' ')}</span></td>
-                  <td className="px-6 py-4 text-xs font-mono text-ink-muted">{c.installDate || '—'}</td>
+                  <td className="px-6 py-4"><span className={cn('badge whitespace-nowrap', STATUS_BADGE[c.connectivityStatus || 'unknown'])}>{c.connectivityStatus || 'unknown'}</span></td>
+                  <td className="px-6 py-4"><span className={cn('badge whitespace-nowrap', MAINTENANCE_BADGE[c.maintenanceStatus || 'operational'])}>{(c.maintenanceStatus || 'operational').replace('_', ' ')}</span></td>
+                  <td className="px-6 py-4 text-xs font-mono text-ink-muted whitespace-nowrap">{c.installDate || '—'}</td>
                   <td className="px-6 py-4">
                     <div className="flex items-center justify-end gap-1.5">
-                      <button onClick={() => onSelectCamera(c.id)} className="btn-ghost !p-1.5" title="Focus in Monitor"><ChevronRight className="w-4 h-4" strokeWidth={1.75} /></button>
+                      <button onClick={() => onSelectCamera(c.id)} className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center active:scale-95" title="Focus in Monitor"><ChevronRight className="w-4 h-4" strokeWidth={1.75} /></button>
                       {isAdmin && cameras.length > 1 && (
-                        <button onClick={() => onRemoveCamera(c.id)} className="btn-ghost !p-1.5 hover:!text-critical" title="Delete"><Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
+                        <button onClick={() => onRemoveCamera(c.id)} className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center hover:!text-critical active:scale-95" title="Delete"><Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
                       )}
                     </div>
                   </td>
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={8} className="px-6 py-10 text-center text-xs text-ink-muted">No cameras match these filters.</td></tr>
+                <tr>
+                  <td colSpan={8} className="px-6 py-12 text-center text-xs text-ink-muted">
+                    <div className="flex flex-col items-center justify-center gap-2">
+                      <Search className="w-6 h-6 text-ink-muted/50" strokeWidth={1.5} />
+                      <p className="text-sm font-semibold text-ink">No cameras match the current filters</p>
+                      <p className="text-xs text-ink-muted max-w-xs">Try clearing the search query or adjusting department and status filters above.</p>
+                    </div>
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -212,7 +220,7 @@ export default function RegistryTab({
             <div
               key={c.id}
               onClick={() => onSelectCamera(c.id)}
-              className={cn('p-4 flex flex-col gap-2.5 cursor-pointer', c.id === activeCameraId && 'bg-accent-soft')}
+              className={cn('p-4 flex flex-col gap-2.5 cursor-pointer active:bg-surface-muted transition-colors', c.id === activeCameraId && 'bg-accent-soft')}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-1.5 min-w-0">
@@ -220,14 +228,14 @@ export default function RegistryTab({
                   {!c.location && <span title="Not located on the map" className="shrink-0"><MapPin className="w-3.5 h-3.5 text-ink-muted" strokeWidth={1.75} /></span>}
                 </div>
                 {isAdmin && cameras.length > 1 && (
-                  <button onClick={(e) => { e.stopPropagation(); onRemoveCamera(c.id); }} className="btn-ghost !p-1.5 hover:!text-critical shrink-0" title="Delete">
-                    <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                  <button onClick={(e) => { e.stopPropagation(); onRemoveCamera(c.id); }} className="btn-ghost !p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center hover:!text-critical shrink-0 active:scale-95" title="Delete">
+                    <Trash2 className="w-4 h-4" strokeWidth={1.75} />
                   </button>
                 )}
               </div>
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className={cn('badge', STATUS_BADGE[c.connectivityStatus || 'unknown'])}>{c.connectivityStatus || 'unknown'}</span>
-                <span className={cn('badge', MAINTENANCE_BADGE[c.maintenanceStatus || 'operational'])}>{(c.maintenanceStatus || 'operational').replace('_', ' ')}</span>
+                <span className={cn('badge whitespace-nowrap', STATUS_BADGE[c.connectivityStatus || 'unknown'])}>{c.connectivityStatus || 'unknown'}</span>
+                <span className={cn('badge whitespace-nowrap', MAINTENANCE_BADGE[c.maintenanceStatus || 'operational'])}>{(c.maintenanceStatus || 'operational').replace('_', ' ')}</span>
               </div>
               <p className="text-xs text-ink-muted truncate">
                 {[c.department, c.ownership, c.cameraType].filter(Boolean).join(' · ') || 'No department, ownership, or type set'}
@@ -236,27 +244,31 @@ export default function RegistryTab({
             </div>
           ))}
           {filtered.length === 0 && (
-            <p className="px-6 py-10 text-center text-xs text-ink-muted">No cameras match these filters.</p>
+            <div className="px-6 py-12 text-center text-xs text-ink-muted flex flex-col items-center justify-center gap-2">
+              <Search className="w-6 h-6 text-ink-muted/50" strokeWidth={1.5} />
+              <p className="text-sm font-semibold text-ink">No cameras match the current filters</p>
+              <p className="text-xs text-ink-muted max-w-xs">Adjust your search query or department filters to see cameras.</p>
+            </div>
           )}
         </div>
         {filtered.length > PAGE_SIZE && (
-          <div className="px-6 py-4 border-t border-border flex items-center justify-between text-xs">
-            <span className="text-ink-muted">
+          <div className="px-6 py-4 border-t border-border flex items-center justify-between text-xs flex-wrap gap-3">
+            <span className="text-ink-muted whitespace-nowrap">
               Showing {clampedPage * PAGE_SIZE + 1}–{Math.min((clampedPage + 1) * PAGE_SIZE, filtered.length)} of {filtered.length}
             </span>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setPage(Math.max(0, clampedPage - 1))}
                 disabled={clampedPage === 0}
-                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-secondary !py-2 !px-4 text-xs min-h-[36px] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap active:scale-95"
               >
                 Previous
               </button>
-              <span className="text-ink-muted font-medium">Page {clampedPage + 1} of {totalPages}</span>
+              <span className="text-ink-muted font-medium whitespace-nowrap">Page {clampedPage + 1} of {totalPages}</span>
               <button
                 onClick={() => setPage(Math.min(totalPages - 1, clampedPage + 1))}
                 disabled={clampedPage >= totalPages - 1}
-                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-secondary !py-2 !px-4 text-xs min-h-[36px] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap active:scale-95"
               >
                 Next
               </button>
@@ -273,7 +285,7 @@ export default function RegistryTab({
               <AlertTriangle className="w-5 h-5" strokeWidth={1.75} />
             </div>
             <div className="text-left">
-              <h3 className="text-sm font-bold text-ink">Gap analysis report</h3>
+              <h3 className="text-sm font-bold font-display text-ink">Gap analysis report</h3>
               <p className="text-xs text-ink-muted">Coverage gaps and ageing infrastructure, generated {gapReport.generatedAt.toLocaleTimeString()}</p>
             </div>
           </div>
@@ -333,7 +345,7 @@ export default function RegistryTab({
                 <History className="w-5 h-5" strokeWidth={1.75} />
               </div>
               <div className="text-left">
-                <h3 className="text-sm font-bold text-ink">Registry audit trail</h3>
+                <h3 className="text-sm font-bold font-display text-ink">Registry audit trail</h3>
                 <p className="text-xs text-ink-muted">Every create, update, and delete on this registry, admin-only</p>
               </div>
             </div>

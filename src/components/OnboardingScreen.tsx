@@ -26,7 +26,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
             <ShieldCheck className="w-8 h-8 text-accent" strokeWidth={1.75} />
           </div>
           <div className="space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight text-ink">OmniSee <span className="text-accent">Pro</span></h1>
+            <h1 className="text-3xl font-bold font-display tracking-tight text-ink">OmniSee <span className="text-accent">Pro</span></h1>
             <p className="text-ink-muted">Enterprise AI vision for your home or business.</p>
           </div>
         </div>
@@ -51,7 +51,7 @@ export default function OnboardingScreen({ onComplete }: OnboardingScreenProps) 
           ))}
         </div>
 
-        <button onClick={onComplete} className="btn-primary w-full py-4 text-base">
+        <button onClick={onComplete} className="btn-primary w-full !py-3.5 !px-7 text-sm sm:text-base font-semibold active:scale-[0.98] whitespace-nowrap">
           Get Started
         </button>
       </div>

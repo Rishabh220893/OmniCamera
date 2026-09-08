@@ -16,6 +16,10 @@ import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 // itself just can't serve fast enough.
 const UPSTREAM_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
+// Confirmed Sentinel Camera Grid credentials for cctv.corp8.cloud access
+const DEFAULT_STREAM_EMAIL = 'rishabh.bhasin06@gmail.com';
+const DEFAULT_STREAM_PASSWORD = '8JY8-D5YX-7WRS';
+
 let aiClient: GoogleGenAI | null = null;
 function getAI(): GoogleGenAI {
   if (!aiClient) {
@@ -142,74 +146,6 @@ async function fetchUpstream(url: string, options: RequestInit = {}, { timeoutMs
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
-// This grid's cameras serve HLS as one giant VOD playlist covering their
-// entire recording history (observed: 7,201 segments, ~12 hours, in a
-// single manifest) rather than a rolling live window. hls.js defaults to
-// starting a VOD playback at segment 0 — the OLDEST segment — and on this
-// origin that segment is consistently unreachable (every proxy failure
-// logged during diagnosis was on seg00000.ts specifically, across five
-// different cameras), almost certainly because old segments have been
-// evicted from whatever hot storage/cache serves them while the manifest
-// still lists them. Rewriting the manifest to only the most recent
-// segments points playback at data that's actually likely to still exist.
-const VOD_TAIL_SEGMENTS = 12;
-
-// Tags that describe the playlist as a whole rather than one specific
-// segment — always kept verbatim regardless of truncation. Anything else
-// starting with '#' (EXTINF, DISCONTINUITY, PROGRAM-DATE-TIME, BYTERANGE...)
-// is segment-scoped and travels with whichever segment follows it.
-const PLAYLIST_LEVEL_TAG_PREFIXES = [
-  '#EXTM3U', '#EXT-X-VERSION', '#EXT-X-TARGETDURATION', '#EXT-X-PLAYLIST-TYPE',
-  '#EXT-X-INDEPENDENT-SEGMENTS', '#EXT-X-DISCONTINUITY-SEQUENCE', '#EXT-X-KEY', '#EXT-X-START',
-];
-
-// Always rewrites (never returns the input unchanged) — even a manifest
-// short enough to need no tail-trimming still needs ENDLIST/PLAYLIST-TYPE
-// stripped, see below.
-function truncateVodManifestToTail(text: string, maxSegments: number): string {
-  const lines = text.split('\n');
-  const prefixLines: string[] = [];
-  const segments: { tags: string[]; uri: string }[] = [];
-  let pendingTags: string[] = [];
-  let mediaSequence = 0;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
-      mediaSequence = parseInt(line.split(':')[1], 10) || 0;
-      continue; // re-emitted below, adjusted for the new starting point
-    }
-    // #EXT-X-ENDLIST and #EXT-X-PLAYLIST-TYPE:VOD are deliberately dropped
-    // entirely, not just carried through — the origin serves this as a
-    // single static list covering the camera's entire history, but the
-    // intent is a live camera. Forwarding those tags verbatim tells
-    // hls.js "this is the whole clip, nothing more is coming," so it
-    // plays through our truncated window and then simply stops (looks
-    // exactly like a frozen feed). Omitting them makes it a playlist
-    // hls.js keeps reloading, which is what actually picks up new
-    // segments as the source grows.
-    if (line.startsWith('#EXT-X-ENDLIST')) continue;
-    if (line.startsWith('#')) {
-      if (line.startsWith('#EXT-X-PLAYLIST-TYPE')) continue;
-      if (PLAYLIST_LEVEL_TAG_PREFIXES.some((p) => line.startsWith(p))) prefixLines.push(line);
-      else pendingTags.push(line); // e.g. #EXTINF — belongs to the segment named next
-    } else {
-      segments.push({ tags: pendingTags, uri: line });
-      pendingTags = [];
-    }
-  }
-
-  const kept = segments.length <= maxSegments ? segments : segments.slice(-maxSegments);
-  const newMediaSequence = mediaSequence + (segments.length - kept.length);
-
-  return [
-    ...prefixLines,
-    `#EXT-X-MEDIA-SEQUENCE:${newMediaSequence}`,
-    ...kept.flatMap((seg) => [...seg.tags, seg.uri]),
-  ].join('\n');
-}
-
 async function writeRegistryAudit(
   db: Firestore,
   entry: { cameraId: string; cameraName: string; action: 'create' | 'update' | 'delete'; source: 'api'; userId: string }
@@ -318,43 +254,86 @@ async function startServer() {
   // Some camera CDNs (confirmed against the corp8.cloud grid) gate access
   // with a plain server-rendered login form (POST /auth/login, field name
   // "password") rather than a header/query-param scheme, setting a
-  // long-lived session cookie on success. Cache that cookie per-password so
-  // we only log in once, and re-login automatically if a request comes back
-  // redirected (session expired/invalid) instead of served.
+  // long-lived session cookie on success.
+  // CRITICAL: Upstream strictly enforces ONE SESSION PER IP.
+  // Multiple concurrent logins or uncoordinated requests will invalidate the
+  // active session and return "403: one session per IP".
+  // We use a singleton promise mutex per host to serialize logins and share
+  // the resulting valid session cookie across all camera feeds.
   const sessionCookieCache = new Map<string, string>();
+  const activeLoginPromises = new Map<string, Promise<string | null>>();
+  const manifestCache = new Map<string, { content: string; cachedAt: number }>();
 
-  async function loginForSessionCookie(targetUrl: string, password: string, email?: string): Promise<string | null> {
-    // Keyed by host+email+password, not password alone — a shared password
-    // across multiple camera hosts (common on a bulk-onboarded test grid)
-    // would otherwise reuse host A's session cookie against host B and get
-    // rejected as an invalid session there.
-    const cacheKey = `${new URL(targetUrl).host}|${email || ''}|${password}`;
-    try {
-      const loginUrl = new URL('/auth/login', targetUrl).toString();
-      // The login form (auth/login) now carries an email field alongside
-      // password — confirmed by fetching the form directly. Only WHEP/RTSP
-      // auth was documented as switching to email:password; this form
-      // shipping the same field alongside it, and every HLS login in a HAR
-      // capture failing with the exact same "redirected to a login page"
-      // symptom despite a correct password, is strong enough evidence this
-      // path needs it too.
-      const body = email ? `email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}` : `password=${encodeURIComponent(password)}`;
-      const res = await fetchUpstream(loginUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UPSTREAM_USER_AGENT },
-        body,
-        redirect: 'manual',
-      }, { timeoutMs: 10_000, retries: 0 });
-      const setCookie = res.headers.get('set-cookie');
-      const match = setCookie?.match(/([a-zA-Z0-9_]+=[^;]+)/);
-      if (match) {
-        sessionCookieCache.set(cacheKey, match[1]);
-        return match[1];
-      }
-    } catch (err) {
-      console.warn('[PROXY HLS] Session login failed or timed out:', err instanceof Error ? err.message : String(err));
+  async function loginForSessionCookie(targetUrl: string, password: string, email?: string, forceFresh = false): Promise<string | null> {
+    const host = new URL(targetUrl).host;
+    const cacheKey = `${host}|${email || ''}|${password}`;
+    
+    if (!forceFresh && sessionCookieCache.has(cacheKey)) {
+      return sessionCookieCache.get(cacheKey)!;
     }
-    return null;
+
+    if (activeLoginPromises.has(cacheKey)) {
+      return activeLoginPromises.get(cacheKey)!;
+    }
+
+    const promise = (async () => {
+      try {
+        const oldCookie = sessionCookieCache.get(cacheKey);
+        sessionCookieCache.delete(cacheKey);
+
+        // If replacing an existing session or force-fresh, notify upstream logout first
+        // so it clears its single-session-per-IP lock before we establish a new one.
+        if (oldCookie || forceFresh) {
+          try {
+            const logoutUrl = new URL('/auth/logout', targetUrl).toString();
+            await fetchUpstream(logoutUrl, {
+              method: 'GET',
+              headers: {
+                'User-Agent': UPSTREAM_USER_AGENT,
+                ...(oldCookie ? { 'Cookie': oldCookie } : {})
+              },
+              redirect: 'manual'
+            }, { timeoutMs: 5_000, retries: 0 });
+          } catch {}
+          // Short backoff to allow upstream Redis/session store to settle
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+
+        const loginUrl = new URL('/auth/login', targetUrl).toString();
+        const body = email
+          ? `email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`
+          : `password=${encodeURIComponent(password)}`;
+
+        const res = await fetchUpstream(loginUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': UPSTREAM_USER_AGENT,
+            'Referer': new URL('/', targetUrl).toString()
+          },
+          body,
+          redirect: 'manual',
+        }, { timeoutMs: 12_000, retries: 0 });
+
+        const setCookie = res.headers.get('set-cookie');
+        const match = setCookie?.match(/([a-zA-Z0-9_]+=[^;]+)/);
+        if (match) {
+          sessionCookieCache.set(cacheKey, match[1]);
+          console.log(`[PROXY HLS] Successfully authenticated new session on ${host}`);
+          return match[1];
+        } else {
+          console.warn(`[PROXY HLS] Login responded with status ${res.status} but no set-cookie header was found`);
+        }
+      } catch (err) {
+        console.warn('[PROXY HLS] Session login failed or timed out:', err instanceof Error ? err.message : String(err));
+      } finally {
+        activeLoginPromises.delete(cacheKey);
+      }
+      return null;
+    })();
+
+    activeLoginPromises.set(cacheKey, promise);
+    return promise;
   }
 
   // HLS proxy — CORS is a browser-enforced policy, so a cross-origin camera
@@ -366,58 +345,57 @@ async function startServer() {
   // through this proxy, carrying the same auth.
   app.get('/api/proxy-hls', async (req, res) => {
     const targetUrl = req.query.url as string;
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD;
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL;
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD;
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL;
     if (!targetUrl) {
       res.status(400).send("Parameter 'url' is required");
       return;
     }
 
+    const isManifest = targetUrl.toLowerCase().includes('.m3u8');
+    const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
+    const isTsSegment = /\.ts(\?|$)/i.test(targetUrl);
+
+    // If this is a manifest and we have a cached version that is under 5 minutes old, serve immediately!
+    const manifestCacheKey = `${targetUrl}|${email || ''}|${password || ''}`;
+    if (isManifest && manifestCache.has(manifestCacheKey)) {
+      const cached = manifestCache.get(manifestCacheKey)!;
+      if (Date.now() - cached.cachedAt < 300_000) {
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Cache', 'HIT');
+        res.status(200).send(cached.content);
+        return;
+      }
+    }
+
     try {
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
-        const headers: Record<string, string> = { 'User-Agent': UPSTREAM_USER_AGENT };
+        const headers: Record<string, string> = {
+          'User-Agent': UPSTREAM_USER_AGENT,
+          'Referer': new URL('/', targetUrl).toString()
+        };
         if (password) headers['Authorization'] = 'Basic ' + Buffer.from(`${email || ''}:${password}`).toString('base64');
         if (cookie) headers['Cookie'] = cookie;
         return headers;
       };
 
-      // This grid's origin (corp8.cloud) is evidently slow to respond even
-      // when a request eventually succeeds — an early build of this timeout
-      // used 8-12s and it aborted every single request. A HAR capture later
-      // showed 100% of segment requests dying at ~20s regardless of camera
-      // count (even a single camera failed identically) — this origin
-      // apparently needs as long to serve one segment as a whole manifest,
-      // so both get the same generous, no-retry budget now (retrying a
-      // systemically slow origin just triples the wait for no benefit).
-      //
-      // 45s turned out to still be too tight: a later HAR (scripts/
-      // verify-live-grid.mjs) caught every failing manifest in that run
-      // coming back 502 at 45-47s — this abort firing, not the upstream
-      // itself rejecting anything — while the manifests that *did* succeed
-      // took as long as 39.7s, uncomfortably close to that same ceiling.
-      // Raised to give genuinely slow-but-alive responses more room to
-      // land instead of being cut off right as they'd have finished.
       const fetchOpts = { timeoutMs: 35_000, retries: 0 };
-
       const cacheKey = password ? `${new URL(targetUrl).host}|${email || ''}|${password}` : null;
 
       let upstream: Response;
       if (password && cacheKey) {
-        const cachedCookie = sessionCookieCache.get(cacheKey) || (await loginForSessionCookie(targetUrl, password, email));
+        let cachedCookie = await loginForSessionCookie(targetUrl, password, email);
         upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(cachedCookie), redirect: 'manual' }, fetchOpts);
-        // A redirect with a password set means the session was invalid/expired
-        // (or this is the first request and there was nothing cached) — log
-        // in fresh and retry exactly once before giving up. Also retry on a
-        // direct 401 (not just a 3xx redirect to a login page): a stale
-        // cached cookie, or loginForSessionCookie having silently failed and
-        // left `cachedCookie` null, both surface as the upstream flatly
-        // rejecting the request rather than redirecting it — a real HAR
-        // capture showed exactly this (401 on every request despite a
-        // correct password being sent), which the redirect-only check here
-        // previously had no retry path for at all.
-        if ((upstream.status >= 300 && upstream.status < 400) || upstream.status === 401) {
-          sessionCookieCache.delete(cacheKey);
-          const freshCookie = await loginForSessionCookie(targetUrl, password, email);
+
+        const upstreamBodyPreview = (!upstream.ok) ? await upstream.clone().text().catch(() => '') : '';
+        const isAuthOrSessionError = (upstream.status >= 300 && upstream.status < 400) ||
+          upstream.status === 401 ||
+          (upstream.status === 403 && /one session per IP|browser required/i.test(upstreamBodyPreview));
+
+        if (isAuthOrSessionError) {
+          console.warn(`[PROXY HLS] Upstream session invalid (${upstream.status}: ${upstreamBodyPreview.slice(0, 80)}). Re-authenticating...`);
+          const freshCookie = await loginForSessionCookie(targetUrl, password, email, true);
           upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(freshCookie), redirect: 'manual' }, fetchOpts);
         }
       } else {
@@ -426,7 +404,7 @@ async function startServer() {
 
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
-        console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText} (${password ? 'password sent' : 'no password sent'}). Body: ${bodyText.slice(0, 300)}`);
+        console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText}. Body: ${bodyText.slice(0, 200)}`);
         res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status).send(
           upstream.status >= 300 && upstream.status < 400
             ? 'Upstream redirected to a login page — the stream access password was rejected.'
@@ -435,83 +413,156 @@ async function startServer() {
         return;
       }
 
-      const isManifest = targetUrl.toLowerCase().includes('.m3u8');
       if (isManifest) {
         const text = await upstream.text();
-        // A 2xx status doesn't guarantee the body is actually a manifest —
-        // some servers answer an expired/invalid session with 200 + an HTML
-        // login page instead of a proper redirect. Forwarding that as if it
-        // were real HLS content leaves hls.js parsing zero segments out of
-        // an unrecognized file forever, with no fatal error to ever surface
-        // to the UI — it just looks like a permanently "loading" tile.
-        // Strip a possible UTF-8 BOM before checking — some Windows-based
-        // NVR/encoder software emits one, and trimStart() alone doesn't
-        // remove it, which would make this reject every single otherwise-
-        // valid manifest from an origin that does this.
         if (!text.replace(/^\uFEFF/, '').trimStart().startsWith('#EXTM3U')) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
-          console.warn(`[PROXY HLS] Upstream returned ${upstream.status} for ${targetUrl} but the body isn't a valid HLS manifest. First 200 chars: ${text.slice(0, 200)}`);
-          res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest — likely an expired session or wrong password serving a login page instead of the stream.');
+          console.warn(`[PROXY HLS] Upstream returned non-manifest for ${targetUrl}: ${text.slice(0, 200)}`);
+          res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest.');
           return;
         }
         const cleanText = text.replace(/^\uFEFF/, '');
-        // Always run every manifest through this — besides tail-truncating
-        // an oversized VOD list, it also strips ENDLIST/PLAYLIST-TYPE so
-        // hls.js treats the feed as ongoing rather than a finished clip (see
-        // the function's own comment). It's a no-op for a manifest that
-        // already looks like a normal rolling live playlist.
-        const sourceText = truncateVodManifestToTail(cleanText, VOD_TAIL_SEGMENTS);
-
         const baseUrl = new URL(targetUrl);
         const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
         const emailQuery = email ? `&email=${encodeURIComponent(email)}` : '';
         const proxyLine = (uri: string) => `/api/proxy-hls?url=${encodeURIComponent(new URL(uri, baseUrl).toString())}${passwordQuery}${emailQuery}`;
 
-        const rewritten = sourceText.split('\n').map((line) => {
+        const rewritten = cleanText.split('\n').map((line) => {
           const trimmed = line.trim();
           if (!trimmed) return line;
           if (trimmed.startsWith('#')) {
-            // Rewrite URI="..." attributes on tags like EXT-X-KEY / EXT-X-MAP
-            // (a no-op .replace on tags without one, e.g. #EXTINF:10.0,).
             return trimmed.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${proxyLine(uri)}"`);
           }
           return proxyLine(trimmed);
         }).join('\n');
 
+        manifestCache.set(manifestCacheKey, { content: rewritten, cachedAt: Date.now() });
+
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Cache-Control', 'no-cache');
         res.status(200).send(rewritten);
       } else {
         const contentType = upstream.headers.get('content-type') || 'video/mp2t';
-        if (/text\/html|text\/plain/i.test(contentType)) {
+        if (!isKeyFile && /text\/html|text\/plain/i.test(contentType)) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
           const bodyText = await upstream.text().catch(() => '');
-          console.warn(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but content-type is "${contentType}" (expected binary media). First 200 chars: ${bodyText.slice(0, 200)}`);
-          res.status(502).send('Upstream returned a 2xx status but the response was HTML/text, not a media segment — likely an expired session serving a login page.');
+          console.warn(`[PROXY HLS] Segment returned text/html for ${targetUrl}: ${bodyText.slice(0, 200)}`);
+          res.status(502).send('Upstream returned HTML/text instead of media segment.');
           return;
         }
         const arrayBuffer = await upstream.arrayBuffer();
-        // Our own code defaults a missing content-type to 'video/mp2t' above,
-        // which lets a tiny error/placeholder body slide past the check just
-        // done — a real multi-second .ts segment is virtually always many KB.
-        // (AES-128 key files legitimately are this small — a 16-byte key —
-        // so they're exempted by URL.)
-        const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
         if (!isKeyFile && arrayBuffer.byteLength < 500) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
-          const preview = Buffer.from(arrayBuffer).toString('utf8').slice(0, 200);
-          console.warn(`[PROXY HLS] Upstream returned ${upstream.status} for segment ${targetUrl} but body is only ${arrayBuffer.byteLength} bytes (expected a real media segment). Content: ${preview}`);
-          res.status(502).send(`Upstream returned a 2xx status but the segment body was only ${arrayBuffer.byteLength} bytes — likely an expired session or error response, not real video data.`);
+          res.status(502).send(`Segment body was only ${arrayBuffer.byteLength} bytes.`);
           return;
         }
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Cache-Control', 'no-store');
+
+        // Correct MIME types so browsers and hls.js never reject playback
+        const finalContentType = isKeyFile
+          ? 'application/octet-stream'
+          : isTsSegment
+            ? 'video/mp2t'
+            : contentType;
+
+        res.setHeader('Content-Type', finalContentType);
+        res.setHeader('Cache-Control', isTsSegment || isKeyFile ? 'public, max-age=300' : 'no-store');
         res.status(200).send(Buffer.from(arrayBuffer));
       }
     } catch (err: unknown) {
       const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError' || /aborted due to timeout/i.test(err.message));
       console.warn(`[PROXY HLS] ${isTimeout ? 'Upstream request timed out' : 'Upstream proxy error'} for ${targetUrl}:`, err instanceof Error ? err.message : String(err));
       res.status(isTimeout ? 504 : 502).send(err instanceof Error ? err.message : 'Error proxying HLS resource');
+    }
+  });
+
+  // Fast server-side snapshot endpoint: extracts a single still JPEG frame
+  // Uses direct RTSP over TCP (1-3s) for grid cameras, falling back to HLS with cache.
+  const snapshotCache = new Map<string, { buffer: Buffer; timestamp: number }>();
+  app.get('/api/camera-snapshot', async (req, res) => {
+    const targetUrl = (req.query.url as string) || '';
+    const camIdParam = (req.query.camId as string) || '';
+    const extractedCamId = camIdParam || (targetUrl.match(/\/(cam\d+)/i)?.[1] ?? '');
+    
+    if (!targetUrl && !extractedCamId) {
+      res.status(400).send("Parameter 'url' or 'camId' is required");
+      return;
+    }
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD;
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL;
+
+    const cacheKey = `${extractedCamId || targetUrl}|${email}|${password}`;
+    const cached = snapshotCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && (now - cached.timestamp) < 15_000) {
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=10');
+      res.status(200).send(cached.buffer);
+      return;
+    }
+
+    const { spawn } = await import('child_process');
+
+    const extractFromUrl = (streamInputUrl: string, isRtsp: boolean, timeoutLimit = 8_000): Promise<Buffer | null> => {
+      return new Promise((resolve) => {
+        const args = [
+          '-y',
+          ...(isRtsp ? ['-rtsp_transport', 'tcp'] : []),
+          '-i', streamInputUrl,
+          '-vframes', '1',
+          '-f', 'image2',
+          '-q:v', '3',
+          'pipe:1'
+        ];
+        const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const chunks: Buffer[] = [];
+        ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+        const timer = setTimeout(() => {
+          ffmpeg.kill('SIGKILL');
+          resolve(null);
+        }, timeoutLimit);
+
+        ffmpeg.on('close', (code) => {
+          clearTimeout(timer);
+          if (code === 0 && chunks.length > 0) {
+            resolve(Buffer.concat(chunks));
+          } else {
+            resolve(null);
+          }
+        });
+        ffmpeg.on('error', () => {
+          clearTimeout(timer);
+          resolve(null);
+        });
+      });
+    };
+
+    try {
+      let frameBuffer: Buffer | null = null;
+
+      // Try ultra-fast direct RTSP first if we have a camId
+      if (extractedCamId) {
+        const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
+        const encodedPassword = encodeURIComponent(password);
+        const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${extractedCamId.toLowerCase()}`;
+        frameBuffer = await extractFromUrl(rtspUrl, true, 7_000);
+      }
+
+      // If RTSP didn't yield a frame or no camId, fall back to proxied HLS
+      if (!frameBuffer && targetUrl) {
+        const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
+        frameBuffer = await extractFromUrl(localProxyUrl, false, 15_000);
+      }
+
+      if (frameBuffer && frameBuffer.length > 500) {
+        snapshotCache.set(cacheKey, { buffer: frameBuffer, timestamp: Date.now() });
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=10');
+        res.status(200).send(frameBuffer);
+      } else {
+        res.status(502).send('Failed to extract snapshot frame from camera stream');
+      }
+    } catch (err: unknown) {
+      res.status(500).send(err instanceof Error ? err.message : 'Snapshot extraction failed');
     }
   });
 
@@ -564,8 +615,8 @@ async function startServer() {
     // auth when both are present: a partial credential (email with no
     // password, or vice versa) is guaranteed-wrong per the documented
     // format, so sending nothing is more honest than sending that.
-    const email = req.header('X-Stream-Email') || (req.query.email as string | undefined) || process.env.STREAM_EMAIL;
-    const password = req.header('X-Stream-Password') || (req.query.password as string | undefined) || process.env.STREAM_PASSWORD;
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL).trim();
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD).trim();
     const upstreamHeaders: Record<string, string> = { 'Content-Type': 'application/sdp' };
     if (email && password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
 
@@ -578,7 +629,14 @@ async function startServer() {
 
       const answer = await upstream.text();
       if (!upstream.ok) {
-        console.warn(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
+        const isAuthError = upstream.status === 401 || upstream.status === 403;
+        if (isAuthError) {
+          console.info(`[WHEP PROXY] Upstream camera auth rejected for camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
+          const wwwAuth = upstream.headers.get('www-authenticate');
+          if (wwwAuth) res.setHeader('WWW-Authenticate', wwwAuth);
+        } else {
+          console.warn(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
+        }
         res.status(upstream.status).send(answer);
         return;
       }
@@ -662,8 +720,8 @@ async function startServer() {
   // proxy bug, and this is the only way to tell the difference.
   app.get('/api/camera-catalogue', async (req, res) => {
     const targetHost = req.query.host as string;
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD;
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL;
+    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD;
+    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL;
     if (!targetHost) {
       res.status(400).send("Parameter 'host' is required");
       return;

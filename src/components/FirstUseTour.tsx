@@ -30,7 +30,7 @@ export default function FirstUseTour({ onDismiss }: FirstUseTourProps) {
         // needed since the mobile nav doesn't exist there.
         className="fixed bottom-40 lg:bottom-24 right-6 z-[150] w-[calc(100%-3rem)] max-w-sm card p-5 shadow-2xl border-accent/30"
       >
-        <button onClick={onDismiss} className="absolute top-3 right-3 btn-ghost !p-1.5" title="Skip tour">
+        <button onClick={onDismiss} className="absolute top-3 right-3 btn-ghost !p-2 min-w-[32px] min-h-[32px] flex items-center justify-center !rounded-xl active:scale-95" title="Skip tour">
           <X className="w-3.5 h-3.5" strokeWidth={1.75} />
         </button>
         <div className="flex items-start gap-3 pr-6">
@@ -45,12 +45,12 @@ export default function FirstUseTour({ onDismiss }: FirstUseTourProps) {
         <div className="flex items-center justify-between mt-4">
           <div className="flex gap-1.5">
             {STEPS.map((_, i) => (
-              <span key={i} className={`w-1.5 h-1.5 rounded-full ${i === step ? 'bg-accent' : 'bg-border'}`} />
+              <span key={i} className={`w-1.5 h-1.5 rounded-full transition-all duration-200 ${i === step ? 'bg-accent w-3' : 'bg-border'}`} />
             ))}
           </div>
           <button
             onClick={() => (isLast ? onDismiss() : setStep((s) => s + 1))}
-            className="btn-primary !py-1.5 !px-4 text-xs"
+            className="btn-primary !py-2.5 !px-5 text-xs font-semibold active:scale-95 whitespace-nowrap min-h-[36px]"
           >
             {isLast ? 'Got it' : 'Next'}
           </button>

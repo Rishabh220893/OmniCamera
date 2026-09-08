@@ -2,11 +2,12 @@ import { MutableRefObject, useEffect, useMemo, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Sparkles
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Sparkles,
+  Grid2X2
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { hasCachedSnapshot } from '../lib/snapshotCache';
-import { CameraConfig, LogEntry, CameraMediaRefs, TabId } from '../types';
+import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
 
@@ -19,8 +20,21 @@ function formatLastAnalysisTime(lat: unknown): string {
   return isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
 }
 
+function getProtocolBadge(camera: CameraConfig): { label: string; color: string } {
+  if (!camera.useRemoteFeed) {
+    if (camera.useSimulatedFeed) return { label: 'SIM', color: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' };
+    return { label: 'LOCAL', color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' };
+  }
+  const url = (camera.remoteStreamUrl || '').toLowerCase();
+  if (url.includes('.m3u8')) return { label: 'HLS', color: 'bg-amber-500/20 text-amber-300 border-amber-500/30' };
+  if (url.startsWith('webrtc') || url.includes('/whep')) return { label: 'WHEP', color: 'bg-blue-500/20 text-blue-300 border-blue-500/30' };
+  if (url.startsWith('rtsp')) return { label: 'RTSP', color: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30' };
+  return { label: 'STREAM', color: 'bg-slate-500/20 text-slate-300 border-slate-500/30' };
+}
+
 interface CameraTileProps {
   camera: CameraConfig;
+  cameraIndex?: number;
   layout: 'grid' | 'focus';
   isActive: boolean;
   isSelectedForAnalysis: boolean;
@@ -40,66 +54,25 @@ interface CameraTileProps {
   onToggleFullscreen: () => void;
   onToggleCameraFacing: () => void;
   hidden?: boolean;
+  className?: string;
 }
 
 // One persistent tile per connected camera — mounted once and restyled via
 // the `layout` prop, rather than being two separate elements in the grid
-// and focus render branches. That used to mean switching view modes
-// unmounted whichever CameraFeed wasn't in the active branch, tearing down
-// a perfectly good HLS connection and restarting it from zero.
+// and focus render branches.
 function CameraTile({
-  camera, layout, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
+  camera, cameraIndex, layout, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
   mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onSelect, onToggleAnalysis,
-  onStatusChange, cameraError, isFullscreen, onToggleFullscreen, onToggleCameraFacing, hidden
+  onStatusChange, cameraError, isFullscreen, onToggleFullscreen, onToggleCameraFacing, hidden, className
 }: CameraTileProps) {
   const [status, setStatus] = useState<FeedStatus>('connecting');
-  // Bumping this remounts CameraFeed (via the key below), forcing a full
-  // fresh attempt — nothing auto-retries a failed remote connection on its
-  // own, so without this the tile would sit on "error" forever.
   const [retryToken, setRetryToken] = useState(0);
 
-  // Decoding all 30 grid cameras' live video at once was observed
-  // saturating the browser badly enough that tiles which HAD connected
-  // successfully would lose frames and drop — a hard client-side decode
-  // ceiling, not a networking problem. Only a tile actually scrolled into
-  // view (plus a margin, so it's ready just before it's visible) connects;
-  // this replaces the old manual "click to load" — nothing needs a click,
-  // it just activates automatically as the camera comes into view, and
-  // disconnects again once genuinely scrolled away (useInViewport debounces
-  // that exit so a tile sitting at the boundary doesn't thrash) — keeping
-  // the total simultaneous decode load bounded to roughly what's on screen
-  // instead of growing to all 30 the moment someone scrolls through the
-  // whole grid once. The active camera and anything selected for analysis
-  // always connect regardless of scroll position: analysis reads live
-  // frames off cameras that may not currently be visible on screen.
   const shouldConnect = isActive || isSelectedForAnalysis || !hidden;
   const hasCached = hasCachedSnapshot(camera.id);
+  const protocol = getProtocolBadge(camera);
+  const isAnomaly = latestLog && (latestLog.sentiment === 'critical' || latestLog.isUnusual || latestLog.isWatchlistMatch);
 
-  // retryToken's own doc comment above says the quiet part out loud:
-  // "nothing auto-retries a failed remote connection on its own." A
-  // HAR-evidenced bug bore that out — some tiles' internal capture loop
-  // went permanently silent after a single failure, stuck on 'error' with
-  // zero further network activity for 5+ minutes, confirmed by direct
-  // observation to persist even while the tile stayed on-screen the whole
-  // time. The only way out was a manual Retry click. This automates that
-  // same click after a stretch with no recovery, rather than requiring a
-  // person to notice and act — remounting is a full reset (fresh effects,
-  // fresh AbortControllers), so it recovers regardless of what actually
-  // wedged the internal loop.
-  //
-  // First shipped at 45s, which turned out to be self-defeating: a
-  // follow-up HAR showed one camera failing on an almost exact 45-second
-  // cadence, over and over, for the whole session — a dead giveaway that
-  // this watchdog itself was the cause, not a coincidence. With only 1
-  // capture slot per transport (see captureConcurrency.ts) and up to a
-  // couple dozen tiles competing for a turn, a tile can legitimately sit
-  // queued well past 45s — long enough that this watchdog was yanking it
-  // out and sending it to the back of the line right as its turn was
-  // approaching, before it ever got a real shot, forever. 120s gives
-  // genuine queueing (including a slow ~57s HLS-fallback turn or two
-  // ahead of it) much more realistic room, while still capping the worst
-  // case at "under 2 minutes," not the 5+ minutes of total silence this
-  // watchdog exists to prevent in the first place.
   useEffect(() => {
     if (status !== 'error' || !shouldConnect) return;
     const timer = setTimeout(() => {
@@ -109,14 +82,7 @@ function CameraTile({
     return () => clearTimeout(timer);
   }, [status, shouldConnect]);
 
-  // Live (persistent) video is reserved for the camera actually being
-  // watched or analyzed — everything else runs as a rotating snapshot
-  // (see CameraFeed's `liveVideo` prop doc). That's the difference between
-  // a grid that scales to a handful of cameras and one that scales to
-  // however many are in the registry: a handful of live decodes is a
-  // constant cost regardless of total camera count, while N live decodes
-  // for N visible tiles is not.
-  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis;
+  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis || !hidden;
 
   const feed = (
     <CameraFeed
@@ -138,56 +104,126 @@ function CameraTile({
 
   if (layout === 'focus') {
     return (
-      <div className={cn('absolute inset-0', hidden && 'hidden')}>
+      <div className={cn('absolute inset-0', hidden && 'hidden', className)}>
+        {/* Tactical Viewfinder Corner Reticles */}
+        <div className="reticle-corner-tl" />
+        <div className="reticle-corner-tr" />
+        <div className="reticle-corner-bl" />
+        <div className="reticle-corner-br" />
+
         {feed}
         {cameraError && (
           <div className="absolute inset-0 z-50 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center">
             <div className="w-16 h-16 rounded-2xl bg-critical-soft flex items-center justify-center mb-5">
               <AlertTriangle className="w-8 h-8 text-critical" strokeWidth={1.75} />
             </div>
-            <h3 className="text-lg font-bold text-ink mb-2">Camera access error</h3>
+            <h3 className="text-lg font-bold text-ink mb-2">Feed Connection Notice</h3>
             <p className="text-critical text-sm max-w-md mb-6">{cameraError}</p>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                onClick={() => { setStatus('connecting'); setRetryToken((t) => t + 1); }}
+                className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"
+              >
+                <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} /> Retry connection
+              </button>
+              {onFallbackToSimulated && (
+                <button
+                  onClick={onFallbackToSimulated}
+                  className="btn-primary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"
+                >
+                  Switch to simulated feed
+                </button>
+              )}
+            </div>
           </div>
         )}
-        {status === 'error' && (
+        {status === 'error' && !cameraError && (
           <div className="absolute inset-0 z-40 bg-surface/95 backdrop-blur-sm flex flex-col items-center justify-center p-10 text-center gap-3">
             <AlertTriangle className="w-8 h-8 text-critical" strokeWidth={1.75} />
-            <p className="text-critical text-sm max-w-md">Timed out connecting to this feed.</p>
-            <button
-              onClick={() => { setStatus('connecting'); setRetryToken((t) => t + 1); }}
-              className="btn-secondary !py-2 text-xs"
-            >
-              <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} /> Retry connection
-            </button>
+            <h4 className="text-sm font-bold text-ink">Feed Connection Issue</h4>
+            <p className="text-critical text-sm max-w-md">Timed out connecting to this camera feed or rejected by upstream origin.</p>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button
+                onClick={() => { setStatus('connecting'); setRetryToken((t) => t + 1); }}
+                className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"
+              >
+                <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} /> Retry connection
+              </button>
+              {onFallbackToSimulated && (
+                <button
+                  onClick={onFallbackToSimulated}
+                  className="btn-primary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"
+                >
+                  Switch to simulated feed
+                </button>
+              )}
+            </div>
           </div>
         )}
+
         <div className="absolute inset-0 pointer-events-none">
-          {isCapturing && <div className="absolute inset-x-0 top-0 h-px bg-accent/40" />}
-          <div className="absolute top-6 left-6 flex flex-col gap-2 pointer-events-auto">
-            <div className="bg-black/55 backdrop-blur-md rounded-xl px-3.5 py-1.5 flex items-center gap-2.5">
-              <Activity className="w-3.5 h-3.5 text-success" strokeWidth={1.75} />
-              <span className="text-[10px] font-mono font-bold text-white uppercase">{camera.name.replace(/\s+/g, '_')}</span>
+          {isCapturing && <div className="absolute inset-x-0 top-0 h-0.5 bg-accent/60 animate-pulse" />}
+
+          {/* Top-Left Telemetry Pill */}
+          <div className="absolute top-5 left-5 flex flex-col gap-2 pointer-events-auto">
+            <div className="bg-black/70 backdrop-blur-md rounded-lg border border-white/10 px-3 py-1.5 flex items-center gap-2.5 shadow-lg">
+              <Activity className="w-3.5 h-3.5 text-success" strokeWidth={2} />
+              <span className="text-[11px] font-mono font-bold text-white uppercase tracking-wider">
+                {camera.name.replace(/\s+/g, '_')}
+              </span>
+              <span className={cn('px-1.5 py-0.2 rounded text-[8px] font-mono font-bold uppercase border', protocol.color)}>
+                {protocol.label}
+              </span>
             </div>
             {camera.lastAnalysisTime && (
-              <div className="bg-black/55 backdrop-blur-md rounded-xl px-3.5 py-1.5 flex items-center gap-2.5">
-                <Clock className="w-3.5 h-3.5 text-accent" strokeWidth={1.75} />
-                <span className="text-[10px] font-mono font-bold text-white uppercase">Last sync: {formatLastAnalysisTime(camera.lastAnalysisTime)}</span>
+              <div className="bg-black/70 backdrop-blur-md rounded-lg border border-white/10 px-3 py-1 flex items-center gap-2 text-white/90">
+                <Clock className="w-3 h-3 text-accent" strokeWidth={2} />
+                <span className="telemetry-tag text-[9px] text-white">SYNC: {formatLastAnalysisTime(camera.lastAnalysisTime)}</span>
               </div>
             )}
           </div>
-          <div className="absolute bottom-6 right-6 flex gap-3 pointer-events-auto">
-            <button onClick={onToggleFullscreen} className="w-11 h-11 flex items-center justify-center rounded-xl bg-black/55 backdrop-blur-md text-white">
-              {isFullscreen ? <Minimize2 className="w-4.5 h-4.5" strokeWidth={1.75} /> : <Maximize2 className="w-4.5 h-4.5" strokeWidth={1.75} />}
+
+          {/* Top-Right Status and Hotkey HUD */}
+          <div className="absolute top-5 right-5 flex items-center gap-2 pointer-events-auto">
+            {cameraIndex !== undefined && (
+              <span className="px-2 py-1 rounded-md bg-black/70 backdrop-blur-md border border-white/10 text-white font-mono text-[10px] font-bold" title={`Press ${cameraIndex} to spotlight`}>
+                KEY [{cameraIndex}]
+              </span>
+            )}
+            <div className="bg-black/70 backdrop-blur-md rounded-md border border-white/10 px-2.5 py-1 flex items-center gap-1.5">
+              <span className={cn('w-2 h-2 rounded-full', status === 'live' ? 'bg-success animate-pulse' : 'bg-warning')} />
+              <span className="telemetry-tag text-[10px] text-white">
+                {status === 'live' ? 'CONFIRMED STREAM' : status.toUpperCase()}
+              </span>
+            </div>
+          </div>
+
+          {/* Bottom Controls Toolbar */}
+          <div className="absolute bottom-5 right-5 flex gap-2 pointer-events-auto">
+            <button
+              onClick={onToggleFullscreen}
+              title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
+              className="w-9 h-9 flex items-center justify-center rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/90 transition-all active:scale-95"
+            >
+              {isFullscreen ? <Minimize2 className="w-4 h-4" strokeWidth={2} /> : <Maximize2 className="w-4 h-4" strokeWidth={2} />}
             </button>
-            <button onClick={onToggleCameraFacing} className="w-11 h-11 flex items-center justify-center rounded-xl bg-black/55 backdrop-blur-md text-white">
-              <SwitchCamera className="w-4.5 h-4.5" strokeWidth={1.75} />
+            <button
+              onClick={onToggleCameraFacing}
+              title="Switch Camera Facing"
+              className="w-9 h-9 flex items-center justify-center rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/90 transition-all active:scale-95"
+            >
+              <SwitchCamera className="w-4 h-4" strokeWidth={2} />
             </button>
           </div>
+
+          {/* AI Processing Status Indicator */}
           {isAnalyzing && (
-            <div className="absolute inset-x-0 bottom-0 flex flex-col items-center p-16">
-              <div className="flex items-center gap-2.5 bg-ink px-5 py-2 rounded-full">
-                <RefreshCw className="w-3.5 h-3.5 text-white animate-spin" strokeWidth={1.75} />
-                <span className="text-[10px] font-bold text-white uppercase tracking-wider">Processing stream...</span>
+            <div className="absolute inset-x-0 bottom-6 flex flex-col items-center pointer-events-none">
+              <div className="flex items-center gap-2 bg-black/80 backdrop-blur-md border border-accent/40 px-4 py-1.5 rounded-full shadow-xl">
+                <RefreshCw className="w-3.5 h-3.5 text-accent animate-spin" strokeWidth={2} />
+                <span className="telemetry-tag text-white text-[10px] tracking-wider">
+                  AI REASONING CYCLE ACTIVE
+                </span>
               </div>
             </div>
           )}
@@ -197,52 +233,65 @@ function CameraTile({
   }
 
   return (
-    // A plain div, not <button> — this tile hosts a real nested <button>
-    // (the retry/load actions) and a <label><input> (the checkbox), and
-    // nesting interactive elements inside a <button> is invalid HTML that
-    // browsers silently "fix" by restructuring the DOM, breaking clicks in
-    // unpredictable ways. role/tabIndex/onKeyDown keep it keyboard-operable.
     <div
       role="button"
       tabIndex={0}
       onClick={onSelect}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(); } }}
       className={cn(
-        'relative aspect-video rounded-2xl overflow-hidden border text-left group cursor-pointer',
-        isActive ? 'border-accent ring-2 ring-accent/30' : 'border-border',
+        'relative aspect-video rounded-xl overflow-hidden border text-left group cursor-pointer transition-all duration-200 bg-surface-muted',
+        isActive ? 'border-accent ring-2 ring-accent/40 shadow-lg' : 'border-border hover:border-accent/40',
+        isAnomaly && 'incident-pulse border-critical',
+        className,
         hidden && 'hidden'
       )}
     >
+      {/* Corner Viewfinder Reticles */}
+      <div className={cn('reticle-corner-tl', isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-75')} />
+      <div className={cn('reticle-corner-tr', isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-75')} />
+      <div className={cn('reticle-corner-bl', isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-75')} />
+      <div className={cn('reticle-corner-br', isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-75')} />
+
       {feed}
 
       {status === 'connecting' && !hasCached && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted animate-pulse">
           <Loader2 className="w-5 h-5 text-ink-muted animate-spin" strokeWidth={1.75} />
-          <span className="text-[9px] font-bold text-ink-muted uppercase tracking-wide">Connecting…</span>
+          <span className="telemetry-tag text-[9px] text-ink-muted uppercase">Connecting…</span>
         </div>
       )}
       {status === 'connecting' && hasCached && (
-        <div className="absolute top-2.5 right-12 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-md text-white/80">
+        <div className="absolute top-2.5 right-12 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-md text-white/80 border border-white/10">
           <Loader2 className="w-2.5 h-2.5 animate-spin" strokeWidth={2} />
-          <span className="text-[8px] font-bold uppercase tracking-wider">Syncing</span>
+          <span className="telemetry-tag text-[8px] text-white">SYNCING</span>
         </div>
       )}
       {status === 'error' && !hasCached && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-surface-muted">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-surface-muted p-2 text-center">
           <AlertTriangle className="w-5 h-5 text-critical" strokeWidth={1.75} />
-          <span className="text-[9px] font-bold text-critical uppercase tracking-wide">Connection failed</span>
-          <button
-            onClick={(e) => { e.stopPropagation(); setStatus('connecting'); setRetryToken((t) => t + 1); }}
-            className="text-[9px] font-bold text-accent uppercase tracking-wide underline"
-          >
-            Retry
-          </button>
+          <span className="telemetry-tag text-[9px] text-critical uppercase">Connection error</span>
+          <div className="flex items-center gap-2 mt-1">
+            <button
+              onClick={(e) => { e.stopPropagation(); setStatus('connecting'); setRetryToken((t) => t + 1); }}
+              className="text-[9px] font-bold text-accent uppercase tracking-wide underline"
+            >
+              Retry
+            </button>
+            {onFallbackToSimulated && (
+              <button
+                onClick={(e) => { e.stopPropagation(); onFallbackToSimulated(); }}
+                className="text-[9px] font-bold text-ink-muted hover:text-white uppercase tracking-wide underline"
+              >
+                Simulate
+              </button>
+            )}
+          </div>
         </div>
       )}
       {status === 'error' && hasCached && (
-        <div className="absolute top-2.5 right-12 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-md text-amber-400">
+        <div className="absolute top-2.5 right-12 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-md text-amber-400 border border-amber-500/20">
           <AlertTriangle className="w-2.5 h-2.5 text-amber-400" strokeWidth={2} />
-          <span className="text-[8px] font-bold uppercase tracking-wider">Offline</span>
+          <span className="telemetry-tag text-[8px] text-amber-400">OFFLINE</span>
           <button
             onClick={(e) => { e.stopPropagation(); setStatus('connecting'); setRetryToken((t) => t + 1); }}
             className="ml-1 text-[8px] font-bold text-white underline hover:text-accent"
@@ -252,35 +301,97 @@ function CameraTile({
         </div>
       )}
 
-      {/* A labeled chip, not a bare checkbox — a plain checkbox icon in a
-          corner was only explained by a hover title, which never fires on
-          touch and is easy to miss even with a mouse. The "AI" label and
-          filled/translucent color difference make the toggle and its
-          current state legible without hovering anything. */}
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onToggleAnalysis(); }}
-        aria-pressed={isSelectedForAnalysis}
-        aria-label={isSelectedForAnalysis ? `Remove ${camera.name} from AI analysis` : `Include ${camera.name} in AI analysis`}
-        title={isSelectedForAnalysis ? 'Included in AI analysis' : 'Include in AI analysis'}
-        className={cn(
-          'absolute top-2.5 left-2.5 flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-full backdrop-blur-md transition-colors',
-          isSelectedForAnalysis ? 'bg-accent text-white' : 'bg-black/55 text-white/70 hover:text-white'
-        )}
-      >
-        <Sparkles className="w-3 h-3 shrink-0" strokeWidth={2} />
-        <span className="text-[9px] font-bold uppercase tracking-wide leading-none">AI</span>
-      </button>
+      {/* Top Header HUD overlay */}
+      <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none z-10">
+        <div className="flex items-center gap-1.5 pointer-events-auto">
+          {cameraIndex !== undefined && cameraIndex <= 9 && (
+            <span className="w-5 h-5 rounded bg-black/70 backdrop-blur-md border border-white/15 flex items-center justify-center text-[10px] font-mono font-bold text-white shadow-sm" title={`Hotkey: Press ${cameraIndex}`}>
+              {cameraIndex}
+            </span>
+          )}
 
-      <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5">
-        {latestLog && <span className="text-sm leading-none drop-shadow" title={latestLog.sentiment || 'neutral'}>{sentimentEmoji(latestLog.sentiment)}</span>}
-        {status === 'live' && (isCapturing && isSelectedForAnalysis) && (
-          <span className={cn('w-2 h-2 rounded-full bg-success', isAnalyzing ? 'animate-pulse' : '')} title="Live — analysis active" />
-        )}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleAnalysis(); }}
+            aria-pressed={isSelectedForAnalysis}
+            title={isSelectedForAnalysis ? 'Included in AI guard' : 'Include in AI guard'}
+            className={cn(
+              'flex items-center gap-1 h-5 px-1.5 rounded backdrop-blur-md border transition-all text-[9px] font-mono font-bold uppercase',
+              isSelectedForAnalysis ? 'bg-accent/90 border-accent text-white shadow-sm' : 'bg-black/60 border-white/10 text-white/70 hover:text-white'
+            )}
+          >
+            <Sparkles className="w-2.5 h-2.5 shrink-0" strokeWidth={2.5} />
+            <span>AI</span>
+          </button>
+
+          <span className={cn('px-1.5 py-0.5 rounded text-[8px] font-mono font-bold uppercase border backdrop-blur-md', protocol.color)}>
+            {protocol.label}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1.5 pointer-events-auto">
+          {latestLog && (
+            <span className="text-xs drop-shadow" title={latestLog.sentiment || 'neutral'}>
+              {sentimentEmoji(latestLog.sentiment)}
+            </span>
+          )}
+
+          <div className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-md border border-white/10">
+            <span className={cn('w-1.5 h-1.5 rounded-full', status === 'live' ? 'bg-success animate-pulse' : 'bg-warning')} />
+            <span className="telemetry-tag text-[8px] text-white">
+              {status === 'live' ? 'LIVE' : status.toUpperCase()}
+            </span>
+          </div>
+        </div>
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/70 to-transparent">
-        <span className="text-[10px] font-bold text-white uppercase tracking-wide">{camera.name}</span>
+      {/* Critical anomaly banner */}
+      {isAnomaly && (
+        <div className="absolute top-10 inset-x-2.5 z-10 px-2 py-1 rounded bg-critical/90 backdrop-blur-md border border-critical/40 text-white flex items-center justify-between gap-1 shadow-md">
+          <div className="flex items-center gap-1.5 truncate">
+            <AlertTriangle className="w-3 h-3 shrink-0 animate-bounce" />
+            <span className="text-[9px] font-mono font-bold uppercase tracking-wider truncate">
+              {latestLog?.isWatchlistMatch ? 'Watchlist Hit' : 'Anomaly Alert'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Telemetry Bar */}
+      <div className="absolute inset-x-0 bottom-0 p-2.5 bg-gradient-to-t from-black/90 via-black/55 to-transparent flex items-center justify-between gap-2 z-10">
+        <div className="flex flex-col min-w-0">
+          <span className="text-[11px] font-mono font-bold text-white uppercase tracking-wider truncate">
+            {camera.name}
+          </span>
+          {latestLog?.counts && (
+            <div className="flex items-center gap-2 text-[9px] font-mono text-white/80 mt-0.5">
+              {latestLog.counts.people > 0 && (
+                <span className="flex items-center gap-1 text-emerald-400">
+                  <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                  {latestLog.counts.people}P
+                </span>
+              )}
+              {latestLog.counts.vehicles > 0 && (
+                <span className="flex items-center gap-1 text-amber-400">
+                  <span className="w-1 h-1 rounded-full bg-amber-400" />
+                  {latestLog.counts.vehicles}V
+                </span>
+              )}
+              {latestLog.detectedPlates && latestLog.detectedPlates.length > 0 && (
+                <span className="text-accent font-semibold truncate max-w-[90px]">
+                  {latestLog.detectedPlates[0]}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Hover Spotlight Action */}
+        <div className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+          <span className="px-2 py-1 rounded bg-white/20 hover:bg-white/30 text-white text-[9px] font-mono font-bold backdrop-blur-md border border-white/20">
+            FOCUS
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -295,8 +406,8 @@ interface MonitorTabProps {
   cameraError: string | null;
   analysisError: string | null;
   logs: LogEntry[];
-  viewMode: 'focus' | 'grid';
-  onChangeViewMode: (mode: 'focus' | 'grid') => void;
+  viewMode: ViewMode;
+  onChangeViewMode: (mode: ViewMode) => void;
   containerRef: MutableRefObject<HTMLDivElement | null>;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -337,14 +448,7 @@ export default function MonitorTab({
   }, [logs]);
 
   // A registry that scales to tens of thousands of cameras can't have every
-  // one of them mounted as a live React component at once either — that's
-  // a DOM/memory ceiling on top of the decode ceiling snapshot mode already
-  // addresses. Grid view only ever mounts one page's worth of tiles;
-  // switching pages mounts/unmounts freely, which is cheap for a snapshot
-  // tile (worst case it just starts a fresh capture cycle) in a way it
-  // never was for a live one. Search narrows the underlying set first, so
-  // "page 1 of 3,200" only ever happens for a genuinely broad browse, not
-  // for someone who already knows which camera they want.
+  // one of them mounted as a live React component at once either
   const GRID_PAGE_SIZE = 24;
   const [gridPage, setGridPage] = useState(0);
   const totalGridPages = Math.max(1, Math.ceil(filteredCameras.length / GRID_PAGE_SIZE));
@@ -355,24 +459,27 @@ export default function MonitorTab({
   );
   const handleGridFilterChange = (value: string) => { setGridFilter(value); setGridPage(0); };
 
-  // What actually gets a CameraTile mounted: the current grid page (or just
-  // the active camera in focus view — the rest of the registry has no
-  // reason to be in the DOM until it's paged into view), plus every camera
-  // selected for analysis even if it's off-page or a different view mode is
-  // active — analysis reads live frames through mediaRefs, which only
-  // exist while a camera's tile is actually mounted.
+  const matrixCameras = useMemo(() => {
+    const primary = cameras.find(c => c.id === activeCameraId) || cameras[0];
+    const companions = cameras.filter(c => c.id !== primary?.id).slice(0, 5);
+    return primary ? [primary, ...companions] : companions;
+  }, [cameras, activeCameraId]);
+
   const pagedIds = useMemo(() => new Set(pagedCameras.map(c => c.id)), [pagedCameras]);
   const mountedCameras = useMemo(() => {
     if (viewMode === 'focus') {
-      return cameras.filter(c => analysisCameraIds.has(c.id)); // already always includes activeCameraId
+      return cameras.filter(c => analysisCameraIds.has(c.id));
+    }
+    if (viewMode === 'matrix') {
+      const matrixIds = new Set(matrixCameras.map(c => c.id));
+      const offMatrixAnalysisTargets = cameras.filter(c => analysisCameraIds.has(c.id) && !matrixIds.has(c.id));
+      return [...matrixCameras, ...offMatrixAnalysisTargets];
     }
     const offPageAnalysisTargets = cameras.filter(c => analysisCameraIds.has(c.id) && !pagedIds.has(c.id));
     return [...pagedCameras, ...offPageAnalysisTargets];
-  }, [viewMode, cameras, analysisCameraIds, pagedCameras, pagedIds]);
+  }, [viewMode, cameras, analysisCameraIds, matrixCameras, pagedCameras, pagedIds]);
 
-  // Watchlist hits float to the top regardless of age — a rare, severe event
-  // shouldn't scroll off-screen under a run of routine suspicious-activity
-  // alerts. Within each tier, newest first (logs already arrive that way).
+  // Watchlist hits float to the top regardless of age
   const alertItems = useMemo(() => {
     const items = logs.flatMap(log => log.alerts.map((alert, idx) => ({ log, alert, key: `${log.id}-${idx}` })));
     return items.sort((a, b) => (a.log.isWatchlistMatch === b.log.isWatchlistMatch ? 0 : a.log.isWatchlistMatch ? -1 : 1));
@@ -388,120 +495,136 @@ export default function MonitorTab({
         <p className="text-sm text-ink-muted">Live camera monitoring and AI analysis.</p>
       </div>
 
-      {/* grid-cols-1 (not just the bare "grid" utility) is load-bearing:
-          without an explicit column count below xl, an implicit grid track
-          sizes to its content's max-content width instead of the container
-          width — with enough cameras in the quick-switch strip below, that
-          silently stretched this whole column thousands of pixels wide and
-          pushed the view-mode toggle off-screen. grid-cols-1 uses
-          minmax(0,1fr), which — like a flex column — actually clips to the
-          viewport. */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
       <div className="min-w-0 xl:col-span-3 space-y-6">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          {/* A mobile quick-switch strip, not the primary way to find a
-              camera at scale — Registry's search is. Capped so a registry
-              of thousands doesn't render thousands of pill buttons here
-              too; anything beyond the cap is still reachable via search. */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar lg:hidden">
             {cameras.slice(0, 50).map(cam => (
               <button
                 key={cam.id}
                 onClick={() => onSelectCamera(cam.id)}
-                className={cn('px-3.5 py-2 rounded-lg text-[10px] font-bold uppercase whitespace-nowrap border', activeCameraId === cam.id ? 'bg-accent border-accent text-white' : 'bg-surface border-border text-ink-muted')}
+                className={cn('px-4 py-2 rounded-xl text-[10px] font-bold uppercase whitespace-nowrap border transition-all active:scale-95', activeCameraId === cam.id ? 'bg-accent border-accent text-white shadow-xs' : 'bg-surface border-border text-ink-muted hover:border-ink-muted/40')}
               >
                 {cam.name}
               </button>
             ))}
-            <button onClick={onAddCamera} className="btn-ghost !p-2 border border-dashed border-border !rounded-lg"><Settings2 className="w-4 h-4" strokeWidth={1.75} /></button>
+            <button onClick={onAddCamera} className="btn-ghost !p-2 border border-dashed border-border !rounded-xl" title="Camera settings"><Settings2 className="w-4 h-4" strokeWidth={1.75} /></button>
           </div>
           {viewMode === 'grid' && (
             <div className="relative w-full sm:w-64 order-last sm:order-none">
-              <Search className="w-3.5 h-3.5 text-ink-muted absolute left-3 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
+              <Search className="w-3.5 h-3.5 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
               <input
                 value={gridFilter}
                 onChange={(e) => handleGridFilterChange(e.target.value)}
                 placeholder="Filter by camera name or location"
-                className="input !py-2 !pl-8 text-xs"
+                className="input !py-2 !px-4 !pl-9 text-xs"
               />
             </div>
           )}
-          <div className="ml-auto flex items-center gap-1 panel !p-1">
-            <button onClick={() => onChangeViewMode('focus')} className={cn('btn-ghost !p-2 !rounded-lg', viewMode === 'focus' && 'bg-surface !text-ink shadow-sm')} title="Focused view">
-              <Rows3 className="w-4 h-4" strokeWidth={1.75} />
+          <div className="ml-auto flex items-center gap-1 panel !p-1 bg-surface-muted border border-border rounded-xl">
+            <button
+              onClick={() => onChangeViewMode('focus')}
+              className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'focus' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+              title="Focused Spotlight View (Hotkey: G)"
+            >
+              <Rows3 className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <span className="hidden sm:inline">Focus</span>
             </button>
-            <button onClick={() => onChangeViewMode('grid')} className={cn('btn-ghost !p-2 !rounded-lg', viewMode === 'grid' && 'bg-surface !text-ink shadow-sm')} title="Grid / video wall">
-              <LayoutGrid className="w-4 h-4" strokeWidth={1.75} />
+            <button
+              onClick={() => onChangeViewMode('matrix')}
+              className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'matrix' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+              title="1+5 CCTV Matrix View (Hotkey: G)"
+            >
+              <Grid2X2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <span className="hidden sm:inline">1+5 Matrix</span>
+            </button>
+            <button
+              onClick={() => onChangeViewMode('grid')}
+              className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'grid' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+              title="Full Video Wall Grid (Hotkey: G)"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <span className="hidden sm:inline">Wall Grid</span>
             </button>
           </div>
         </div>
 
         {viewMode === 'grid' && filteredCameras.length === 0 && (
-          <div className="card p-10 text-center text-xs text-ink-muted">No cameras match "{gridFilter}".</div>
+          <div className="card p-12 text-center text-xs text-ink-muted flex flex-col items-center justify-center gap-2">
+            <Search className="w-6 h-6 text-ink-muted/50" strokeWidth={1.5} />
+            <p className="text-sm font-semibold text-ink">No cameras match "{gridFilter}"</p>
+            <p className="text-xs text-ink-muted max-w-xs">Try searching by a different name, department, or location.</p>
+          </div>
         )}
 
-        {/* The active camera (and anything selected for analysis) keeps its
-            same CameraTile identity across view-mode switches and page
-            changes — see mountedCameras above — so a live connection is
-            never torn down just because the operator glanced at another
-            page. Everything else is only ever mounted for the current grid
-            page; in focus mode this is a single "focus box" showing just
-            the active camera, in grid mode a normal CSS grid of tiles. */}
         <div
           ref={containerRef}
           className={cn(
-            (viewMode === 'grid' && filteredCameras.length > 0)
-              ? 'grid sm:grid-cols-2 lg:grid-cols-3 gap-4'
-              : viewMode === 'focus'
-                ? cn('relative rounded-[2rem] overflow-hidden bg-surface-muted border border-border transition-all duration-300', isFullscreen ? 'rounded-none border-none h-screen w-screen' : 'aspect-video')
-                : 'hidden'
+            viewMode === 'grid' && filteredCameras.length > 0 && 'grid sm:grid-cols-2 lg:grid-cols-3 gap-4',
+            viewMode === 'matrix' && 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4',
+            viewMode === 'focus' && cn('relative rounded-2xl overflow-hidden bg-surface-muted border border-border transition-all duration-300', isFullscreen ? 'rounded-none border-none h-screen w-screen' : 'aspect-video')
           )}
         >
-          {mountedCameras.map(cam => (
-            <CameraTile
-              key={cam.id}
-              camera={cam}
-              layout={viewMode === 'grid' ? 'grid' : 'focus'}
-              hidden={viewMode === 'focus' ? cam.id !== activeCameraId : !pagedIds.has(cam.id)}
-              isActive={cam.id === activeCameraId}
-              isSelectedForAnalysis={analysisCameraIds.has(cam.id)}
-              isCapturing={isCapturing}
-              isAnalyzing={analyzingCameraIds.has(cam.id)}
-              latestLog={latestLogByCamera.get(cam.id)}
-              mediaRefs={mediaRefs}
-              onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
-              onFallbackToSimulated={cam.id === activeCameraId ? onFallbackToSimulated : undefined}
-              streamAccessPassword={streamAccessPassword}
-              streamAccessEmail={streamAccessEmail}
-              onSelect={() => onSelectCamera(cam.id)}
-              onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
-              onStatusChange={onCameraStatusChange}
-              cameraError={cam.id === activeCameraId ? cameraError : null}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={onToggleFullscreen}
-              onToggleCameraFacing={onToggleCameraFacing}
-            />
-          ))}
+          {mountedCameras.map((cam, idx) => {
+            const isPrimaryInMatrix = viewMode === 'matrix' && cam.id === activeCameraId;
+            const isCompanionInMatrix = viewMode === 'matrix' && matrixCameras.some(m => m.id === cam.id);
+
+            return (
+              <CameraTile
+                key={cam.id}
+                camera={cam}
+                cameraIndex={idx + 1}
+                layout={viewMode === 'focus' ? 'focus' : (isPrimaryInMatrix ? 'focus' : 'grid')}
+                className={cn(
+                  viewMode === 'matrix' && isPrimaryInMatrix && 'lg:col-span-2 lg:row-span-2 aspect-video min-h-[360px] !relative'
+                )}
+                hidden={
+                  viewMode === 'focus'
+                    ? cam.id !== activeCameraId
+                    : viewMode === 'matrix'
+                      ? !isCompanionInMatrix
+                      : !pagedIds.has(cam.id)
+                }
+                isActive={cam.id === activeCameraId}
+                isSelectedForAnalysis={analysisCameraIds.has(cam.id)}
+                isCapturing={isCapturing}
+                isAnalyzing={analyzingCameraIds.has(cam.id)}
+                latestLog={latestLogByCamera.get(cam.id)}
+                mediaRefs={mediaRefs}
+                onCameraError={cam.id === activeCameraId ? onCameraError : undefined}
+                onFallbackToSimulated={() => onFallbackToSimulated(cam.id)}
+                streamAccessPassword={streamAccessPassword}
+                streamAccessEmail={streamAccessEmail}
+                onSelect={() => onSelectCamera(cam.id)}
+                onToggleAnalysis={() => onToggleAnalysisCamera(cam.id)}
+                onStatusChange={onCameraStatusChange}
+                cameraError={cam.id === activeCameraId ? cameraError : null}
+                isFullscreen={isFullscreen}
+                onToggleFullscreen={onToggleFullscreen}
+                onToggleCameraFacing={onToggleCameraFacing}
+              />
+            );
+          })}
         </div>
 
         {viewMode === 'grid' && filteredCameras.length > GRID_PAGE_SIZE && (
-          <div className="flex items-center justify-between gap-3 text-xs">
-            <span className="text-ink-muted">
+          <div className="flex items-center justify-between gap-3 text-xs flex-wrap">
+            <span className="text-ink-muted whitespace-nowrap">
               Showing {clampedGridPage * GRID_PAGE_SIZE + 1}–{Math.min((clampedGridPage + 1) * GRID_PAGE_SIZE, filteredCameras.length)} of {filteredCameras.length} cameras
             </span>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setGridPage(Math.max(0, clampedGridPage - 1))}
                 disabled={clampedGridPage === 0}
-                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-secondary !py-2 !px-4 text-xs min-h-[36px] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap active:scale-95"
               >
                 Previous
               </button>
-              <span className="text-ink-muted font-medium">Page {clampedGridPage + 1} of {totalGridPages}</span>
+              <span className="text-ink-muted font-medium whitespace-nowrap">Page {clampedGridPage + 1} of {totalGridPages}</span>
               <button
                 onClick={() => setGridPage(Math.min(totalGridPages - 1, clampedGridPage + 1))}
                 disabled={clampedGridPage >= totalGridPages - 1}
-                className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-secondary !py-2 !px-4 text-xs min-h-[36px] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap active:scale-95"
               >
                 Next
               </button>
@@ -590,7 +713,7 @@ export default function MonitorTab({
                 tabIndex={0}
                 onClick={() => onSelectCamera(cam.id)}
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectCamera(cam.id); } }}
-                className={cn('w-full p-3.5 rounded-2xl border text-left flex items-center gap-3 cursor-pointer', activeCameraId === cam.id ? 'bg-accent border-accent text-white' : 'bg-surface border-border')}
+                className={cn('w-full p-3.5 rounded-xl border text-left flex items-center gap-3 cursor-pointer transition-all duration-150 active:scale-[0.98]', activeCameraId === cam.id ? 'bg-accent border-accent text-white shadow-xs' : 'bg-surface border-border hover:border-accent/40')}
               >
                 <div className={cn('w-1.5 h-1.5 rounded-full shrink-0', isCapturing && analysisCameraIds.has(cam.id) ? (activeCameraId === cam.id ? 'bg-white' : 'bg-success') + ' animate-pulse' : 'bg-ink-muted/40')} />
                 <div className="flex flex-col flex-1 min-w-0">
@@ -602,9 +725,9 @@ export default function MonitorTab({
                 <label
                   onClick={(e) => e.stopPropagation()}
                   title="Include in AI analysis"
-                  className={cn('w-5 h-5 rounded-md flex items-center justify-center cursor-pointer shrink-0', activeCameraId === cam.id ? 'bg-white/15' : 'bg-surface-muted')}
+                  className={cn('w-6 h-6 rounded-lg flex items-center justify-center cursor-pointer shrink-0 transition-all hover:scale-105 active:scale-95', activeCameraId === cam.id ? 'bg-white/15' : 'bg-surface-muted')}
                 >
-                  <input type="checkbox" checked={analysisCameraIds.has(cam.id)} onChange={() => onToggleAnalysisCamera(cam.id)} className="w-3 h-3 accent-accent cursor-pointer" />
+                  <input type="checkbox" checked={analysisCameraIds.has(cam.id)} onChange={() => onToggleAnalysisCamera(cam.id)} className="w-3.5 h-3.5 accent-accent cursor-pointer rounded" />
                 </label>
               </div>
             ))}
@@ -613,7 +736,7 @@ export default function MonitorTab({
 
         <div className="flex-1 card flex flex-col overflow-hidden">
           <div className="p-6 border-b border-border flex items-center justify-between">
-            <h2 className="text-sm font-bold uppercase tracking-widest text-ink">Alert center</h2>
+            <h2 className="text-sm font-bold font-display uppercase tracking-widest text-ink">Alert center</h2>
             <Bell className="w-4 h-4 text-ink-muted" strokeWidth={1.75} />
           </div>
           <div className="flex-1 p-5 space-y-3 overflow-y-auto custom-scrollbar">
@@ -640,7 +763,7 @@ export default function MonitorTab({
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-[9px] font-mono text-ink-muted uppercase">{log.timestamp.toLocaleTimeString()}</span>
                       <span className="text-[9px] font-bold text-ink-muted">{log.cameraName}</span>
-                      {log.isWatchlistMatch && <span className="badge badge-critical !py-0.5">Watchlist hit</span>}
+                      {log.isWatchlistMatch && <span className="badge badge-critical !py-0.5 whitespace-nowrap">Watchlist hit</span>}
                     </div>
                     <p className="text-xs font-semibold leading-tight text-ink">{alert}</p>
                   </div>
@@ -649,7 +772,7 @@ export default function MonitorTab({
             )}
           </div>
           <div className="p-5 bg-surface-muted border-t border-border">
-            <button onClick={() => onChangeTab('analytics')} className="btn-secondary w-full !py-2.5">
+            <button onClick={() => onChangeTab('analytics')} className="btn-secondary w-full !py-2.5 !px-5 text-xs whitespace-nowrap active:scale-95 flex items-center justify-center gap-2">
               View full archive <ChevronRight className="w-4 h-4" strokeWidth={1.75} />
             </button>
           </div>

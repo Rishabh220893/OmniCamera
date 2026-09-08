@@ -1,8 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Sora", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
   /* Semantic color tokens — resolved per-theme below. Using @theme here
@@ -10,6 +11,7 @@
      bg-accent, text-critical, etc. */
   --color-surface: var(--surface);
   --color-surface-muted: var(--surface-muted);
+  --color-surface-elevated: var(--surface-elevated);
   --color-border: var(--border);
   --color-ink: var(--ink);
   --color-ink-muted: var(--ink-muted);
@@ -24,41 +26,42 @@
 }
 
 /* ---------- Theme tokens ---------- */
-/* Light is the default, un-stamped state. Dark is opt-in via the in-app
-   toggle, which sets data-theme="dark" on <html>. */
+/* Light is the default workstation state. Dark is opt-in or default via data-theme="dark" */
 :root {
-  --surface: #ffffff;
-  --surface-muted: #f6f7f9;
-  --border: #e4e7eb;
-  --ink: #12161c;
-  --ink-muted: #5c6572;
-  --accent: #2f5fdd;
-  --accent-soft: #eef2fe;
-  --critical: #c8392a;
-  --critical-soft: #fdeceb;
-  --warning: #b5690a;
-  --warning-soft: #fdf1e2;
-  --success: #1f8a5f;
-  --success-soft: #e7f6ee;
-  --radius-lg: 20px;
-  --radius-md: 14px;
-  --radius-sm: 10px;
+  --surface: #f8fafc;
+  --surface-muted: #f1f5f9;
+  --surface-elevated: #ffffff;
+  --border: #e2e8f0;
+  --ink: #0f172a;
+  --ink-muted: #475569;
+  --accent: #2563eb;
+  --accent-soft: #eff6ff;
+  --critical: #dc2626;
+  --critical-soft: #fef2f2;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --success: #059669;
+  --success-soft: #ecfdf5;
+  --radius-lg: 14px;
+  --radius-md: 10px;
+  --radius-sm: 8px;
 }
 
 [data-theme="dark"] {
-  --surface: #12151b;
-  --surface-muted: #1a1e26;
-  --border: #262b34;
-  --ink: #eef1f5;
-  --ink-muted: #9aa3b2;
-  --accent: #6c8cff;
-  --accent-soft: rgba(108, 140, 255, 0.14);
-  --critical: #f2897f;
-  --critical-soft: rgba(242, 137, 127, 0.14);
-  --warning: #f7b155;
-  --warning-soft: rgba(247, 177, 85, 0.14);
-  --success: #37c98a;
-  --success-soft: rgba(55, 201, 138, 0.14);
+  --surface: #0b0f17;
+  --surface-muted: #111827;
+  --surface-elevated: #1a2333;
+  --border: #243044;
+  --ink: #f8fafc;
+  --ink-muted: #94a3b8;
+  --accent: #3b82f6;
+  --accent-soft: rgba(59, 130, 246, 0.16);
+  --critical: #ef4444;
+  --critical-soft: rgba(239, 68, 68, 0.16);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.16);
+  --success: #10b981;
+  --success-soft: rgba(16, 185, 129, 0.16);
 }
 
 @layer base {
@@ -69,8 +72,12 @@
 }
 
 @layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+
   .card {
-    background-color: var(--surface);
+    background-color: var(--surface-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -83,38 +90,108 @@
   }
 
   .btn-primary {
-    @apply px-5 py-2.5 rounded-xl font-semibold text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+    @apply px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm tracking-wide transition-all duration-150 ease-out active:scale-[0.97] inline-flex items-center justify-center gap-2 whitespace-nowrap shadow-xs hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface;
     background-color: var(--accent);
     color: #ffffff;
   }
   .btn-primary:hover { filter: brightness(1.08); }
-  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary:active { filter: brightness(0.96); }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 
   .btn-secondary {
-    @apply px-5 py-2.5 rounded-xl font-semibold text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+    @apply px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm tracking-wide transition-all duration-150 ease-out active:scale-[0.97] inline-flex items-center justify-center gap-2 whitespace-nowrap border shadow-xs hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-surface;
     background-color: var(--surface-muted);
     color: var(--ink);
-    border: 1px solid var(--border);
+    border-color: var(--border);
   }
-  .btn-secondary:hover { background-color: var(--border); }
+  .btn-secondary:hover { background-color: var(--surface-elevated); border-color: var(--ink-muted); }
+  .btn-secondary:active { background-color: var(--border); }
+  .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
 
   .btn-ghost {
-    @apply px-3 py-2 rounded-lg font-medium text-sm transition-all active:scale-[0.98] flex items-center justify-center gap-2;
+    @apply px-4 py-2 rounded-xl font-medium text-xs sm:text-sm transition-all duration-150 ease-out active:scale-[0.97] inline-flex items-center justify-center gap-2 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40;
     color: var(--ink-muted);
   }
   .btn-ghost:hover { background-color: var(--surface-muted); color: var(--ink); }
+  .btn-ghost:active { background-color: var(--border); }
+  .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+
+  .btn-critical {
+    @apply px-5 py-2.5 rounded-xl font-semibold text-xs sm:text-sm tracking-wide transition-all duration-150 ease-out active:scale-[0.97] inline-flex items-center justify-center gap-2 whitespace-nowrap shadow-xs hover:shadow-sm text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-critical focus-visible:ring-offset-2 focus-visible:ring-offset-surface;
+    background-color: var(--critical);
+  }
+  .btn-critical:hover { filter: brightness(1.1); }
+  .btn-critical:active { filter: brightness(0.95); }
 
   .input {
-    @apply w-full rounded-xl px-4 py-3 text-sm outline-none transition-colors;
+    @apply w-full rounded-xl px-4 py-2.5 text-xs sm:text-sm outline-none transition-all duration-150 ease-out;
     background-color: var(--surface);
     border: 1px solid var(--border);
     color: var(--ink);
   }
-  .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-  .input::placeholder { color: var(--ink-muted); }
+  .input:hover { border-color: var(--ink-muted); }
+  .input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .input::placeholder { color: var(--ink-muted); opacity: 0.8; }
+  .input:disabled { opacity: 0.5; cursor: not-allowed; background-color: var(--surface-muted); }
+
+  /* Custom Range Slider with micro-interaction feedback */
+  input[type="range"] {
+    @apply appearance-none bg-transparent cursor-pointer h-6 w-full;
+  }
+  input[type="range"]:focus {
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 6px;
+    background: var(--border);
+    border-radius: 9999px;
+    transition: background 0.15s ease;
+  }
+  input[type="range"]:hover::-webkit-slider-runnable-track {
+    background: var(--ink-muted);
+    opacity: 0.4;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2.5px solid var(--surface);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    margin-top: -7px;
+    transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s ease;
+  }
+  input[type="range"]::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 5px var(--accent-soft);
+  }
+  input[type="range"]:active::-webkit-slider-thumb {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 6px var(--accent-soft);
+  }
+
+  /* Micro-interactions for switches */
+  .switch-track {
+    @apply relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface active:scale-95;
+  }
+  .switch-thumb {
+    @apply pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out;
+  }
+
+  /* Checkbox micro-interactions */
+  input[type="checkbox"] {
+    @apply transition-transform duration-150 cursor-pointer;
+  }
+  input[type="checkbox"]:active {
+    transform: scale(0.9);
+  }
 
   .badge {
-    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wide;
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap;
   }
   .badge-neutral { background-color: var(--surface-muted); color: var(--ink-muted); }
   .badge-critical { background-color: var(--critical-soft); color: var(--critical); }
@@ -123,20 +200,44 @@
   .badge-accent { background-color: var(--accent-soft); color: var(--accent); }
 
   .nav-item {
-    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors;
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold tracking-wide transition-colors whitespace-nowrap;
     color: var(--ink-muted);
   }
   .nav-item:hover { background-color: var(--surface-muted); color: var(--ink); }
   .nav-item.active { background-color: var(--accent-soft); color: var(--accent); }
+
+  /* Tactical corner viewfinder reticles */
+  .reticle-corner-tl {
+    @apply absolute top-2 left-2 w-3 h-3 border-t-2 border-l-2 border-accent/70 pointer-events-none transition-all;
+  }
+  .reticle-corner-tr {
+    @apply absolute top-2 right-2 w-3 h-3 border-t-2 border-r-2 border-accent/70 pointer-events-none transition-all;
+  }
+  .reticle-corner-bl {
+    @apply absolute bottom-2 left-2 w-3 h-3 border-b-2 border-l-2 border-accent/70 pointer-events-none transition-all;
+  }
+  .reticle-corner-br {
+    @apply absolute bottom-2 right-2 w-3 h-3 border-b-2 border-r-2 border-accent/70 pointer-events-none transition-all;
+  }
+
+  /* Monospace Telemetry */
+  .telemetry-tag {
+    @apply font-mono text-[10px] tracking-wider font-semibold tabular-nums;
+  }
+
+  /* Anomaly glowing perimeter */
+  .incident-pulse {
+    box-shadow: 0 0 0 2px var(--critical), 0 0 16px rgba(239, 68, 68, 0.45);
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
 }
 
-.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar { width: 5px; height: 5px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-.custom-scrollbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
 
 /* Fills once over the given animation-duration — used to visualize progress
-   toward a camera's first analysis cycle (see MonitorTab's "Ongoing
-   context" card) without wiring up a per-second countdown timer. */
+   toward a camera's first analysis cycle */
 @keyframes fill-progress { from { width: 0%; } to { width: 100%; } }
 .progress-fill { animation-name: fill-progress; animation-timing-function: linear; animation-fill-mode: forwards; }
 

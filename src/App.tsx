@@ -6,7 +6,7 @@ import { auth, db, googleProvider } from './lib/firebase';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch, DocumentReference } from 'firebase/firestore';
 
-import { CameraConfig, LogEntry, LogSentiment, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs } from './types';
+import { CameraConfig, LogEntry, LogSentiment, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs, ViewMode, GuardScope } from './types';
 import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
 import { parseCsv, toCsv, downloadCsv } from './lib/csv';
 import { computeGapAnalysis } from './lib/registryReport';
@@ -28,6 +28,7 @@ import ChatWidget from './components/ChatWidget';
 import DvrGuideModal from './components/DvrGuideModal';
 import FirstUseTour from './components/FirstUseTour';
 import CommandPalette from './components/CommandPalette';
+import IncidentAlertDrawer from './components/IncidentAlertDrawer';
 
 enum OperationType { CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write' }
 
@@ -118,7 +119,8 @@ export default function App() {
   const [watchlist, setWatchlist] = useState<WatchlistEntry[]>([]);
   const [auditTrail, setAuditTrail] = useState<RegistryAuditEntry[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>('monitor');
-  const [viewMode, setViewMode] = useState<'focus' | 'grid'>('focus');
+  const [viewMode, setViewMode] = useState<ViewMode>('focus');
+  const [guardScope, setGuardScope] = useState<GuardScope>('active');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [webhookStatus, setWebhookStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -134,11 +136,17 @@ export default function App() {
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [googleSheetsId, setGoogleSheetsId] = useState<string>('');
-  const [streamAccessPassword, setStreamAccessPassword] = useState<string>('');
+  const DEFAULT_SENTINEL_EMAIL = 'rishabh.bhasin06@gmail.com';
+  const DEFAULT_SENTINEL_PASSWORD = '8JY8-D5YX-7WRS';
+  const [streamAccessPassword, setStreamAccessPassword] = useState<string>(
+    () => localStorage.getItem('demo-guest-streamAccessPassword') || localStorage.getItem('omni_stream_password') || DEFAULT_SENTINEL_PASSWORD
+  );
   // RTSP/WHEP on the grid's raw origin authenticate with email:password
   // (Basic auth, email as username) — a separate credential from the HLS
   // path's password-only login, per the grid's integrator guide.
-  const [streamAccessEmail, setStreamAccessEmail] = useState<string>('');
+  const [streamAccessEmail, setStreamAccessEmail] = useState<string>(
+    () => localStorage.getItem('demo-guest-streamAccessEmail') || localStorage.getItem('omni_stream_email') || DEFAULT_SENTINEL_EMAIL
+  );
   const [isSaveLoading, setIsSaveLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
   const [isLoadingDemoGrid, setIsLoadingDemoGrid] = useState(false);
@@ -159,18 +167,41 @@ export default function App() {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
-  // Global ⌘K / Ctrl+K — the one entry point for the search palette,
-  // available from anywhere in the app rather than only via a button.
+  // Global Keyboard Navigation:
+  // - ⌘K / Ctrl+K: Open Search Palette
+  // - G: Cycle layout (Focus -> 1+5 Matrix -> Wall Grid)
+  // - 1-9: Quick Spotlight Cameras 1 through 9
   useEffect(() => {
     const handleGlobalKeydown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setIsCommandPaletteOpen(v => !v);
+        return;
+      }
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      if (e.key.toLowerCase() === 'g' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setViewMode(prev => (prev === 'focus' ? 'matrix' : prev === 'matrix' ? 'grid' : 'focus'));
+        return;
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+        const index = parseInt(e.key, 10) - 1;
+        if (cameras[index]) {
+          e.preventDefault();
+          setActiveCameraId(cameras[index].id);
+        }
       }
     };
     window.addEventListener('keydown', handleGlobalKeydown);
     return () => window.removeEventListener('keydown', handleGlobalKeydown);
-  }, []);
+  }, [cameras]);
+
   const [chatInput, setChatInput] = useState('');
   const [isChatSending, setIsChatSending] = useState(false);
   const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'model'; text: string }>>([
@@ -188,9 +219,6 @@ export default function App() {
   const isAdmin = userRole === 'admin';
 
   // ---------- Multi-camera analysis selection ----------
-  // The active/focused camera is always analyzed; grid-view checkboxes let
-  // the user run additional cameras alongside it instead of being limited
-  // to one feed's summary at a time.
   const [extraAnalysisCameraIds, setExtraAnalysisCameraIds] = useState<Set<string>>(new Set());
   const toggleAnalysisCamera = useCallback((id: string) => {
     setExtraAnalysisCameraIds(prev => {
@@ -200,10 +228,16 @@ export default function App() {
     });
   }, []);
   const analysisCameraIds = useMemo(() => {
-    const s = new Set(extraAnalysisCameraIds);
-    s.add(activeCameraId);
-    return s;
-  }, [extraAnalysisCameraIds, activeCameraId]);
+    if (guardScope === 'all') {
+      return new Set(cameras.map(c => c.id));
+    }
+    if (guardScope === 'selected') {
+      const s = new Set(extraAnalysisCameraIds);
+      s.add(activeCameraId);
+      return s;
+    }
+    return new Set([activeCameraId]);
+  }, [guardScope, cameras, extraAnalysisCameraIds, activeCameraId]);
   const [analyzingCameraIds, setAnalyzingCameraIds] = useState<Set<string>>(new Set());
   const [analysisErrors, setAnalysisErrors] = useState<Map<string, string>>(new Map());
   const analysisError = analysisErrors.get(activeCameraId) || null;
@@ -262,13 +296,13 @@ export default function App() {
             setTheme(data.theme || 'dark');
             if (data.notificationPrefs) setNotificationPrefs(data.notificationPrefs);
             setGoogleSheetsId(data.googleSheetsId || '');
-            setStreamAccessPassword(data.streamAccessPassword || '');
+            setStreamAccessPassword(data.streamAccessPassword || DEFAULT_SENTINEL_PASSWORD);
             // Pre-fills with the signed-in Google email on a first read (a
             // reasonable default — the two are often the same person's
             // email) if nothing's been explicitly set yet; still editable
             // in Settings since the grid-registered email isn't guaranteed
             // to match the login email.
-            setStreamAccessEmail(data.streamAccessEmail || firebaseUser.email || '');
+            setStreamAccessEmail(data.streamAccessEmail || DEFAULT_SENTINEL_EMAIL);
             setUserDepartment(data.department || '');
             setUserRole(data.role || 'admin');
             localStorage.setItem(`user-${firebaseUser.uid}-googleSheetsId`, data.googleSheetsId || '');
@@ -655,7 +689,10 @@ export default function App() {
   }, []);
 
   const toggleCameraFacing = () => updateActiveCamera({ facingMode: activeCamera.facingMode === 'user' ? 'environment' : 'user' });
-  const handleFallbackToSimulated = useCallback(() => updateActiveCamera({ useSimulatedFeed: true, useRemoteFeed: false }), [updateActiveCamera]);
+  const handleFallbackToSimulated = useCallback((targetCamId?: string) => {
+    const idToUpdate = targetCamId || activeCameraId;
+    setCameras(prev => prev.map(c => c.id === idToUpdate ? { ...c, useSimulatedFeed: true, useRemoteFeed: false } : c));
+  }, [activeCameraId]);
 
   // ---------- Frame capture + analysis ----------
   // Grabs one still frame from whatever this camera is currently rendering
@@ -693,9 +730,40 @@ export default function App() {
       if (!refs.canvas) throw new Error('Simulated feed is not ready yet.');
       ctx.drawImage(refs.canvas, 0, 0, width, height);
     } else if (isRemote) {
-      if ((streamType === 'video' || streamType === 'hls') && refs.video) ctx.drawImage(refs.video, 0, 0, width, height);
-      else if (streamType === 'image' && refs.img) ctx.drawImage(refs.img, 0, 0, width, height);
-      else if (streamType === 'unsupported') {
+      if ((streamType === 'video' || streamType === 'hls') && refs.video && refs.video.videoWidth > 0 && refs.video.readyState >= 2) {
+        ctx.drawImage(refs.video, 0, 0, width, height);
+      } else if (streamType === 'video' || streamType === 'hls') {
+        // If video is attached but still buffering, give it a quick moment to render the first frame
+        if (refs.video && refs.video.videoWidth > 0) {
+          ctx.drawImage(refs.video, 0, 0, width, height);
+        } else {
+          // Robust server-side snapshot fallback — ensures frame capture succeeds even before video mounts
+          const snapshotUrl = `/api/camera-snapshot?url=${encodeURIComponent(camera.remoteStreamUrl)}&password=${encodeURIComponent(streamAccessPassword || DEFAULT_SENTINEL_PASSWORD)}&email=${encodeURIComponent(streamAccessEmail || DEFAULT_SENTINEL_EMAIL)}`;
+          const res = await fetch(snapshotUrl);
+          if (res.ok) {
+            const blob = await res.blob();
+            const objectUrl = URL.createObjectURL(blob);
+            try {
+              const tempImg = new Image();
+              await new Promise((resolve, reject) => {
+                tempImg.onload = resolve;
+                tempImg.onerror = () => reject(new Error('Unable to parse snapshot image data.'));
+                setTimeout(() => reject(new Error('Image render timeout')), 6000);
+                tempImg.src = objectUrl;
+              });
+              ctx.drawImage(tempImg, 0, 0, width, height);
+            } finally {
+              URL.revokeObjectURL(objectUrl);
+            }
+          } else if (refs.video) {
+            ctx.drawImage(refs.video, 0, 0, width, height);
+          } else {
+            throw new Error('Camera feed is still buffering and snapshot fallback unavailable.');
+          }
+        }
+      } else if (streamType === 'image' && refs.img) {
+        ctx.drawImage(refs.img, 0, 0, width, height);
+      } else if (streamType === 'unsupported') {
         throw new Error('RTSP/WHEP URLs cannot be analyzed directly in the browser. Use this camera\'s HLS URL instead.');
       }
       else if (streamType === 'iframe') {
@@ -1081,6 +1149,10 @@ export default function App() {
                 alertsToday={logs.filter(l => l.alerts.length > 0 && l.timestamp.toDateString() === new Date().toDateString()).length}
                 geminiHealthy={analysisErrors.size === 0}
                 onOpenSearch={() => setIsCommandPaletteOpen(true)}
+                theme={theme}
+                onToggleTheme={handleToggleTheme}
+                guardScope={guardScope}
+                onChangeGuardScope={setGuardScope}
               />
 
               <main className="flex-1 p-6 lg:p-10">
@@ -1175,6 +1247,15 @@ export default function App() {
               isOpen={isCommandPaletteOpen} onClose={() => setIsCommandPaletteOpen(false)}
               cameras={cameras} logs={logs}
               onSelectCamera={handleSelectCameraFromRegistry} onJumpToLog={handleJumpToLog} onChangeTab={setActiveTab}
+            />
+
+            <IncidentAlertDrawer
+              logs={logs}
+              activeTab={activeTab}
+              notificationPrefs={notificationPrefs}
+              onSelectCamera={(id) => { setActiveCameraId(id); setActiveTab('monitor'); }}
+              onJumpToLog={handleJumpToLog}
+              onChangeTab={setActiveTab}
             />
 
             <MobileNav activeTab={activeTab} onChangeTab={setActiveTab} />

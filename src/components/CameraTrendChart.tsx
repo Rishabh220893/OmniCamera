@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Legend
 } from 'recharts';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Activity } from 'lucide-react';
 import { CameraConfig, LogEntry } from '../types';
 
 interface CameraTrendChartProps {
@@ -75,7 +75,7 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
             onClick={() => setPageOffset((o) => o + pointsPerPage)}
             disabled={!canGoOlder}
             title="Earlier"
-            className="btn-ghost !p-2 !rounded-lg border border-border disabled:opacity-30 disabled:cursor-not-allowed"
+            className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center !rounded-lg border border-border disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 transition-all"
           >
             <ChevronLeft className="w-4 h-4" strokeWidth={1.75} />
           </button>
@@ -83,7 +83,7 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
             onClick={() => setPageOffset((o) => Math.max(0, o - pointsPerPage))}
             disabled={!canGoNewer}
             title="Later"
-            className="btn-ghost !p-2 !rounded-lg border border-border disabled:opacity-30 disabled:cursor-not-allowed"
+            className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center !rounded-lg border border-border disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 transition-all"
           >
             <ChevronRight className="w-4 h-4" strokeWidth={1.75} />
           </button>
@@ -92,8 +92,10 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
 
       <div ref={containerRef} className="h-[260px]">
         {chartData.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-xs text-ink-muted">
-            Activate guard to start building this camera's trend.
+          <div className="h-full flex flex-col items-center justify-center gap-1.5 text-xs text-ink-muted">
+            <Activity className="w-6 h-6 text-ink-muted/40 mb-1" strokeWidth={1.5} />
+            <p className="font-semibold text-ink">No trend data recorded</p>
+            <p className="text-[11px] text-ink-muted">Activate guard to start building this camera's trend.</p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
@@ -110,10 +112,10 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
               <YAxis stroke="var(--color-ink-muted)" fontSize={9} tickLine={false} axisLine={false} allowDecimals={false} />
               <Tooltip contentStyle={{ backgroundColor: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: '12px' }} itemStyle={{ fontSize: 12, fontWeight: 600 }} labelStyle={{ fontSize: 10, color: 'var(--color-ink-muted)' }} />
               <Legend wrapperStyle={{ fontSize: 10 }} />
-              <ReferenceLine y={camera.peopleThreshold} stroke="#2f5fdd" strokeDasharray="4 4" label={{ value: 'People threshold', position: 'insideTopRight', fontSize: 9, fill: '#2f5fdd' }} />
-              <ReferenceLine y={camera.vehicleThreshold} stroke="#1f8a5f" strokeDasharray="4 4" label={{ value: 'Vehicle threshold', position: 'insideBottomRight', fontSize: 9, fill: '#1f8a5f' }} />
-              <Line type="monotone" dataKey="people" name="People" stroke="#2f5fdd" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
-              <Line type="monotone" dataKey="vehicles" name="Vehicles" stroke="#1f8a5f" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+              <ReferenceLine y={camera.peopleThreshold} stroke="var(--color-accent)" strokeDasharray="4 4" label={{ value: 'People threshold', position: 'insideTopRight', fontSize: 9, fill: 'var(--color-accent)' }} />
+              <ReferenceLine y={camera.vehicleThreshold} stroke="var(--color-success)" strokeDasharray="4 4" label={{ value: 'Vehicle threshold', position: 'insideBottomRight', fontSize: 9, fill: 'var(--color-success)' }} />
+              <Line type="monotone" dataKey="people" name="People" stroke="var(--color-accent)" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+              <Line type="monotone" dataKey="vehicles" name="Vehicles" stroke="var(--color-success)" strokeWidth={2.5} dot={{ r: 3 }} activeDot={{ r: 5 }} />
             </LineChart>
           </ResponsiveContainer>
         )}

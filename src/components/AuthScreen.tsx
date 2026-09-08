@@ -33,7 +33,7 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
           <div className="w-14 h-14 bg-surface-muted border border-border rounded-2xl mx-auto flex items-center justify-center text-accent">
             <Fingerprint className="w-7 h-7" strokeWidth={1.75} />
           </div>
-          <h2 className="text-xl font-bold text-ink tracking-tight">Sign in to OmniSee</h2>
+          <h2 className="text-xl font-bold font-display text-ink tracking-tight">Sign in to OmniSee</h2>
           <p className="text-xs text-ink-muted font-medium">Access your surveillance dashboard</p>
         </div>
 
@@ -74,7 +74,7 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
                 <button
                   type="button"
                   onClick={() => setShowDetails(v => !v)}
-                  className="flex items-center gap-1 text-[10px] font-bold text-ink-muted uppercase tracking-wide"
+                  className="flex items-center gap-1 text-[10px] font-bold text-ink-muted uppercase tracking-wide active:scale-95 transition-transform"
                 >
                   <ChevronDown className={showDetails ? 'w-3 h-3 rotate-180 transition-transform' : 'w-3 h-3 transition-transform'} strokeWidth={2} />
                   Technical details
@@ -91,7 +91,7 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
           <button
             onClick={onGoogleLogin}
             disabled={isSigningIn}
-            className="btn-secondary w-full py-4 text-sm"
+            className="btn-secondary w-full !py-3.5 !px-7 text-sm font-semibold active:scale-[0.98] whitespace-nowrap flex items-center justify-center gap-3"
           >
             <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
             {isSigningIn ? "Signing in..." : "Sign in with Google"}
@@ -105,7 +105,7 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
 
           <button
             onClick={onGuestBypass}
-            className="btn-ghost w-full py-3.5 text-xs border border-border rounded-xl"
+            className="btn-ghost w-full !py-3 !px-6 text-xs font-semibold border border-border rounded-xl active:scale-[0.98] whitespace-nowrap flex items-center justify-center gap-2"
           >
             <Sparkles className="w-4 h-4 text-accent" strokeWidth={1.75} />
             Bypass Login (Guest Demo)

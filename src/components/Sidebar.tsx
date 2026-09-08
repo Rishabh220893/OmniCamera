@@ -28,7 +28,7 @@ export default function Sidebar({ activeTab, onChangeTab, onLogout }: SidebarPro
             key={tab.id}
             onClick={() => onChangeTab(tab.id)}
             title={tab.label}
-            className={cn('nav-item !flex-col !gap-1.5 !px-2 !py-3 !w-[76px]', activeTab === tab.id && 'active')}
+            className={cn('nav-item !flex-col !gap-1.5 !px-2 !py-3 !w-[76px] !rounded-xl transition-all duration-150 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-surface', activeTab === tab.id && 'active shadow-xs')}
           >
             <tab.icon className="w-5 h-5" strokeWidth={1.75} />
             <span className="text-[10px] font-semibold leading-none">{tab.label}</span>
@@ -39,7 +39,7 @@ export default function Sidebar({ activeTab, onChangeTab, onLogout }: SidebarPro
         <button
           onClick={onLogout}
           title="Logout"
-          className="btn-ghost !px-3 !py-3 hover:!text-critical"
+          className="btn-ghost !p-3 min-w-[44px] min-h-[44px] flex items-center justify-center !rounded-xl active:scale-95 hover:!text-critical"
         >
           <LogOut className="w-5 h-5" strokeWidth={1.75} />
         </button>

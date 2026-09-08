@@ -113,6 +113,9 @@ export interface RoutePoint { lat: number; lng: number; label: string; timestamp
 
 export type TabId = 'monitor' | 'analytics' | 'settings' | 'map' | 'guide';
 
+export type ViewMode = 'focus' | 'matrix' | 'grid';
+export type GuardScope = 'active' | 'selected' | 'all';
+
 /** DOM nodes a focused CameraFeed instance exposes so the capture/analysis
  *  loop in App.tsx can draw the current frame without owning the refs itself. */
 export interface CameraMediaRefs {

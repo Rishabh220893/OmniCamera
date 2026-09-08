@@ -20,7 +20,7 @@ export default function GuideTab() {
       key="guide" className="max-w-5xl mx-auto space-y-10 pb-20"
     >
       <div className="space-y-1">
-        <h2 className="text-xl font-bold text-ink">Guide</h2>
+        <h2 className="text-xl font-bold font-display text-ink">Guide</h2>
         <p className="text-sm text-ink-muted">How OmniSee works, and what everything on screen means.</p>
       </div>
 
@@ -30,7 +30,7 @@ export default function GuideTab() {
             <ListChecks className="w-5 h-5" strokeWidth={1.75} />
           </div>
           <div>
-            <h3 className="text-base font-bold text-ink">Operating OmniSee</h3>
+            <h3 className="text-base font-bold font-display text-ink">Operating OmniSee</h3>
             <p className="text-xs text-ink-muted">A first-run walkthrough, start to finish.</p>
           </div>
         </div>
@@ -43,7 +43,7 @@ export default function GuideTab() {
               <div>
                 <div className="flex items-center gap-2">
                   <h4 className="text-sm font-semibold text-ink">{step.title}</h4>
-                  <span className="badge badge-neutral !normal-case">{step.tab}</span>
+                  <span className="badge badge-neutral !normal-case whitespace-nowrap">{step.tab}</span>
                 </div>
                 <p className="text-xs text-ink-muted mt-1 leading-relaxed max-w-2xl">{step.description}</p>
               </div>
@@ -59,7 +59,7 @@ export default function GuideTab() {
               <BookOpen className="w-5 h-5" strokeWidth={1.75} />
             </div>
             <div>
-              <h3 className="text-base font-bold text-ink">Glossary</h3>
+              <h3 className="text-base font-bold font-display text-ink">Glossary</h3>
               <p className="text-xs text-ink-muted">Terms used across the dashboard.</p>
             </div>
           </div>
@@ -69,7 +69,7 @@ export default function GuideTab() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search terms..."
-              className="input !pl-10 !py-2.5 text-sm"
+              className="input !pl-10 !pr-4 !py-2.5 text-sm"
             />
           </div>
         </div>
@@ -93,7 +93,11 @@ export default function GuideTab() {
             );
           })}
           {filtered.length === 0 && (
-            <p className="text-sm text-ink-muted text-center py-8">No terms match "{query}".</p>
+            <div className="py-12 text-center text-xs text-ink-muted flex flex-col items-center justify-center gap-2">
+              <Search className="w-6 h-6 text-ink-muted/50" strokeWidth={1.5} />
+              <p className="text-sm font-semibold text-ink">No terms match "{query}"</p>
+              <p className="text-xs text-ink-muted max-w-xs">Check for spelling or try searching for keywords like "feed", "detection", or "latency".</p>
+            </div>
           )}
         </div>
       </section>

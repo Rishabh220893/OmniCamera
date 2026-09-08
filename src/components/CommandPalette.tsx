@@ -131,7 +131,7 @@ export default function CommandPalette({ isOpen, onClose, cameras, logs, onSelec
                 placeholder="Search cameras, plates, logs — or jump to a tab..."
                 className="flex-1 bg-transparent outline-none text-sm text-ink placeholder:text-ink-muted"
               />
-              <kbd className="text-[10px] font-mono text-ink-muted bg-surface-muted border border-border rounded px-1.5 py-0.5 shrink-0">Esc</kbd>
+              <kbd className="text-[10px] font-mono text-ink-muted bg-surface-muted border border-border rounded px-2 py-1 shrink-0">Esc</kbd>
             </div>
 
             <div className="flex-1 overflow-y-auto custom-scrollbar py-2">
@@ -152,7 +152,7 @@ export default function CommandPalette({ isOpen, onClose, cameras, logs, onSelec
                           type="button"
                           onMouseEnter={() => setSelectedIndex(idx)}
                           onClick={() => handleActivate(item)}
-                          className={cn('w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left', idx === selectedIndex ? 'bg-accent-soft' : 'hover:bg-surface-muted')}
+                          className={cn('w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-left transition-all duration-100 min-h-[44px] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent', idx === selectedIndex ? 'bg-accent-soft text-ink' : 'hover:bg-surface-muted')}
                         >
                           <item.icon className={cn('w-4 h-4 shrink-0', idx === selectedIndex ? 'text-accent' : 'text-ink-muted')} strokeWidth={1.75} />
                           <div className="min-w-0 flex-1">
