@@ -1,6 +1,7 @@
 import { createAnalysisQueue, QueueStats } from './analysisQueue';
 import { AnalysisResult, buildLogDocument } from './logEntry';
 import { buildSightings, LatLng, PlateSighting } from '../src/lib/plateTracking';
+import type { ClaimResult } from './leaseStore';
 
 /**
  * Server-side capture + analysis scheduler.
@@ -44,6 +45,13 @@ export interface WorkerDeps {
   writeSightings(userId: string, sightings: PlateSighting[]): Promise<void>;
   updateCamera(cameraId: string, patch: { lastAnalysisTime?: Date; lastAnalysisError?: string | null }): Promise<void>;
   sendWebhook(url: string, payload: unknown): Promise<void>;
+  /**
+   * Optional shared lease (see leaseStore.ts) for running several instances.
+   * When absent the worker assumes it is the only instance.
+   */
+  claim?(cameraId: string, now: number, leaseMs: number): Promise<ClaimResult>;
+  release?(cameraId: string, nextDueAt: number): Promise<void>;
+  instanceId?: string;
   log: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -52,6 +60,8 @@ export interface WorkerOptions {
   tickMs: number;
   maxBackoffMs: number;
   userContextTtlMs: number;
+  /** How long a claimed camera stays reserved; must exceed the slowest capture + analysis. */
+  leaseMs: number;
 }
 
 export const DEFAULT_WORKER_OPTIONS: WorkerOptions = {
@@ -59,6 +69,7 @@ export const DEFAULT_WORKER_OPTIONS: WorkerOptions = {
   tickMs: 1000,
   maxBackoffMs: 5 * 60_000,
   userContextTtlMs: 60_000,
+  leaseMs: 120_000,
 };
 
 interface CameraState {
@@ -72,7 +83,16 @@ interface CameraState {
 
 export interface WorkerStatus {
   running: boolean;
+  instanceId: string | null;
+  /** True when a shared lease coordinates this instance with others. */
+  distributed: boolean;
   queue: QueueStats;
+  /** Cameras whose scheduled time has passed but which haven't started — the backlog. */
+  overdue: number;
+  /** How late the most-overdue camera is, in seconds. Growing means capacity is too low for the camera count. */
+  maxLagSeconds: number;
+  /** Times another instance already held / had just analysed a camera this instance tried to run. */
+  skippedClaims: number;
   cameras: Array<{
     id: string; name: string; failures: number;
     lastRunAt: string | null; lastSuccessAt: string | null; lastError: string | null; nextDueAt: string;
@@ -100,6 +120,8 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
   const contextCache = new Map<string, { at: number; value: Promise<UserContext> }>();
   let unsubscribe: (() => void) | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let skippedClaims = 0;
+  const running = new Set<string>();
 
   const intervalMsOf = (c: WorkerCamera) => Math.max(MIN_INTERVAL_S, c.interval || 60) * 1000;
 
@@ -132,7 +154,35 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
   }
 
   async function runCamera(state: CameraState) {
+    running.add(state.camera.id);
+    try {
+      await runCameraJob(state);
+    } finally {
+      running.delete(state.camera.id);
+    }
+  }
+
+  async function runCameraJob(state: CameraState) {
     const { camera } = state;
+
+    // With several instances, only the one that wins the shared lease analyses this camera.
+    if (deps.claim) {
+      let claim: ClaimResult;
+      try {
+        claim = await deps.claim(camera.id, deps.now(), opts.leaseMs);
+      } catch (err) {
+        // Can't coordinate → don't analyse (risking a duplicate); try again shortly.
+        deps.log.warn(`[ANALYSIS] Could not claim ${camera.name}:`, err);
+        state.nextDueAt = deps.now() + 5_000;
+        return;
+      }
+      if (claim.claimed === false) {
+        skippedClaims++;
+        state.nextDueAt = Math.max(deps.now() + 1_000, claim.retryAt);
+        return;
+      }
+    }
+
     state.lastRunAt = deps.now();
     try {
       const [frame, ctx] = await Promise.all([deps.grabFrame(camera), getUserContext(camera.userId)]);
@@ -171,6 +221,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     } finally {
       // Re-arm from completion time, so a slow capture never causes back-to-back runs.
       state.nextDueAt = deps.now() + backoffDelayMs(intervalMsOf(state.camera), state.failures, opts.maxBackoffMs);
+      await deps.release?.(camera.id, state.nextDueAt).catch((err) => deps.log.warn(`[ANALYSIS] Could not release lease on ${camera.name}:`, err));
     }
   }
 
@@ -197,9 +248,18 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       unsubscribe = null;
     },
     status(): WorkerStatus {
+      const now = deps.now();
+      // Backlog: due, but not started. (A running camera keeps its old due time until it finishes.)
+      const waiting = [...states.values()].filter((st) => st.nextDueAt <= now && !running.has(st.camera.id));
+      const lags = waiting.map((st) => now - st.nextDueAt);
       return {
         running: timer !== null,
+        instanceId: deps.instanceId ?? null,
+        distributed: Boolean(deps.claim),
         queue: queue.stats(),
+        overdue: waiting.length,
+        maxLagSeconds: lags.length ? Math.round(Math.max(...lags) / 1000) : 0,
+        skippedClaims,
         cameras: [...states.values()].map((s) => ({
           id: s.camera.id, name: s.camera.name, failures: s.failures,
           lastRunAt: s.lastRunAt ? new Date(s.lastRunAt).toISOString() : null,

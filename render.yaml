@@ -37,3 +37,6 @@ services:
         sync: false
       - key: ANPR_API_KEY
         sync: false
+      # Set "true" on every instance when running more than one (shared Firestore lease).
+      - key: ANALYSIS_DISTRIBUTED
+        value: "false"

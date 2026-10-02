@@ -11,6 +11,8 @@ import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/ana
 import { createAnprClient, AnprClient } from './server/anprClient';
 import { mergePlates } from './server/plateMerge';
 import { writeSightings } from './server/sightingStore';
+import { createFirestoreLeases } from './server/leaseStore';
+import { randomUUID } from 'crypto';
 
 // Dedicated plate detector + OCR service (anpr-service/). Optional: when
 // unset, plates are read by Gemini as before.
@@ -1128,7 +1130,14 @@ Analyze this context to answer user queries:
         email: process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL,
         password: process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD,
       };
+      // Several instances can share the work: set ANALYSIS_DISTRIBUTED=true and each camera is
+      // claimed through a Firestore lease before it is analysed (see server/leaseStore.ts).
+      const instanceId = randomUUID();
+      const leases = process.env.ANALYSIS_DISTRIBUTED === 'true' ? createFirestoreLeases(db, instanceId) : null;
       analysisWorker = createAnalysisWorker({
+        instanceId,
+        claim: leases ? leases.claim : undefined,
+        release: leases ? leases.release : undefined,
         now: () => Date.now(),
         log: console,
         subscribeCameras: (onChange, onError) =>
@@ -1172,7 +1181,10 @@ Analyze this context to answer user queries:
           });
           if (!res.ok) throw new Error(`Webhook responded ${res.status}`);
         },
-      }, { concurrency: Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY) || 4) });
+      }, {
+        concurrency: Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY) || 4),
+        ...(Number(process.env.ANALYSIS_LEASE_MS) > 0 ? { leaseMs: Number(process.env.ANALYSIS_LEASE_MS) } : {}),
+      });
     }
   }
 
