@@ -72,5 +72,31 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if false;
     }
+
+    // Plate sightings — one document per plate read at a camera, append-only
+    // (like the audit trail): written by the app or the server worker, never
+    // edited or deleted, so route evidence can't be altered after the fact.
+    match /plateSightings/{sightingId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Distinct plates seen per user, with a running count — the pool that
+    // possible (look-alike) matches are drawn from.
+    match /plateIndex/{entryId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // A person's confirm/reject decision on a possible plate match.
+    match /plateMatchDecisions/{decisionId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
   }
 }

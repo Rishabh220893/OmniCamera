@@ -19,6 +19,10 @@ View your app in AI Studio: https://ai.studio/apps/0c62847a-918a-415d-8189-9b3a6
 3. Run the app:
    `npm run dev`
 
+## Vehicle tracking
+
+Plate search with exact matches, confirmable look-alike ("possible") matches, route reconstruction with plausibility flags, and CSV export — see [`docs/vehicle-tracking.md`](docs/vehicle-tracking.md).
+
 ## Deploy
 
 This is a standard Node/Express server (`server.ts`, built via `npm run build` into `dist/server.cjs`, started via `npm start`) — it needs a real Node host, **not** an edge/Workers platform like Cloudflare Pages/Workers, since it depends on `firebase-admin` and `googleapis`, which require Node's native networking stack.

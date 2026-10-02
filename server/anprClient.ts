@@ -21,7 +21,13 @@ export interface AnprHealth {
   [key: string]: unknown;
 }
 
+// A 16x16 grey JPEG: valid image, no plates. Used to test that the service
+// accepts our key end to end without running real footage through it.
+const PROBE_JPEG = Buffer.from('/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYwLjMxLjEwMgD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABKAAEAAAAAAAAAAAAAAAAAAAAAAQEAAAAAAAAAAAAAAAAAAAAAEAEAAAAAAAAAAAAAAAAAAAAAEQEAAAAAAAAAAAAAAAAAAAAA/8AAEQgAEAAQAwEiAAIRAAMRAP/aAAwDAQACEQMRAD8AAA//2Q==', 'base64');
+
 export interface AnprClient {
+  /** Authenticated round trip with a blank image — unlike health(), fails if the API key is wrong. */
+  probe(): Promise<void>;
   /** Plates at or above the confidence threshold, de-duplicated by text. Throws if the service is unreachable or errors. */
   detect(jpeg: Buffer): Promise<PlateRead[]>;
   health(): Promise<AnprHealth>;
@@ -66,6 +72,14 @@ export function createAnprClient(opts: AnprClientOptions): AnprClient {
         });
       }
       return [...best.values()];
+    },
+    async probe() {
+      const res = await doFetch(`${base}/v1/anpr`, {
+        method: 'POST', headers: headers({ 'Content-Type': 'image/jpeg' }), body: new Uint8Array(PROBE_JPEG),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status === 401) throw new Error('ANPR service rejected the API key (ANPR_API_KEY does not match the service)');
+      if (!res.ok) throw new Error(`ANPR service responded ${res.status}`);
     },
     async health() {
       const res = await doFetch(`${base}/healthz`, { signal: AbortSignal.timeout(timeoutMs) });

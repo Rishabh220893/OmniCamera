@@ -6,10 +6,12 @@ import { auth, db, googleProvider } from './lib/firebase';
 import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch, DocumentReference } from 'firebase/firestore';
 
-import { CameraConfig, LogEntry, LogSentiment, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs, ViewMode, GuardScope } from './types';
+import { CameraConfig, LogEntry, LogSentiment, RoutePoint, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs, ViewMode, GuardScope } from './types';
 import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
 import { parseCsv, toCsv, downloadCsv } from './lib/csv';
 import { computeGapAnalysis } from './lib/registryReport';
+import { buildSightings, PlateSighting } from './lib/plateTracking';
+import { recordSightings } from './lib/plateStore';
 import { DEMO_GRID_CAMERAS } from './data/demoGridCameras';
 import { fetchSentinelCatalogue } from './lib/sentinelCatalogue';
 
@@ -158,6 +160,7 @@ export default function App() {
   const [userDepartment, setUserDepartment] = useState('');
   const [userRole, setUserRole] = useState<'operator' | 'admin'>('admin');
   const [routePlate, setRoutePlate] = useState<string | null>(null);
+  const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
   const [highlightLogId, setHighlightLogId] = useState<string | null>(null);
   const handleJumpToLog = useCallback((logId: string) => {
     setHighlightLogId(logId);
@@ -865,6 +868,14 @@ export default function App() {
         }).catch(err => { console.warn('Firestore log write failed, falling back to local state:', err); setLogs(prev => [newEntry, ...prev].slice(0, 100)); });
       }
 
+      // Permanent plate sightings (the source for vehicle search / route reconstruction).
+      if (user && user.uid !== 'demo-guest' && detectedPlates.length > 0) {
+        recordSightings(user.uid, buildSightings(
+          { id: camera.id, name: camera.name, department: camera.department, location: camera.location },
+          newEntry.timestamp, detectedPlates, data.plate_reads || [], data.plate_source || 'gemini',
+        )).catch(err => console.warn('Could not record plate sightings:', err));
+      }
+
       setCameras(prev => prev.map(c => c.id === camera.id ? { ...c, lastAnalysisTime: new Date() } : c));
 
       const payload = { camera_id: camera.id, camera_name: camera.name, alert: newEntry.summary, timestamp: newEntry.timestamp, data: { ...newEntry, raw_ai_data: data } };
@@ -1100,19 +1111,20 @@ export default function App() {
     setTimeout(() => setWebhookStatus('idle'), 3000);
   };
 
-  const handleShowRoute = (plate: string) => { setRoutePlate(plate); setActiveTab('map'); };
+  const handleShowRoute = (plate: string, points: RoutePoint[]) => { setRoutePlate(plate); setRoutePoints(points); setActiveTab('map'); };
+  const clearRoute = () => { setRoutePlate(null); setRoutePoints([]); };
 
-  const routePoints = useMemo(() => {
-    if (!routePlate) return [];
-    return logs
-      .filter(l => l.detectedPlates?.some(p => p.toUpperCase() === routePlate))
-      .map(l => {
-        const cam = cameras.find(c => c.id === l.cameraId);
-        return cam?.location ? { lat: cam.location.lat, lng: cam.location.lng, label: l.cameraName, timestamp: l.timestamp } : null;
-      })
-      .filter((p): p is { lat: number; lng: number; label: string; timestamp: Date } => p !== null)
-      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  }, [routePlate, logs, cameras]);
+  // Guest mode has no database, so its sightings are derived from the in-memory event log.
+  const guestSightings = useMemo<PlateSighting[]>(() => {
+    if (user && user.uid !== 'demo-guest') return [];
+    return logs.flatMap(l => (l.detectedPlates || []).map(plate => {
+      const cam = cameras.find(c => c.id === l.cameraId);
+      return {
+        id: `${l.id}_${plate}`, plate: plate.toUpperCase().replace(/[^A-Z0-9]/g, ''), cameraId: l.cameraId, cameraName: l.cameraName,
+        department: cam?.department, location: cam?.location, timestamp: l.timestamp, confidence: null, source: 'gemini' as const,
+      };
+    }));
+  }, [user, logs, cameras]);
 
   const gapReport = useMemo(() => computeGapAnalysis(cameras), [cameras]);
 
@@ -1197,12 +1209,12 @@ export default function App() {
                 </div>
                 <AnimatePresence mode="wait">
                   {activeTab === 'analytics' && (
-                    <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
+                    <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} userId={user && user.uid !== 'demo-guest' ? user.uid : null} decidedBy={user?.email || user?.uid || 'unknown'} localSightings={guestSightings} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
                   )}
                   {activeTab === 'map' && (
                     <RegistryTab
                       cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={handleSelectCameraFromRegistry}
-                      routePlate={routePlate} routePoints={routePoints} onClearRoute={() => setRoutePlate(null)}
+                      routePlate={routePlate} routePoints={routePoints} onClearRoute={clearRoute}
                       isAdmin={isAdmin} onAddCamera={() => { addCamera(); handleJumpToSetup(); }}
                       onRemoveCamera={removeCamera} onCsvUpload={handleRegistryCsvUpload} onExportCsv={exportRegistryCsv}
                       onLoadDemoGrid={loadDemoGrid} isLoadingDemoGrid={isLoadingDemoGrid} demoGridStatus={demoGridStatus}

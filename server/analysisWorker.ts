@@ -1,5 +1,6 @@
 import { createAnalysisQueue, QueueStats } from './analysisQueue';
 import { AnalysisResult, buildLogDocument } from './logEntry';
+import { buildSightings, LatLng, PlateSighting } from '../src/lib/plateTracking';
 
 /**
  * Server-side capture + analysis scheduler.
@@ -23,6 +24,8 @@ export interface WorkerCamera {
   vehicleThreshold: number;
   suspiciousRules: string;
   webhookUrl: string;
+  department?: string;
+  location?: LatLng;
 }
 
 export interface UserContext {
@@ -38,6 +41,7 @@ export interface WorkerDeps {
   grabFrame(camera: WorkerCamera): Promise<Buffer>;
   analyze(input: { imageBase64: string; camera: WorkerCamera } & UserContext): Promise<AnalysisResult>;
   writeLog(doc: ReturnType<typeof buildLogDocument>): Promise<void>;
+  writeSightings(userId: string, sightings: PlateSighting[]): Promise<void>;
   updateCamera(cameraId: string, patch: { lastAnalysisTime?: Date; lastAnalysisError?: string | null }): Promise<void>;
   sendWebhook(url: string, payload: unknown): Promise<void>;
   log: Pick<Console, 'info' | 'warn' | 'error'>;
@@ -135,6 +139,14 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       const data = await deps.analyze({ imageBase64: frame.toString('base64'), camera, ...ctx });
       const doc = buildLogDocument({ id: camera.id, name: camera.name, sensitivity: camera.sensitivity, userId: camera.userId }, data, new Date(deps.now()));
       await deps.writeLog(doc);
+
+      // Plate sightings feed vehicle search and route reconstruction. A failure here
+      // must not discard the analysis that was just logged.
+      const sightings = buildSightings(
+        { id: camera.id, name: camera.name, department: camera.department, location: camera.location },
+        doc.timestamp, doc.detectedPlates, doc.plateReads, doc.plateSource as PlateSighting['source'],
+      );
+      await deps.writeSightings(camera.userId, sightings).catch((err) => deps.log.warn(`[ANALYSIS] Could not record plate sightings for ${camera.name}:`, err));
 
       const recovered = state.lastError !== null;
       state.failures = 0;

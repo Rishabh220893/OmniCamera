@@ -68,3 +68,15 @@ test('log document carries per-plate confidence and plate source', () => {
   assert.equal(doc.plateReads[0].confidence, 0.91);
   assert.equal(buildLogDocument({ id: 'c', name: 'G', sensitivity: 5, userId: 'u' }, {}, new Date(0)).plateSource, 'gemini');
 });
+
+test('probe distinguishes a wrong key from an outage', async () => {
+  const wrongKey = createAnprClient({ url: 'http://x', apiKey: 'bad', fetchImpl: (async () => jsonResponse({ detail: 'no' }, 401)) as unknown as typeof fetch });
+  await assert.rejects(wrongKey.probe(), /rejected the API key/);
+  const down = createAnprClient({ url: 'http://x', fetchImpl: (async () => jsonResponse({}, 503)) as unknown as typeof fetch });
+  await assert.rejects(down.probe(), /responded 503/);
+  let sent: Uint8Array | undefined;
+  const ok = createAnprClient({ url: 'http://x', apiKey: 'k', fetchImpl: (async (_u: string, init: RequestInit) => { sent = init.body as Uint8Array; return jsonResponse({ plates: [] }); }) as unknown as typeof fetch });
+  await ok.probe();
+  assert.equal(sent![0], 0xff, 'sends a real JPEG');
+  assert.equal(sent![1], 0xd8);
+});

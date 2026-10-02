@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
-import { ArrowLeft, ChevronLeft, ChevronRight, Download, Users, Truck, Search, Navigation } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Users, Truck } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
-import { LogEntry, TabId } from '../types';
+import { LogEntry, RoutePoint, TabId } from '../types';
+import { PlateSighting } from '../lib/plateTracking';
+import VehicleTracker from './VehicleTracker';
 
 const ROWS_PER_PAGE = 25;
 
@@ -13,8 +15,11 @@ interface AnalyticsTabProps {
   logs: LogEntry[];
   onChangeTab: (tab: TabId) => void;
   onExport: () => void;
-  onShowRoute: (plate: string) => void;
+  onShowRoute: (plate: string, points: RoutePoint[]) => void;
   activeRoutePlate: string | null;
+  userId: string | null;
+  decidedBy: string;
+  localSightings: PlateSighting[];
   /** Set when a chart point elsewhere was clicked — jumps to and briefly
    *  highlights that specific reading instead of leaving the chart and this
    *  table as two disconnected views of the same data. */
@@ -22,8 +27,7 @@ interface AnalyticsTabProps {
   onHighlightHandled?: () => void;
 }
 
-export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate, highlightLogId, onHighlightHandled }: AnalyticsTabProps) {
-  const [plateQuery, setPlateQuery] = useState('');
+export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate, userId, decidedBy, localSightings, highlightLogId, onHighlightHandled }: AnalyticsTabProps) {
   const [page, setPage] = useState(0);
   const totalPages = Math.max(1, Math.ceil(logs.length / ROWS_PER_PAGE));
   // Clamp rather than reset to 0 — new entries stream into page 1 (index 0)
@@ -50,13 +54,6 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
     vehicles: log.counts.vehicles,
   })).slice(-20);
 
-  const plateMatches = useMemo(() => {
-    const q = plateQuery.trim().toUpperCase();
-    if (!q) return [];
-    return logs
-      .filter(l => l.detectedPlates?.some(p => p.toUpperCase().includes(q)))
-      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-  }, [logs, plateQuery]);
 
   return (
     <motion.div
@@ -134,57 +131,7 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
         </section>
       </div>
 
-      <section className="card p-8">
-        <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-accent-soft flex items-center justify-center text-accent">
-              <Search className="w-5 h-5" strokeWidth={1.75} />
-            </div>
-            <div>
-              <h3 className="text-base font-bold font-display text-ink">Vehicle search</h3>
-              <p className="text-xs text-ink-muted">Look up a plate and trace its route across cameras</p>
-            </div>
-          </div>
-          <div className="relative w-full sm:w-64">
-            <input
-              value={plateQuery}
-              onChange={(e) => setPlateQuery(e.target.value)}
-              placeholder="Search a plate, e.g. GJ01AB1234"
-              className="input !py-2.5 !px-4 text-sm font-mono uppercase"
-            />
-          </div>
-        </div>
-
-        {plateQuery.trim() && (
-          plateMatches.length === 0 ? (
-            <p className="text-xs text-ink-muted py-6 text-center">No sightings found for "{plateQuery}".</p>
-          ) : (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-ink-muted">{plateMatches.length} sighting{plateMatches.length !== 1 ? 's' : ''} found</p>
-                {activeRoutePlate === plateQuery.trim().toUpperCase() ? (
-                  <span className="badge badge-accent whitespace-nowrap">Route shown on Map</span>
-                ) : (
-                  <button onClick={() => onShowRoute(plateQuery.trim().toUpperCase())} className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap">
-                    <Navigation className="w-3.5 h-3.5" strokeWidth={1.75} /> Show route on map
-                  </button>
-                )}
-              </div>
-              <div className="space-y-2">
-                {plateMatches.map(log => (
-                  <div key={log.id} className="panel p-3.5 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] font-mono text-ink-muted whitespace-nowrap">{log.timestamp.toLocaleString()}</span>
-                      <span className="text-xs font-bold text-ink truncate">{log.cameraName}</span>
-                    </div>
-                    {log.isWatchlistMatch && <span className="badge badge-critical whitespace-nowrap">Watchlist hit</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        )}
-      </section>
+      <VehicleTracker userId={userId} decidedBy={decidedBy} localSightings={localSightings} activeRoutePlate={activeRoutePlate} onShowRoute={onShowRoute} />
 
       <div className="card overflow-hidden">
         <div className="p-6 border-b border-border flex flex-wrap items-center justify-between bg-surface-muted gap-4">

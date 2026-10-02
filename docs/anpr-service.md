@@ -41,6 +41,26 @@ Environment: `ANPR_DEVICE` (`auto`|`cuda`|`cpu`), `ANPR_API_KEY`, `ANPR_DETECTOR
 
 Then on the main server: `ANPR_SERVICE_URL=https://<where-it-runs>`, `ANPR_API_KEY=<same secret>`.
 
+## The API key (`ANPR_API_KEY`)
+
+**It has nothing to do with the GPU.** It is a shared password that stops strangers from using your ANPR service (and its compute). You invent it — there is nothing to sign up for.
+
+```bash
+openssl rand -hex 32        # or any long random string
+```
+
+Set the **same value in two places**: on the ANPR service (`ANPR_API_KEY`) and on the main server (`ANPR_API_KEY`, next to `ANPR_SERVICE_URL`). It is sent as the `X-ANPR-Key` header.
+
+| Situation | What happens |
+|---|---|
+| Key set on both, same value | Normal operation. |
+| **No GPU** | Same as above — run the service on CPU (`ANPR_DEVICE=cpu`) and still set a key if it is reachable from the internet. |
+| Service has **no key** (unset) | It accepts anyone and logs a warning at startup. Acceptable only on localhost / a private network. If it is reachable from the internet, anyone who finds the URL can use it. |
+| Key set on the service, **missing or different on the main server** | Every ANPR call gets a 401. Analysis does **not** stop: plates silently fall back to Gemini (`plateSource: "gemini-fallback"`, shown as "unverified read" in vehicle tracking and in the CSV `Source` column). `GET /api/analysis/status` reports `anpr.healthy: false` with *"rejected the API key"* (it does a real authenticated test call; `/healthz` alone cannot detect this). |
+| `ANPR_SERVICE_URL` **unset** (no ANPR service at all) | Gemini reads plates, exactly as before this feature. |
+
+**Fallback plan, in order of preference:** (1) ANPR service on a GPU; (2) ANPR service on CPU — your laptop or any server; (3) no ANPR service — Gemini reads plates (less reliable; reads are labelled so they are not mistaken for dedicated-OCR reads).
+
 ## Where to run it (GPU)
 
 The main app on Render's free plan has no GPU, so this runs elsewhere and the Node server calls it over HTTPS. **Always set `ANPR_API_KEY` when the service is reachable from the internet.**

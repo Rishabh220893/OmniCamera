@@ -1,5 +1,6 @@
 """HTTP API: POST a JPEG/PNG, get back the license plates in it."""
 import hmac
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -12,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .engine import PlateEngine, build_default_engine
 
+log = logging.getLogger("anpr")
 MAX_IMAGE_BYTES = int(os.environ.get("ANPR_MAX_IMAGE_BYTES", str(12 * 1024 * 1024)))
 
 
@@ -20,6 +22,9 @@ def create_app(engine_factory: Callable[[], PlateEngine] = build_default_engine,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if not key:
+            log.warning("ANPR_API_KEY is not set: /v1/anpr accepts requests from anyone who can reach this "
+                        "service. Fine on localhost; set a key before exposing it to the internet.")
         app.state.engine = engine_factory()  # loads models once, at startup
         yield
 
@@ -32,7 +37,7 @@ def create_app(engine_factory: Callable[[], PlateEngine] = build_default_engine,
     @app.get("/healthz")
     def healthz():
         engine: PlateEngine = app.state.engine
-        return {"status": "ok", "device": engine.device, **engine.description}
+        return {"status": "ok", "device": engine.device, "auth_required": bool(key), **engine.description}
 
     # Inference runs in a worker thread so concurrent requests overlap on the
     # ONNX sessions instead of blocking the event loop.

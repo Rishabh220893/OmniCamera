@@ -83,6 +83,19 @@ def test_api_key_enforced_on_inference_not_health():
         assert client.get("/healthz").status_code == 200
 
 
+def test_missing_key_is_allowed_but_warned_about(caplog):
+    with caplog.at_level("WARNING", logger="anpr"):
+        with TestClient(create_app(lambda: make_engine([], []), api_key="")) as client:
+            assert client.post("/v1/anpr", content=jpeg()).status_code == 200
+            assert client.get("/healthz").json()["auth_required"] is False
+    assert "ANPR_API_KEY is not set" in caplog.text
+
+
+def test_health_reports_auth_required():
+    with TestClient(create_app(lambda: make_engine([], []), api_key="k")) as client:
+        assert client.get("/healthz").json()["auth_required"] is True
+
+
 def test_api_rejects_bad_input():
     with TestClient(create_app(lambda: make_engine([], []), api_key="")) as client:
         assert client.post("/v1/anpr", content=b"").status_code == 400

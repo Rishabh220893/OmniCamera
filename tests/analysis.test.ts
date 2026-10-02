@@ -68,6 +68,7 @@ function makeWorker(over: Partial<WorkerDeps> = {}, opts = {}) {
   const logs: any[] = [];
   const updates: Array<[string, any]> = [];
   const webhooks: any[] = [];
+  const sightings: any[] = [];
   const quiet = { info() {}, warn() {}, error() {} };
   const deps: WorkerDeps = {
     now: () => t,
@@ -76,13 +77,14 @@ function makeWorker(over: Partial<WorkerDeps> = {}, opts = {}) {
     grabFrame: async () => Buffer.from('frame'),
     analyze: async () => ({ summary: 'ok', counts: { people: 0, vehicles: 0, other: 0 } }),
     writeLog: async (d) => { logs.push(d); },
+    writeSightings: async (userId, s) => { sightings.push([userId, s]); },
     updateCamera: async (id, patch) => { updates.push([id, patch]); },
     sendWebhook: async (u, p) => { webhooks.push([u, p]); },
     log: quiet,
     ...over,
   };
   const worker = createAnalysisWorker(deps, { concurrency: 2, ...opts });
-  return { worker, logs, updates, webhooks, advance: (ms: number) => { t += ms; } };
+  return { worker, logs, updates, webhooks, sightings, advance: (ms: number) => { t += ms; } };
 }
 const cam = (id: string, extra: Partial<WorkerCamera> = {}): WorkerCamera => ({
   id, userId: 'u1', name: id, remoteStreamUrl: `https://x.test/${id}`, interval: 10, sensitivity: 5,
@@ -177,4 +179,25 @@ test('a slow camera is never queued twice while its run is in flight', async () 
   worker._tick(); worker._tick(); worker._tick();
   await worker._idle();
   assert.equal(calls, 1);
+});
+
+test('worker records a plate sighting per plate with camera location, and survives a sighting write failure', async () => {
+  const analyze = async () => ({
+    summary: 's', detected_plates: ['GJ01AB1234'], plate_source: 'anpr',
+    plate_reads: [{ plate: 'GJ01AB1234', confidence: 0.92, formatValid: true, corrected: false }],
+  });
+  const ok = makeWorker({ analyze });
+  ok.worker._applyCameras([cam('a', { location: { lat: 23, lng: 72 }, department: 'Police' })]);
+  ok.advance(10_000); ok.worker._tick(); await ok.worker._idle();
+  assert.equal(ok.sightings.length, 1);
+  const [userId, list] = ok.sightings[0];
+  assert.equal(userId, 'u1');
+  assert.deepEqual([list[0].plate, list[0].confidence, list[0].source, list[0].cameraId, list[0].department], ['GJ01AB1234', 0.92, 'anpr', 'a', 'Police']);
+  assert.deepEqual(list[0].location, { lat: 23, lng: 72 });
+
+  const failing = makeWorker({ analyze, writeSightings: async () => { throw new Error('firestore down'); } });
+  failing.worker._applyCameras([cam('a')]);
+  failing.advance(10_000); failing.worker._tick(); await failing.worker._idle();
+  assert.equal(failing.logs.length, 1, 'the log is still written');
+  assert.equal(failing.worker.status().cameras[0].lastError, null, 'and the camera is not marked failed');
 });

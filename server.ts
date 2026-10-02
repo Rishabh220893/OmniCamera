@@ -10,6 +10,7 @@ import { extractFrameWithFfmpeg, grabFrame, isSafeCameraUrl } from './server/fra
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 import { createAnprClient, AnprClient } from './server/anprClient';
 import { mergePlates } from './server/plateMerge';
+import { writeSightings } from './server/sightingStore';
 
 // Dedicated plate detector + OCR service (anpr-service/). Optional: when
 // unset, plates are read by Gemini as before.
@@ -1143,6 +1144,8 @@ Analyze this context to answer user queries:
                 interval: c.interval ?? 60, sensitivity: c.sensitivity ?? 5,
                 peopleThreshold: c.peopleThreshold ?? 5, vehicleThreshold: c.vehicleThreshold ?? 2,
                 suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
+                department: c.department || undefined,
+                location: c.location && typeof c.location.lat === 'number' && typeof c.location.lng === 'number' ? { lat: c.location.lat, lng: c.location.lng } : undefined,
               });
             });
             onChange(cameras);
@@ -1160,6 +1163,7 @@ Analyze this context to answer user queries:
         grabFrame: (camera) => grabFrame({ url: camera.remoteStreamUrl, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` }),
         analyze: ({ imageBase64, camera, knownFaces, watchlist }) => analyzeFrame({ imageBase64, knownFaces, watchlist, camera }),
         writeLog: async (doc) => { await db.collection('logs').add(doc); },
+        writeSightings: (userId, sightings) => writeSightings(db, userId, sightings),
         updateCamera: async (cameraId, patch) => { await db.collection('cameras').doc(cameraId).update(patch); },
         sendWebhook: async (url, payload) => {
           const res = await fetch(url, {
@@ -1182,7 +1186,7 @@ Analyze this context to answer user queries:
     const workerStatus = analysisWorker ? analysisWorker.status() : { running: false, queue: { queued: 0, active: 0, concurrency: 0 }, cameras: [] };
     let anpr: { configured: boolean; healthy?: boolean; device?: string; error?: string } = { configured: anprClient !== null };
     if (anprClient) {
-      try { anpr = { configured: true, healthy: true, device: (await anprClient.health()).device }; }
+      try { const health = await anprClient.health(); await anprClient.probe(); anpr = { configured: true, healthy: true, device: health.device }; }
       catch (err) { anpr = { configured: true, healthy: false, error: err instanceof Error ? err.message : String(err) }; }
     }
     res.status(200).json({ ...workerStatus, anpr });
