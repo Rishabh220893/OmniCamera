@@ -1,0 +1,6 @@
+# CPU build. For a GPU host use requirements-gpu.txt instead (not both).
+fast-alpr[onnx]>=0.4,<0.5
+fastapi>=0.110
+uvicorn[standard]>=0.29
+opencv-python-headless>=4.9
+numpy>=1.26

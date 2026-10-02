@@ -34,5 +34,6 @@ This is a standard Node/Express server (`server.ts`, built via `npm run build` i
 | `REGISTRY_API_KEY` | No | Shared secret for the Registry API — set this if `FIREBASE_SERVICE_ACCOUNT` is set |
 | `SERVER_ANALYSIS` | No | Set to `true` to run the server-side analysis worker (`docs/server-analysis.md`); needs `FIREBASE_SERVICE_ACCOUNT` and `GEMINI_API_KEY` |
 | `ANALYSIS_CONCURRENCY` | No | Max simultaneous capture+analysis jobs (default 4) |
+| `ANPR_SERVICE_URL` / `ANPR_API_KEY` | No | Use the dedicated plate detector + OCR service (`anpr-service/`, `docs/anpr-service.md`) instead of Gemini for plate reading |
 
 Any other Node host (Railway, Fly.io, a plain VM) works the same way: `npm install && npm run build`, then `npm start`, with the same environment variables.

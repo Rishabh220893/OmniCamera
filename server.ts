@@ -8,6 +8,19 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 import { extractFrameWithFfmpeg, grabFrame, isSafeCameraUrl } from './server/frameSource';
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
+import { createAnprClient, AnprClient } from './server/anprClient';
+import { mergePlates } from './server/plateMerge';
+
+// Dedicated plate detector + OCR service (anpr-service/). Optional: when
+// unset, plates are read by Gemini as before.
+const anprClient: AnprClient | null = process.env.ANPR_SERVICE_URL
+  ? createAnprClient({
+      url: process.env.ANPR_SERVICE_URL,
+      apiKey: process.env.ANPR_API_KEY,
+      timeoutMs: Number(process.env.ANPR_TIMEOUT_MS) || 8_000,
+      minConfidence: process.env.ANPR_MIN_CONFIDENCE ? Number(process.env.ANPR_MIN_CONFIDENCE) : 0.6,
+    })
+  : null;
 
 // A distinctive custom UA on every upstream request to this camera grid
 // (fronted by Cloudflare) is a textbook bot-throttling trigger — real
@@ -193,6 +206,15 @@ async function analyzeFrame({ imageBase64, knownFaces, watchlist, camera }: Fram
 
   console.log(`[GEMINI VISION] Analyzing frame for camera: "${camera?.name ?? 'Unknown'}"`);
 
+  // Plate reading goes to the dedicated ANPR service in parallel with the
+  // Gemini call; a failure there must never fail the whole analysis.
+  const anprPromise = anprClient
+    ? anprClient.detect(Buffer.from(imageBase64, 'base64')).then((reads) => ({ reads })).catch((error: unknown) => {
+        console.warn(`[ANPR] Service call failed, falling back to Gemini plates:`, error instanceof Error ? error.message : error);
+        return { error };
+      })
+    : Promise.resolve(null);
+
   const response = await generateContentWithFallback(VISION_MODELS, {
     contents: {
       parts: [
@@ -250,15 +272,16 @@ async function analyzeFrame({ imageBase64, knownFaces, watchlist, camera }: Fram
 
   // Tier-1 stand-in: match detected plates against the caller's watchlist
   // server-side, so the client never has to trust its own comparison.
-  const detectedPlates = (data.detected_plates || []).map((p) => String(p).toUpperCase().replace(/\s+/g, ''));
-  const watchlistSet = new Set((watchlist || []).map((p) => String(p).toUpperCase().replace(/\s+/g, '')));
+  const merged = mergePlates((data.detected_plates || []).map(String), await anprPromise);
+  const detectedPlates = merged.plates;
+  const watchlistSet = new Set((watchlist || []).map((p) => String(p).toUpperCase().replace(/[^A-Z0-9]/g, '')));
   const watchlistMatches = detectedPlates.filter((p) => watchlistSet.has(p));
 
   if (watchlistMatches.length > 0) {
-    console.warn(`[WATCHLIST MATCH] Camera "${camera?.name ?? 'Unknown'}" — plates: ${watchlistMatches.join(', ')}`);
+    console.warn(`[WATCHLIST MATCH] Camera "${camera?.name ?? 'Unknown'}" — plates: ${watchlistMatches.join(', ')} (source: ${merged.source})`);
   }
 
-  return { ...data, detected_plates: detectedPlates, watchlistMatches };
+  return { ...data, detected_plates: detectedPlates, watchlistMatches, plate_reads: merged.reads, plate_source: merged.source };
 }
 
 async function startServer() {
@@ -1151,12 +1174,18 @@ Analyze this context to answer user queries:
 
   // Lets the UI know whether the "Analyze on server" toggle can do anything.
   app.get('/api/analysis/config', (_req, res) => {
-    res.status(200).json({ enabled: analysisWorker !== null });
+    res.status(200).json({ enabled: analysisWorker !== null, anpr: anprClient !== null });
   });
 
-  app.get('/api/analysis/status', (req, res) => {
+  app.get('/api/analysis/status', async (req, res) => {
     if (!requireRegistryAuth(req, res)) return;
-    res.status(200).json(analysisWorker ? analysisWorker.status() : { running: false, queue: { queued: 0, active: 0, concurrency: 0 }, cameras: [] });
+    const workerStatus = analysisWorker ? analysisWorker.status() : { running: false, queue: { queued: 0, active: 0, concurrency: 0 }, cameras: [] };
+    let anpr: { configured: boolean; healthy?: boolean; device?: string; error?: string } = { configured: anprClient !== null };
+    if (anprClient) {
+      try { anpr = { configured: true, healthy: true, device: (await anprClient.health()).device }; }
+      catch (err) { anpr = { configured: true, healthy: false, error: err instanceof Error ? err.message : String(err) }; }
+    }
+    res.status(200).json({ ...workerStatus, anpr });
   });
 
   const server = http.createServer(app);

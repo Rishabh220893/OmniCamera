@@ -860,7 +860,8 @@ export default function App() {
           cameraId: camera.id, cameraName: camera.name, summary: summaryWithExtra,
           detectedItems: data.people_identified || [], timestamp: new Date(), userId: user.uid,
           counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment, isUnusual: newEntry.isUnusual,
-          unusualReason: newEntry.unusualReason || '', alerts, detectedPlates, isWatchlistMatch
+          unusualReason: newEntry.unusualReason || '', alerts, detectedPlates, isWatchlistMatch,
+          plateReads: data.plate_reads || [], plateSource: data.plate_source || 'gemini'
         }).catch(err => { console.warn('Firestore log write failed, falling back to local state:', err); setLogs(prev => [newEntry, ...prev].slice(0, 100)); });
       }
 

@@ -17,6 +17,8 @@ export interface AnalysisResult {
   isUnusualReason?: string;
   detected_plates?: string[];
   watchlistMatches?: string[];
+  plate_reads?: Array<{ plate: string; confidence: number; formatValid: boolean; corrected: boolean }>;
+  plate_source?: string;
   sentiment?: string;
 }
 
@@ -54,6 +56,9 @@ export function buildLogDocument(camera: CameraForLog, data: AnalysisResult, now
     alerts,
     detectedPlates,
     isWatchlistMatch,
+    // Per-plate OCR confidence and which engine read them (anpr / gemini / gemini-fallback).
+    plateReads: data.plate_reads ?? [],
+    plateSource: data.plate_source ?? 'gemini',
     // Marks logs the server produced, so they can be told apart if needed.
     analyzedBy: 'server' as const,
   };

@@ -1,0 +1,7 @@
+# GPU build: needs an NVIDIA GPU, driver, and CUDA 12 + cuDNN 9 runtime
+# libraries matching the installed onnxruntime-gpu.
+fast-alpr[onnx-gpu]>=0.4,<0.5
+fastapi>=0.110
+uvicorn[standard]>=0.29
+opencv-python-headless>=4.9
+numpy>=1.26

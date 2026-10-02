@@ -31,3 +31,9 @@ services:
         value: "false"
       - key: ANALYSIS_CONCURRENCY
         value: "4"
+      # Optional: dedicated plate detector + OCR service (runs elsewhere, e.g. on
+      # a GPU host). Unset = Gemini reads plates. See docs/anpr-service.md.
+      - key: ANPR_SERVICE_URL
+        sync: false
+      - key: ANPR_API_KEY
+        sync: false
