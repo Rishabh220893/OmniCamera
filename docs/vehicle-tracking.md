@@ -1,6 +1,6 @@
 # Vehicle tracking
 
-Find a vehicle by plate, see where and when it was seen, and export the route. Lives in the **Analytics** tab ("Vehicle tracking"); the route is drawn on the **Map** tab.
+Find a vehicle by plate, see where and when it was seen, and export the route. Lives in the **Logs** tab ("Vehicle tracking"); the route is drawn on the **Registry** tab's map.
 
 ## How it works
 

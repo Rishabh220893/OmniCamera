@@ -95,6 +95,70 @@ A rented GPU is just **a remote computer that runs the ANPR service**. The app n
 5. **Point the main app at it:** set `ANPR_SERVICE_URL` and `ANPR_API_KEY` on the main server (e.g. Render) and redeploy. Confirm with `GET /api/analysis/status` → `anpr.healthy: true`, `anpr.device: "cuda"`.
 6. **When you're done, stop or delete the rented machine** — it bills while it exists. After that, either unset `ANPR_SERVICE_URL`, or leave it: the app detects repeated failures, stops calling the dead service for a minute at a time (so frames aren't each delayed by the timeout), and reads plates with Gemini meanwhile (`plateSource: "gemini-fallback"`).
 
+### Exposing the GPU machine with a Cloudflare Tunnel
+
+A tunnel lets the main app reach the ANPR service over HTTPS **without opening any port** on the rented machine: `cloudflared` on the GPU machine makes an outbound connection to Cloudflare, and Cloudflare forwards requests to it.
+
+**1. Start the service so only the tunnel can reach it** (bind to localhost, don't publish the port):
+
+```bash
+docker run -d --gpus all -p 127.0.0.1:8000:8000 \
+  -e ANPR_DEVICE=cuda -e ANPR_API_KEY=<your secret> -v anpr-models:/models omnisee-anpr-gpu
+curl http://127.0.0.1:8000/healthz        # on the GPU machine: should show "device": "cuda"
+```
+
+**2. Install `cloudflared` on the GPU machine** (Linux/Debian-based; see Cloudflare's docs if your distro differs):
+
+```bash
+curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared.deb        # no sudo/root? download the plain binary from the same releases page instead
+cloudflared --version
+```
+
+**3a. Quick tunnel — fastest, no Cloudflare account, good for a demo:**
+
+```bash
+cloudflared tunnel --url http://localhost:8000
+```
+
+It prints a URL like `https://random-words.trycloudflare.com`. Keep that process running (`nohup … &` or `tmux`). **The URL changes every time you restart it**, so you must update `ANPR_SERVICE_URL` on the main server (and redeploy) each time. Cloudflare positions quick tunnels for testing, with no uptime guarantee.
+
+**3b. Named tunnel — stable URL, needs a free Cloudflare account and a domain on Cloudflare:**
+
+```bash
+cloudflared tunnel login                              # opens a browser link to authorise
+cloudflared tunnel create omnisee-anpr                # prints a tunnel ID and writes a credentials file
+cloudflared tunnel route dns omnisee-anpr anpr.example.com
+```
+
+Create `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: <TUNNEL-ID>
+credentials-file: /root/.cloudflared/<TUNNEL-ID>.json
+ingress:
+  - hostname: anpr.example.com
+    service: http://localhost:8000
+  - service: http_status:404
+```
+
+```bash
+cloudflared tunnel run omnisee-anpr                   # or: sudo cloudflared service install  (runs at boot)
+```
+
+(Alternatively create the tunnel in the Cloudflare dashboard under *Zero Trust → Networks → Tunnels* and paste the install command it gives you; menu names change, so follow Cloudflare's current docs.)
+
+**4. Test it from anywhere, then connect the app:**
+
+```bash
+curl https://<your-tunnel-url>/healthz
+ANPR_SERVICE_URL=https://<your-tunnel-url> ANPR_API_KEY=<your secret> node scripts/check-anpr.mjs frame.jpg
+```
+
+Then set `ANPR_SERVICE_URL=https://<your-tunnel-url>` (no trailing path) and `ANPR_API_KEY` on the main server and redeploy.
+
+Notes: the tunnel makes the service **public on the internet**, so `ANPR_API_KEY` is your only protection — always set it. The app sends only the `X-ANPR-Key` header, so Cloudflare Access service-token protection in front of the tunnel is not supported without a code change. If the machine or tunnel goes down the app falls back to Gemini after a few failures (see above).
+
 ### What I could and could not verify
 
 - Verified: the service, the app's calls to it, the key handling, the failure fallback and the check script — all against a stand-in model on CPU.

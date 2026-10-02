@@ -289,8 +289,8 @@ async function analyzeFrame({ imageBase64, knownFaces, watchlist, camera }: Fram
 
 async function startServer() {
   const app = express();
-  // Port 3000 is the hardcoded entry point for AI Studio proxy
-  const PORT = 3000;
+  // AI Studio's proxy expects 3000; hosts such as Render tell us which port to bind through PORT.
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Default 100kb limit is far too small: a captured frame plus up to 6
   // base64-encoded known-face reference images easily runs several MB.
