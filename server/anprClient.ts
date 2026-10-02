@@ -39,6 +39,10 @@ export interface AnprClientOptions {
   timeoutMs?: number;
   minConfidence?: number;
   fetchImpl?: typeof fetch;
+  /** Consecutive failed detect() calls after which the service is skipped for `cooldownMs`. */
+  failureThreshold?: number;
+  cooldownMs?: number;
+  now?: () => number;
 }
 
 interface RawPlate {
@@ -51,27 +55,47 @@ export function createAnprClient(opts: AnprClientOptions): AnprClient {
   const timeoutMs = opts.timeoutMs ?? 8_000;
   const minConfidence = opts.minConfidence ?? 0.6;
   const doFetch = opts.fetchImpl ?? fetch;
+  const failureThreshold = opts.failureThreshold ?? 3;
+  const cooldownMs = opts.cooldownMs ?? 60_000;
+  const now = opts.now ?? Date.now;
+  // Circuit breaker: if the service is down (e.g. a rented GPU was switched off), every frame would
+  // otherwise wait out the full timeout before falling back. After repeated failures, skip it for a
+  // while, then let one request through to see whether it has come back.
+  let consecutiveFailures = 0;
+  let skipUntil = 0;
   const headers = (extra: Record<string, string> = {}) => ({ ...extra, ...(opts.apiKey ? { 'X-ANPR-Key': opts.apiKey } : {}) });
+
+  async function detectOnce(jpeg: Buffer): Promise<PlateRead[]> {
+    const res = await doFetch(`${base}/v1/anpr`, {
+      method: 'POST', headers: headers({ 'Content-Type': 'image/jpeg' }), body: new Uint8Array(jpeg),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) throw new Error(`ANPR service responded ${res.status}`);
+    const body = (await res.json()) as { plates?: RawPlate[] };
+    const best = new Map<string, PlateRead>();
+    for (const p of body.plates ?? []) {
+      if (!p.text || p.confidence < minConfidence) continue;
+      const existing = best.get(p.text);
+      if (existing && existing.confidence >= p.confidence) continue;
+      best.set(p.text, {
+        text: p.text, rawText: p.raw_text, confidence: p.confidence, detectionConfidence: p.detection_confidence,
+        bbox: p.bbox, formatValid: p.format_valid, corrected: p.corrected,
+      });
+    }
+    return [...best.values()];
+  }
 
   return {
     async detect(jpeg) {
-      const res = await doFetch(`${base}/v1/anpr`, {
-        method: 'POST', headers: headers({ 'Content-Type': 'image/jpeg' }), body: new Uint8Array(jpeg),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!res.ok) throw new Error(`ANPR service responded ${res.status}`);
-      const body = (await res.json()) as { plates?: RawPlate[] };
-      const best = new Map<string, PlateRead>();
-      for (const p of body.plates ?? []) {
-        if (!p.text || p.confidence < minConfidence) continue;
-        const existing = best.get(p.text);
-        if (existing && existing.confidence >= p.confidence) continue;
-        best.set(p.text, {
-          text: p.text, rawText: p.raw_text, confidence: p.confidence, detectionConfidence: p.detection_confidence,
-          bbox: p.bbox, formatValid: p.format_valid, corrected: p.corrected,
-        });
+      if (now() < skipUntil) throw new Error('ANPR service skipped: it failed repeatedly and is in a cool-down');
+      try {
+        const reads = await detectOnce(jpeg);
+        consecutiveFailures = 0;
+        return reads;
+      } catch (err) {
+        if (++consecutiveFailures >= failureThreshold) skipUntil = now() + cooldownMs;
+        throw err;
       }
-      return [...best.values()];
     },
     async probe() {
       const res = await doFetch(`${base}/v1/anpr`, {

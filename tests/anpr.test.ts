@@ -80,3 +80,37 @@ test('probe distinguishes a wrong key from an outage', async () => {
   assert.equal(sent![0], 0xff, 'sends a real JPEG');
   assert.equal(sent![1], 0xd8);
 });
+
+test('circuit breaker: after repeated failures the service is skipped without waiting, then retried after the cool-down', async () => {
+  let t = 0, calls = 0, healthy = false;
+  const client = createAnprClient({
+    url: 'http://x', failureThreshold: 3, cooldownMs: 60_000, now: () => t,
+    fetchImpl: (async () => { calls++; if (!healthy) throw new Error('connect timeout'); return jsonResponse({ plates: [raw('GJ01AB1234', 0.9)] }); }) as unknown as typeof fetch,
+  });
+  for (let i = 0; i < 3; i++) await assert.rejects(client.detect(Buffer.from('x')), /connect timeout/);
+  assert.equal(calls, 3);
+  await assert.rejects(client.detect(Buffer.from('x')), /cool-down/);
+  assert.equal(calls, 3, 'no network call (and no timeout wait) while cooling down');
+  t = 59_000;
+  await assert.rejects(client.detect(Buffer.from('x')), /cool-down/);
+  t = 61_000; healthy = true;
+  assert.equal((await client.detect(Buffer.from('x')))[0].text, 'GJ01AB1234');
+  assert.equal(calls, 4, 'one request is let through after the cool-down and the service is back in use');
+  await client.detect(Buffer.from('x')); assert.equal(calls, 5);
+});
+
+test('circuit breaker: a success resets the failure count; a failed retry re-opens the cool-down', async () => {
+  let t = 0, fail = true, calls = 0;
+  const client = createAnprClient({
+    url: 'http://x', failureThreshold: 2, cooldownMs: 10_000, now: () => t,
+    fetchImpl: (async () => { calls++; if (fail) throw new Error('down'); return jsonResponse({ plates: [] }); }) as unknown as typeof fetch,
+  });
+  await assert.rejects(client.detect(Buffer.from('x')), /down/);
+  fail = false; await client.detect(Buffer.from('x'));            // success resets the count
+  fail = true;  await assert.rejects(client.detect(Buffer.from('x')), /down/); // 1 failure only → still closed
+  await assert.rejects(client.detect(Buffer.from('x')), /down/);               // 2nd consecutive → opens
+  await assert.rejects(client.detect(Buffer.from('x')), /cool-down/);
+  t = 10_001;
+  await assert.rejects(client.detect(Buffer.from('x')), /down/);               // retry fails → straight back to cool-down
+  await assert.rejects(client.detect(Buffer.from('x')), /cool-down/);
+});

@@ -61,6 +61,45 @@ Set the **same value in two places**: on the ANPR service (`ANPR_API_KEY`) and o
 
 **Fallback plan, in order of preference:** (1) ANPR service on a GPU; (2) ANPR service on CPU — your laptop or any server; (3) no ANPR service — Gemini reads plates (less reliable; reads are labelled so they are not mistaken for dedicated-OCR reads).
 
+## How a rented GPU connects to the app
+
+A rented GPU is just **a remote computer that runs the ANPR service**. The app never "knows" about the GPU; it only calls a URL.
+
+```
+ camera feeds ──▶ main app / server (Render etc.) ──HTTPS + X-ANPR-Key──▶ ANPR service on the rented GPU
+                          ▲                                                  (plate detector + OCR on the GPU)
+                          └──────────── plates + confidence ─────────────────┘
+```
+
+**No application code changes are needed after you rent one — only configuration.** The same service code runs on CPU and GPU; `ANPR_DEVICE=cuda` selects the GPU, and the main app only needs two settings: `ANPR_SERVICE_URL` and `ANPR_API_KEY`.
+
+### Step by step
+
+1. **Rent a machine with an NVIDIA GPU and Docker** (a "GPU pod/instance" from a provider; pick any current card — the models are small, so a cheap one is plenty). Note its public address or the HTTPS URL the provider gives you for a port.
+2. **Start the service on it** (it downloads the model weights on first start, so it needs outbound internet):
+   ```bash
+   git clone <your repo> && cd <repo>/anpr-service
+   docker build -t omnisee-anpr-gpu .
+   docker run -d --gpus all -p 8000:8000 \
+     -e ANPR_DEVICE=cuda -e ANPR_API_KEY=<your secret> \
+     -v anpr-models:/models omnisee-anpr-gpu
+   ```
+   `ANPR_DEVICE=cuda` is strict: if the GPU can't be used it **refuses to start with a clear error** instead of silently running slowly on CPU. If that happens (CUDA/driver mismatch), fix it or set `ANPR_DEVICE=auto`/`cpu` to carry on.
+3. **Make port 8000 reachable** from the main app: open the port in the provider's console, or use the provider's HTTPS proxy URL, or a Cloudflare tunnel. Prefer HTTPS — the key travels in a header.
+4. **Check it from your own machine** (no code changes, just this script):
+   ```bash
+   ANPR_SERVICE_URL=https://<host-or-url> ANPR_API_KEY=<your secret> \
+     node scripts/check-anpr.mjs frame.jpg --cameras 50 --interval 60
+   ```
+   It reports the device actually in use, whether the key works, the speed on a **real frame** (use one from your cameras), and whether that is enough for your camera count.
+5. **Point the main app at it:** set `ANPR_SERVICE_URL` and `ANPR_API_KEY` on the main server (e.g. Render) and redeploy. Confirm with `GET /api/analysis/status` → `anpr.healthy: true`, `anpr.device: "cuda"`.
+6. **When you're done, stop or delete the rented machine** — it bills while it exists. After that, either unset `ANPR_SERVICE_URL`, or leave it: the app detects repeated failures, stops calling the dead service for a minute at a time (so frames aren't each delayed by the timeout), and reads plates with Gemini meanwhile (`plateSource: "gemini-fallback"`).
+
+### What I could and could not verify
+
+- Verified: the service, the app's calls to it, the key handling, the failure fallback and the check script — all against a stand-in model on CPU.
+- **Not verified:** the GPU Docker image, `onnxruntime-gpu` + CUDA/cuDNN compatibility on a real card, the real model weights, and real speed/accuracy. The first GPU run is where any of that would show up — `scripts/check-anpr.mjs` and the strict `ANPR_DEVICE=cuda` are there so a problem is visible immediately.
+
 ## Where to run it (GPU)
 
 The main app on Render's free plan has no GPU, so this runs elsewhere and the Node server calls it over HTTPS. **Always set `ANPR_API_KEY` when the service is reachable from the internet.**
