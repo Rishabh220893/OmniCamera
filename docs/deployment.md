@@ -91,7 +91,7 @@ Pick one place to run it. All options use the same code; see `docs/anpr-service.
 | **CPU on your own machine/server** | Start here — the plate models are small and a CPU may be enough (measure first) |
 | **Rented GPU** | If `scripts/check-anpr.mjs` shows the CPU is too slow for your camera count |
 
-1. **Pick the API key:** `openssl rand -hex 32`. You'll set this same value on the service and on Render.
+1. **Create the API key yourself** (nobody issues it): `openssl rand -hex 32`, or `python3 -c "import secrets; print(secrets.token_hex(32))"`. You'll set this same value on the service and on Render. The URL (`ANPR_SERVICE_URL`) is simply the address you expose the service at — see "Where do `ANPR_API_KEY` and `ANPR_SERVICE_URL` come from?" in `docs/anpr-service.md`.
 2. **Run it** (Docker shown; or `pip install -r requirements.txt` then `uvicorn anpr_service.main:app --host 0.0.0.0 --port 8000` from `anpr-service/`):
    - GPU: `docker build -t omnisee-anpr-gpu anpr-service && docker run -d --gpus all -p 127.0.0.1:8000:8000 -e ANPR_DEVICE=cuda -e ANPR_API_KEY=<key> -v anpr-models:/models omnisee-anpr-gpu`
    - CPU: `docker build --build-arg BASE=python:3.11-slim --build-arg REQS=requirements.txt -t omnisee-anpr anpr-service && docker run -d -p 127.0.0.1:8000:8000 -e ANPR_DEVICE=cpu -e ANPR_API_KEY=<key> -v anpr-models:/models omnisee-anpr`

@@ -41,6 +41,43 @@ Environment: `ANPR_DEVICE` (`auto`|`cuda`|`cpu`), `ANPR_API_KEY`, `ANPR_DETECTOR
 
 Then on the main server: `ANPR_SERVICE_URL=https://<where-it-runs>`, `ANPR_API_KEY=<same secret>`.
 
+## Where do `ANPR_API_KEY` and `ANPR_SERVICE_URL` come from?
+
+**Neither comes from a website or a paid service.** The plate-reading models are open-source and download free on first start; there is no ANPR vendor account to open.
+
+| Setting | What it is | How you get it |
+|---|---|---|
+| `ANPR_API_KEY` | A password **you invent**, shared by the service and the main app. Nobody issues it. | Generate a random string (below) |
+| `ANPR_SERVICE_URL` | The **address** of the machine running the ANPR service — not a key | It is whatever address you expose the service at (below) |
+
+**Generate the key** — any one of these (they produce a 64-character random string; a password manager's 32+ character random password also works):
+
+```bash
+openssl rand -hex 32                                   # Mac, Linux, Git Bash
+python3 -c "import secrets; print(secrets.token_hex(32))"   # anywhere Python is installed (on Windows: python)
+```
+
+Use letters and digits only (no spaces or quotes), so it survives shells and dashboards. Then use the **exact same value in both places**:
+
+1. On the machine running the service: `-e ANPR_API_KEY=<key>` (or `ANPR_API_KEY=<key>` before `uvicorn`).
+2. On the main server (Render → *Environment*): `ANPR_API_KEY=<key>`.
+
+Keep it secret and out of git. To change it later, change it in both places (and redeploy Render); a mismatch makes every call fail with 401, and plates fall back to Gemini until fixed.
+
+**Get the URL** from how you expose the service:
+
+| How you run it | `ANPR_SERVICE_URL` |
+|---|---|
+| Cloudflare quick tunnel | The `https://….trycloudflare.com` address `cloudflared` prints (changes every restart) |
+| Cloudflare named tunnel | `https://<the hostname you chose>`, e.g. `https://anpr.example.com` |
+| GPU provider gives an HTTPS address for a port | That address, for port 8000 |
+| Public IP with the port opened | `http://<ip>:8000` — works, but the key travels unencrypted; prefer HTTPS |
+| Service on your home/office network only | Won't work from Render — it can't reach private addresses; use a tunnel |
+
+Give the URL with no trailing path (no `/v1/anpr`, no `/healthz`).
+
+**Accounts you may or may not need:** none for the ANPR service itself. Optionally: Cloudflare (free; only for a named tunnel with a stable address — quick tunnels need no account) and a GPU rental provider (only if the CPU turns out too slow).
+
 ## The API key (`ANPR_API_KEY`)
 
 **It has nothing to do with the GPU.** It is a shared password that stops strangers from using your ANPR service (and its compute). You invent it — there is nothing to sign up for.
