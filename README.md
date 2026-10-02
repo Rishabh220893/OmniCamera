@@ -32,5 +32,7 @@ This is a standard Node/Express server (`server.ts`, built via `npm run build` i
 | `GOOGLE_SHEETS_SPREADSHEET_ID` | No | Target spreadsheet for the above |
 | `FIREBASE_SERVICE_ACCOUNT` | No | Enables the Central Registry API (`docs/registry-api.md`) |
 | `REGISTRY_API_KEY` | No | Shared secret for the Registry API — set this if `FIREBASE_SERVICE_ACCOUNT` is set |
+| `SERVER_ANALYSIS` | No | Set to `true` to run the server-side analysis worker (`docs/server-analysis.md`); needs `FIREBASE_SERVICE_ACCOUNT` and `GEMINI_API_KEY` |
+| `ANALYSIS_CONCURRENCY` | No | Max simultaneous capture+analysis jobs (default 4) |
 
 Any other Node host (Railway, Fly.io, a plain VM) works the same way: `npm install && npm run build`, then `npm start`, with the same environment variables.

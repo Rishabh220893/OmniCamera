@@ -45,6 +45,11 @@ export interface CameraConfig {
   lastAnalysisTime?: Date;
   suspiciousRules: string;
   useSimulatedFeed?: boolean;
+  /** When true, the server's analysis worker captures and analyzes this camera
+   *  on its own schedule — no browser tab needs to stay open. */
+  serverAnalysis?: boolean;
+  /** Last error the server worker hit for this camera, cleared on recovery. */
+  lastAnalysisError?: string;
 
   /** Central Registry fields (Sentinel Mesh Model 1 — mandatory foundation).
    *  Each camera is its own document in the top-level `cameras` collection,

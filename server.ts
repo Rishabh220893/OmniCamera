@@ -6,6 +6,8 @@ import { google } from 'googleapis';
 import { GoogleGenAI } from '@google/genai';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
+import { extractFrameWithFfmpeg, grabFrame, isSafeCameraUrl } from './server/frameSource';
+import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 
 // A distinctive custom UA on every upstream request to this camera grid
 // (fronted by Cloudflare) is a textbook bot-throttling trigger — real
@@ -155,6 +157,108 @@ async function writeRegistryAudit(
     performedBy: 'registry-api',
     timestamp: FieldValue.serverTimestamp(),
   });
+}
+
+interface FrameAnalysisInput {
+  imageBase64: string;
+  knownFaces?: Array<{ name: string; imageData: string }>;
+  watchlist?: string[];
+  camera?: {
+    name?: string;
+    sensitivity?: number;
+    peopleThreshold?: number;
+    vehicleThreshold?: number;
+    suspiciousRules?: string;
+  };
+}
+
+// Shared by the browser-driven /api/gemini/analyze-frame route and the
+// server-side analysis worker, so both produce identical results.
+async function analyzeFrame({ imageBase64, knownFaces, watchlist, camera }: FrameAnalysisInput) {
+  const faces = (knownFaces || []).slice(0, 6);
+  const faceDataParts = faces.map((face) => ({
+    inlineData: {
+      mimeType: 'image/jpeg',
+      data: face.imageData.includes(',') ? face.imageData.split(',')[1] : face.imageData,
+    },
+  }));
+
+  const knownFacesContext = faces.length > 0
+    ? `\nREFERENCE DATA: I have provided ${faceDataParts.length} images of known people as reference.
+       Their names are: ${faces.map((f) => f.name).join(', ')}.
+       If you see a person in the MAIN FEED FRAME, compare them visually to these reference images.
+       - If they match a reference image, identify them by that name.
+       - If they do NOT match any reference image, label them as "Unknown Person".`
+    : '';
+
+  console.log(`[GEMINI VISION] Analyzing frame for camera: "${camera?.name ?? 'Unknown'}"`);
+
+  const response = await generateContentWithFallback(VISION_MODELS, {
+    contents: {
+      parts: [
+        { text: 'KNOWN INDIVIDUALS REFERENCE IMAGES (If provided):' },
+        ...faceDataParts,
+        { text: 'MAIN CAMERA FEED FRAME TO ANALYZE:' },
+        { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
+        {
+          text: `Act as a security AI monitoring a camera feed.
+          Objective: Provide a real-time summary, count objects, identify people, and detect brands.
+
+          Current System Configuration:
+          - Camera Name: ${camera?.name ?? 'Unknown'}
+          - Anomaly Sensitivity: ${camera?.sensitivity ?? 5}/10
+          - People count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.peopleThreshold ?? 5}
+          - Vehicle count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.vehicleThreshold ?? 2}
+          ${camera?.suspiciousRules ? `- CUSTOM SUSPICIOUS RULES: ${camera.suspiciousRules}` : ''}
+          ${knownFacesContext}
+
+          Tasks:
+          1. A brief summary of events. IMPORTANT: Mention identified people by their names in the summary.
+          2. Count people, vehicles, and notable objects.
+          3. Identify any visible brands on products, clothing, or environment.
+          4. Check for genuinely malicious, harmful, or suspicious activity — weapons, forced entry,
+             vandalism, trespassing, loitering with intent, an unknown person behaving suspiciously, or
+             anything matching the custom suspicious rules above. A busy or crowded scene is NOT by
+             itself unusual — do not flag isUnusual or write an alert merely because a lot of people or
+             vehicles are present. Only raise isUnusual/alerts for content that would actually warrant a
+             human operator's attention for security reasons.
+          5. Read any vehicle license/number plates that are legible in the frame.
+          6. Rate the overall mood/threat level of the scene as one of: "calm" (ordinary, nothing of
+             note), "neutral" (unremarkable activity), "tense" (something worth watching but not yet
+             alarming), "critical" (matches an alert-worthy situation from task 4).
+
+          Output MUST be strict JSON:
+          {
+            "summary": "Short 1-sentence summary mentioning names if identified",
+            "counts": { "people": number, "vehicles": number, "other": number },
+            "brands": ["List of identified brands"],
+            "people_identified": ["Names of identified known members or 'Unknown Person'"],
+            "alerts": ["List of specific malicious/harmful/suspicious warnings only — do NOT include plain crowd/traffic-count observations here"],
+            "isUnusual": boolean,
+            "isUnusualReason": "Explain WHY it was marked unusual — must be a malicious/harmful/suspicious reason, never just a headcount",
+            "detected_plates": ["Any legible vehicle plate numbers, uppercase, no spaces"],
+            "sentiment": "calm" | "neutral" | "tense" | "critical"
+          }`,
+        },
+      ],
+    },
+    config: { responseMimeType: 'application/json' },
+  });
+
+  const responseText = response.text || '{}';
+  const data = JSON.parse(responseText) as { detected_plates?: string[]; [key: string]: unknown };
+
+  // Tier-1 stand-in: match detected plates against the caller's watchlist
+  // server-side, so the client never has to trust its own comparison.
+  const detectedPlates = (data.detected_plates || []).map((p) => String(p).toUpperCase().replace(/\s+/g, ''));
+  const watchlistSet = new Set((watchlist || []).map((p) => String(p).toUpperCase().replace(/\s+/g, '')));
+  const watchlistMatches = detectedPlates.filter((p) => watchlistSet.has(p));
+
+  if (watchlistMatches.length > 0) {
+    console.warn(`[WATCHLIST MATCH] Camera "${camera?.name ?? 'Unknown'}" — plates: ${watchlistMatches.join(', ')}`);
+  }
+
+  return { ...data, detected_plates: detectedPlates, watchlistMatches };
 }
 
 async function startServer() {
@@ -500,41 +604,7 @@ async function startServer() {
       return;
     }
 
-    const { spawn } = await import('child_process');
-
-    const extractFromUrl = (streamInputUrl: string, isRtsp: boolean, timeoutLimit = 8_000): Promise<Buffer | null> => {
-      return new Promise((resolve) => {
-        const args = [
-          '-y',
-          ...(isRtsp ? ['-rtsp_transport', 'tcp'] : []),
-          '-i', streamInputUrl,
-          '-vframes', '1',
-          '-f', 'image2',
-          '-q:v', '3',
-          'pipe:1'
-        ];
-        const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-        const chunks: Buffer[] = [];
-        ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
-        const timer = setTimeout(() => {
-          ffmpeg.kill('SIGKILL');
-          resolve(null);
-        }, timeoutLimit);
-
-        ffmpeg.on('close', (code) => {
-          clearTimeout(timer);
-          if (code === 0 && chunks.length > 0) {
-            resolve(Buffer.concat(chunks));
-          } else {
-            resolve(null);
-          }
-        });
-        ffmpeg.on('error', () => {
-          clearTimeout(timer);
-          resolve(null);
-        });
-      });
-    };
+    const extractFromUrl = extractFrameWithFfmpeg;
 
     try {
       let frameBuffer: Buffer | null = null;
@@ -892,18 +962,7 @@ async function startServer() {
   });
 
   app.post('/api/gemini/analyze-frame', async (req, res) => {
-    const { imageBase64, knownFaces, camera, watchlist } = req.body as {
-      imageBase64?: string;
-      knownFaces?: Array<{ name: string; imageData: string }>;
-      watchlist?: string[];
-      camera?: {
-        name?: string;
-        sensitivity?: number;
-        peopleThreshold?: number;
-        vehicleThreshold?: number;
-        suspiciousRules?: string;
-      };
-    };
+    const { imageBase64, knownFaces, camera, watchlist } = req.body as Partial<FrameAnalysisInput>;
 
     if (!imageBase64) {
       res.status(400).json({ error: "Parameter 'imageBase64' is required" });
@@ -911,90 +970,7 @@ async function startServer() {
     }
 
     try {
-      const faces = (knownFaces || []).slice(0, 6);
-      const faceDataParts = faces.map((face) => ({
-        inlineData: {
-          mimeType: 'image/jpeg',
-          data: face.imageData.includes(',') ? face.imageData.split(',')[1] : face.imageData,
-        },
-      }));
-
-      const knownFacesContext = faces.length > 0
-        ? `\nREFERENCE DATA: I have provided ${faceDataParts.length} images of known people as reference.
-           Their names are: ${faces.map((f) => f.name).join(', ')}.
-           If you see a person in the MAIN FEED FRAME, compare them visually to these reference images.
-           - If they match a reference image, identify them by that name.
-           - If they do NOT match any reference image, label them as "Unknown Person".`
-        : '';
-
-      console.log(`[GEMINI VISION] Analyzing frame for camera: "${camera?.name ?? 'Unknown'}"`);
-
-      const response = await generateContentWithFallback(VISION_MODELS, {
-        contents: {
-          parts: [
-            { text: 'KNOWN INDIVIDUALS REFERENCE IMAGES (If provided):' },
-            ...faceDataParts,
-            { text: 'MAIN CAMERA FEED FRAME TO ANALYZE:' },
-            { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
-            {
-              text: `Act as a security AI monitoring a camera feed.
-              Objective: Provide a real-time summary, count objects, identify people, and detect brands.
-
-              Current System Configuration:
-              - Camera Name: ${camera?.name ?? 'Unknown'}
-              - Anomaly Sensitivity: ${camera?.sensitivity ?? 5}/10
-              - People count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.peopleThreshold ?? 5}
-              - Vehicle count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.vehicleThreshold ?? 2}
-              ${camera?.suspiciousRules ? `- CUSTOM SUSPICIOUS RULES: ${camera.suspiciousRules}` : ''}
-              ${knownFacesContext}
-
-              Tasks:
-              1. A brief summary of events. IMPORTANT: Mention identified people by their names in the summary.
-              2. Count people, vehicles, and notable objects.
-              3. Identify any visible brands on products, clothing, or environment.
-              4. Check for genuinely malicious, harmful, or suspicious activity — weapons, forced entry,
-                 vandalism, trespassing, loitering with intent, an unknown person behaving suspiciously, or
-                 anything matching the custom suspicious rules above. A busy or crowded scene is NOT by
-                 itself unusual — do not flag isUnusual or write an alert merely because a lot of people or
-                 vehicles are present. Only raise isUnusual/alerts for content that would actually warrant a
-                 human operator's attention for security reasons.
-              5. Read any vehicle license/number plates that are legible in the frame.
-              6. Rate the overall mood/threat level of the scene as one of: "calm" (ordinary, nothing of
-                 note), "neutral" (unremarkable activity), "tense" (something worth watching but not yet
-                 alarming), "critical" (matches an alert-worthy situation from task 4).
-
-              Output MUST be strict JSON:
-              {
-                "summary": "Short 1-sentence summary mentioning names if identified",
-                "counts": { "people": number, "vehicles": number, "other": number },
-                "brands": ["List of identified brands"],
-                "people_identified": ["Names of identified known members or 'Unknown Person'"],
-                "alerts": ["List of specific malicious/harmful/suspicious warnings only — do NOT include plain crowd/traffic-count observations here"],
-                "isUnusual": boolean,
-                "isUnusualReason": "Explain WHY it was marked unusual — must be a malicious/harmful/suspicious reason, never just a headcount",
-                "detected_plates": ["Any legible vehicle plate numbers, uppercase, no spaces"],
-                "sentiment": "calm" | "neutral" | "tense" | "critical"
-              }`,
-            },
-          ],
-        },
-        config: { responseMimeType: 'application/json' },
-      });
-
-      const responseText = response.text || '{}';
-      const data = JSON.parse(responseText) as { detected_plates?: string[]; [key: string]: unknown };
-
-      // Tier-1 stand-in: match detected plates against the caller's watchlist
-      // server-side, so the client never has to trust its own comparison.
-      const detectedPlates = (data.detected_plates || []).map((p) => String(p).toUpperCase().replace(/\s+/g, ''));
-      const watchlistSet = new Set((watchlist || []).map((p) => String(p).toUpperCase().replace(/\s+/g, '')));
-      const watchlistMatches = detectedPlates.filter((p) => watchlistSet.has(p));
-
-      if (watchlistMatches.length > 0) {
-        console.warn(`[WATCHLIST MATCH] Camera "${camera?.name ?? 'Unknown'}" — plates: ${watchlistMatches.join(', ')}`);
-      }
-
-      res.status(200).json({ ...data, detected_plates: detectedPlates, watchlistMatches });
+      res.status(200).json(await analyzeFrame({ imageBase64, knownFaces, watchlist, camera }));
     } catch (err: unknown) {
       console.error('[GEMINI VISION ERROR]', err);
       res.status(500).json({ error: err instanceof Error ? err.message : 'Frame analysis failed' });
@@ -1114,6 +1090,75 @@ Analyze this context to answer user queries:
     }
   });
 
+  // ---- Server-side analysis (replaces the browser-tab capture loop) ----
+  // Opt-in: needs SERVER_ANALYSIS=true, the Admin SDK (FIREBASE_SERVICE_ACCOUNT)
+  // and GEMINI_API_KEY. Cameras are picked up when their registry record has
+  // `serverAnalysis: true`.
+  let analysisWorker: AnalysisWorker | null = null;
+  if (process.env.SERVER_ANALYSIS === 'true') {
+    if (!registryDb || !process.env.GEMINI_API_KEY) {
+      console.warn('[ANALYSIS] SERVER_ANALYSIS=true but FIREBASE_SERVICE_ACCOUNT and/or GEMINI_API_KEY is missing — worker not started.');
+    } else {
+      const db = registryDb;
+      const creds = {
+        email: process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL,
+        password: process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD,
+      };
+      analysisWorker = createAnalysisWorker({
+        now: () => Date.now(),
+        log: console,
+        subscribeCameras: (onChange, onError) =>
+          db.collection('cameras').where('serverAnalysis', '==', true).onSnapshot((snap) => {
+            const cameras: WorkerCamera[] = [];
+            snap.forEach((d) => {
+              const c = d.data();
+              const url = typeof c.remoteStreamUrl === 'string' ? c.remoteStreamUrl : '';
+              // Webcam / simulated cameras only exist in a browser, and unsafe URLs are never fetched.
+              if (!c.useRemoteFeed || !url || !isSafeCameraUrl(url) || !c.userId) return;
+              cameras.push({
+                id: d.id, userId: c.userId, name: c.name || 'Unnamed Camera', remoteStreamUrl: url,
+                interval: c.interval ?? 60, sensitivity: c.sensitivity ?? 5,
+                peopleThreshold: c.peopleThreshold ?? 5, vehicleThreshold: c.vehicleThreshold ?? 2,
+                suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
+              });
+            });
+            onChange(cameras);
+          }, onError),
+        loadUserContext: async (userId) => {
+          const [faces, watch] = await Promise.all([
+            db.collection('faces').where('userId', '==', userId).limit(6).get(),
+            db.collection('watchlist').where('userId', '==', userId).get(),
+          ]);
+          return {
+            knownFaces: faces.docs.map((f) => ({ name: f.data().name as string, imageData: f.data().imageData as string })),
+            watchlist: watch.docs.map((w) => w.data().plate as string),
+          };
+        },
+        grabFrame: (camera) => grabFrame({ url: camera.remoteStreamUrl, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` }),
+        analyze: ({ imageBase64, camera, knownFaces, watchlist }) => analyzeFrame({ imageBase64, knownFaces, watchlist, camera }),
+        writeLog: async (doc) => { await db.collection('logs').add(doc); },
+        updateCamera: async (cameraId, patch) => { await db.collection('cameras').doc(cameraId).update(patch); },
+        sendWebhook: async (url, payload) => {
+          const res = await fetch(url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UPSTREAM_USER_AGENT },
+            body: JSON.stringify(payload), signal: AbortSignal.timeout(10_000),
+          });
+          if (!res.ok) throw new Error(`Webhook responded ${res.status}`);
+        },
+      }, { concurrency: Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY) || 4) });
+    }
+  }
+
+  // Lets the UI know whether the "Analyze on server" toggle can do anything.
+  app.get('/api/analysis/config', (_req, res) => {
+    res.status(200).json({ enabled: analysisWorker !== null });
+  });
+
+  app.get('/api/analysis/status', (req, res) => {
+    if (!requireRegistryAuth(req, res)) return;
+    res.status(200).json(analysisWorker ? analysisWorker.status() : { running: false, queue: { queued: 0, active: 0, concurrency: 0 }, cameras: [] });
+  });
+
   const server = http.createServer(app);
 
   // Vite middleware for development or static serving for production
@@ -1136,6 +1181,7 @@ Analyze this context to answer user queries:
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`OMNISEE INTEGRATION SERVER RUNNING ON PORT ${PORT}`);
+    analysisWorker?.start();
   });
 }
 

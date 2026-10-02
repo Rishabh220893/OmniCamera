@@ -25,3 +25,9 @@ services:
         sync: false
       - key: REGISTRY_API_KEY
         sync: false
+      # Optional: server-side capture + analysis (no browser tab needed).
+      # Requires FIREBASE_SERVICE_ACCOUNT and GEMINI_API_KEY. See docs/server-analysis.md.
+      - key: SERVER_ANALYSIS
+        value: "false"
+      - key: ANALYSIS_CONCURRENCY
+        value: "4"

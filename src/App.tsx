@@ -437,6 +437,7 @@ export default function App() {
           webhookUrl: data.webhookUrl || '', useRemoteFeed: !!data.useRemoteFeed, remoteStreamUrl: data.remoteStreamUrl || '',
           facingMode: data.facingMode || 'user', suspiciousRules: data.suspiciousRules || '',
           useSimulatedFeed: !!data.useSimulatedFeed,
+          serverAnalysis: !!data.serverAnalysis, lastAnalysisError: data.lastAnalysisError || undefined,
           lastAnalysisTime: data.lastAnalysisTime?.toDate ? data.lastAnalysisTime.toDate() : data.lastAnalysisTime,
           location: data.location, department: data.department, ownership: data.ownership,
           cameraType: data.cameraType, connectivityStatus: data.connectivityStatus || 'unknown',
@@ -895,6 +896,7 @@ export default function App() {
       for (const id of analysisCameraIds) {
         const camera = camerasRef.current.find(c => c.id === id);
         if (!camera) continue;
+        if (camera.serverAnalysis) continue; // the server worker owns this camera's schedule
         const last = lastAnalysisAttemptRef.current.get(id) || 0;
         const intervalMs = Math.max(5, camera.interval) * 1000;
         if (now - last >= intervalMs) {

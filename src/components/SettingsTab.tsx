@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Eye, AlertTriangle, Activity, Clock, FolderHeart, ExternalLink, BarChart2,
@@ -58,6 +58,11 @@ export default function SettingsTab(props: SettingsTabProps) {
 
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [showStreamPassword, setShowStreamPassword] = useState(false);
+  // The toggle only means something if the server's analysis worker is running.
+  const [serverAnalysisAvailable, setServerAnalysisAvailable] = useState(false);
+  useEffect(() => {
+    fetch('/api/analysis/config').then(r => r.json()).then(d => setServerAnalysisAvailable(!!d.enabled)).catch(() => setServerAnalysisAvailable(false));
+  }, []);
 
   const handleAddWatchlist = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -448,6 +453,31 @@ export default function SettingsTab(props: SettingsTabProps) {
           <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" strokeWidth={1.75} /> Sync frequency (seconds)</label>
           <input type="number" value={activeCamera.interval} onChange={(e) => onUpdateActiveCamera({ interval: Math.max(5, parseInt(e.target.value) || 5) })} className="input font-bold" />
         </div>
+
+        {serverAnalysisAvailable && (
+          <div className="panel p-5 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-xs font-semibold text-ink block">Analyze on server</span>
+                <span className="text-[10px] text-ink-muted">
+                  The server captures and analyzes this camera on its sync frequency — no browser tab needs to stay open. Remote link feeds only; save settings to apply.
+                </span>
+              </div>
+              <button
+                role="switch"
+                aria-checked={Boolean(activeCamera.serverAnalysis)}
+                disabled={!activeCamera.useRemoteFeed}
+                onClick={() => onUpdateActiveCamera({ serverAnalysis: !activeCamera.serverAnalysis })}
+                className={cn('switch-track', activeCamera.serverAnalysis ? 'bg-accent' : 'bg-border', !activeCamera.useRemoteFeed && 'opacity-50')}
+              >
+                <span className={cn('switch-thumb', activeCamera.serverAnalysis ? 'translate-x-5' : 'translate-x-0.5')} />
+              </button>
+            </div>
+            {activeCamera.serverAnalysis && activeCamera.lastAnalysisError && (
+              <p className="text-[10px] text-critical">Last server error: {activeCamera.lastAnalysisError}</p>
+            )}
+          </div>
+        )}
 
         <div className="space-y-4">
           <div className="flex items-center justify-between">
