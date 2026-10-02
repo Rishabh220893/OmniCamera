@@ -6,7 +6,7 @@ import { google } from 'googleapis';
 import { GoogleGenAI } from '@google/genai';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
-import { extractFrameWithFfmpeg, grabFrame, isSafeCameraUrl } from './server/frameSource';
+import { checkFfmpeg, extractFrameWithFfmpeg, grabFrame, isSafeCameraUrl } from './server/frameSource';
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 import { createAnprClient, AnprClient } from './server/anprClient';
 import { mergePlates } from './server/plateMerge';
@@ -1189,8 +1189,9 @@ Analyze this context to answer user queries:
   }
 
   // Lets the UI know whether the "Analyze on server" toggle can do anything.
-  app.get('/api/analysis/config', (_req, res) => {
-    res.status(200).json({ enabled: analysisWorker !== null, anpr: anprClient !== null });
+  app.get('/api/analysis/config', async (_req, res) => {
+    // ffmpeg is what captures frames server-side; without it the worker and snapshot route cannot work.
+    res.status(200).json({ enabled: analysisWorker !== null, anpr: anprClient !== null, ffmpeg: (await checkFfmpeg()).available });
   });
 
   app.get('/api/analysis/status', async (req, res) => {
@@ -1201,7 +1202,7 @@ Analyze this context to answer user queries:
       try { const health = await anprClient.health(); await anprClient.probe(); anpr = { configured: true, healthy: true, device: health.device }; }
       catch (err) { anpr = { configured: true, healthy: false, error: err instanceof Error ? err.message : String(err) }; }
     }
-    res.status(200).json({ ...workerStatus, anpr });
+    res.status(200).json({ ...workerStatus, anpr, ffmpeg: await checkFfmpeg() });
   });
 
   const server = http.createServer(app);
@@ -1227,6 +1228,10 @@ Analyze this context to answer user queries:
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`OMNISEE INTEGRATION SERVER RUNNING ON PORT ${PORT}`);
     analysisWorker?.start();
+    checkFfmpeg().then((f) => {
+      if (f.available) console.log(`[FFMPEG] ${f.version}`);
+      else console.warn('[FFMPEG] ffmpeg was not found on this host — server-side frame capture and /api/camera-snapshot will fail. Install it or deploy with Docker.');
+    });
   });
 }
 

@@ -19,6 +19,16 @@ The server then answers with its built-in list of **30** cameras. The app now sa
 
 When the server worker is running (`SERVER_ANALYSIS=true`), **Analyze all on server** / **Stop** switch server-side analysis on or off for every camera with a remote feed in one step (otherwise it is a per-camera toggle in Settings).
 
+## Is ffmpeg installed on the host?
+
+Server-side capture (and `/api/camera-snapshot`) needs ffmpeg. Check without a shell:
+
+- Open `https://<your-app>/api/analysis/config` — it returns `"ffmpeg": true` or `false`.
+- `GET /api/analysis/status` (with `X-Registry-Api-Key`) also returns the version string.
+- The server log prints `[FFMPEG] ffmpeg version …` at startup, or a warning if it's missing.
+
+If it's `false` on Render's Node runtime, switch the service to a Docker deploy that installs ffmpeg (e.g. `apt-get install -y ffmpeg` in the Dockerfile).
+
 ## Sizing the worker for ~50 cameras
 
 Each camera is re-analysed one interval after its last run **started**; a run that outlasts its interval is followed by a 2 s minimum gap. Cameras added together are spread evenly across the interval rather than all firing at once. The number of jobs that must run in parallel is roughly:

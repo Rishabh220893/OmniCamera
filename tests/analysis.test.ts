@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createAnalysisQueue } from '../server/analysisQueue';
 import { backoffDelayMs, createAnalysisWorker, WorkerCamera, WorkerDeps } from '../server/analysisWorker';
 import { buildLogDocument } from '../server/logEntry';
-import { isSafeCameraUrl } from '../server/frameSource';
+import { checkFfmpeg, isSafeCameraUrl } from '../server/frameSource';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -228,4 +228,11 @@ test('cadence is measured from when a run started, with a short floor if a run o
   const t0 = Date.parse(fast.worker.status().cameras[0].nextDueAt);
   fast.worker._tick(); await fast.worker._idle();
   assert.equal(Date.parse(fast.worker.status().cameras[0].nextDueAt) - t0, 10_000, 'a quick run keeps the exact 10 s cadence');
+});
+
+test('ffmpeg check: finds a real binary, reports a missing one as unavailable', async () => {
+  const found = await checkFfmpeg();
+  assert.equal(found.available, true);
+  assert.match(found.version ?? '', /ffmpeg version/i);
+  assert.deepEqual(await checkFfmpeg('definitely-not-installed-ffmpeg'), { available: false });
 });

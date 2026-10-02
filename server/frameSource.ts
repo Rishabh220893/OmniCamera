@@ -36,6 +36,28 @@ export function extractFrameWithFfmpeg(inputUrl: string, isRtsp: boolean, timeou
   });
 }
 
+export interface FfmpegCheck { available: boolean; version?: string }
+
+let ffmpegCheckCache: Promise<FfmpegCheck> | null = null;
+
+/** Is ffmpeg installed and runnable on this host? Cached for the process lifetime for the default binary. */
+export function checkFfmpeg(command = 'ffmpeg'): Promise<FfmpegCheck> {
+  const run = () => new Promise<FfmpegCheck>((resolve) => {
+    let out = '';
+    let child;
+    try { child = spawn(command, ['-version'], { stdio: ['ignore', 'pipe', 'ignore'] }); } catch { resolve({ available: false }); return; }
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve({ available: false }); }, 5_000);
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('error', () => { clearTimeout(timer); resolve({ available: false }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 ? { available: true, version: out.split('\n')[0].trim() || undefined } : { available: false });
+    });
+  });
+  if (command !== 'ffmpeg') return run();
+  return (ffmpegCheckCache ??= run());
+}
+
 const PRIVATE_HOST_RE = /^(localhost|.*\.local|.*\.internal)$/i;
 
 /**
