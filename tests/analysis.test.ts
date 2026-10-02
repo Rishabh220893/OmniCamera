@@ -91,25 +91,36 @@ const cam = (id: string, extra: Partial<WorkerCamera> = {}): WorkerCamera => ({
   peopleThreshold: 5, vehicleThreshold: 2, suspiciousRules: '', webhookUrl: '', ...extra,
 });
 
-test('worker analyses a due camera once, writes a log, updates the camera, and waits an interval', async () => {
+test('worker analyses a camera at once, writes a log, updates the camera, then waits an interval', async () => {
   const { worker, logs, updates, advance } = makeWorker();
   worker._applyCameras([cam('a')]);
   worker._tick();
   await worker._idle();
-  assert.equal(logs.length, 0, 'not due yet: startup jitter spreads the first run');
-  advance(10_000);
-  worker._tick();
-  await worker._idle();
-  assert.equal(logs.length, 1);
+  assert.equal(logs.length, 1, 'the first (or only) camera starts immediately');
   assert.equal(logs[0].analyzedBy, 'server');
   assert.equal(updates[0][0], 'a');
   worker._tick();
   await worker._idle();
-  assert.equal(logs.length, 1, 'not due again until another interval has passed');
+  assert.equal(logs.length, 1, 'not due again until an interval has passed');
   advance(10_000);
   worker._tick();
   await worker._idle();
   assert.equal(logs.length, 2);
+});
+
+test('cameras added together are spread evenly across the interval, not fired at once', async () => {
+  const { worker, logs, advance } = makeWorker();
+  worker._applyCameras(['c', 'a', 'd', 'b'].map((id) => cam(id)));
+  const starts: number[] = [];
+  for (let s = 0; s < 10; s++) {
+    const before = logs.length;
+    worker._tick(); await worker._idle();
+    starts.push(logs.length - before);
+    advance(1000);
+  }
+  // 4 cameras over a 10 s interval are due at 0, 2.5, 5 and 7.5 s → they start on the ticks at 0, 3, 5 and 8 s.
+  assert.deepEqual(starts, [1, 0, 0, 1, 0, 1, 0, 0, 1, 0]);
+  assert.equal(logs.length, 4);
 });
 
 test('worker passes the user watchlist/faces to analysis and fires the webhook', async () => {
@@ -200,4 +211,21 @@ test('worker records a plate sighting per plate with camera location, and surviv
   failing.advance(10_000); failing.worker._tick(); await failing.worker._idle();
   assert.equal(failing.logs.length, 1, 'the log is still written');
   assert.equal(failing.worker.status().cameras[0].lastError, null, 'and the camera is not marked failed');
+});
+
+test('cadence is measured from when a run started, with a short floor if a run outlasts its interval', async () => {
+  let advanceFn: (ms: number) => void = () => {};
+  const { worker, advance } = makeWorker({ grabFrame: async () => { advanceFn(25_000); return Buffer.from('f'); } });
+  advanceFn = advance;
+  worker._applyCameras([cam('slow')]); // interval 10 s, but a run "takes" 25 s
+  const start = Date.parse(worker.status().cameras[0].nextDueAt);
+  worker._tick(); await worker._idle();
+  const next = Date.parse(worker.status().cameras[0].nextDueAt);
+  assert.equal(next - start, 25_000 + 2_000, 'run overran its interval → next run 2 s after it finished, not instantly');
+
+  const fast = makeWorker();
+  fast.worker._applyCameras([cam('quick')]);
+  const t0 = Date.parse(fast.worker.status().cameras[0].nextDueAt);
+  fast.worker._tick(); await fast.worker._idle();
+  assert.equal(Date.parse(fast.worker.status().cameras[0].nextDueAt) - t0, 10_000, 'a quick run keeps the exact 10 s cadence');
 });

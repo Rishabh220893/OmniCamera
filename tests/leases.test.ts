@@ -103,7 +103,8 @@ function makeFleet(instances: string[], opts: { seed?: (docs: Map<string, unknow
     async run(seconds: number) {
       for (let i = 0; i < seconds; i++) {
         t += 1000;
-        workers.forEach((w) => w._tick());
+        // Real instances don't tick in lock-step; alternate who gets to the lease first.
+        (i % 2 === 0 ? workers : [...workers].reverse()).forEach((w) => w._tick());
         await Promise.all(workers.map((w) => w._idle()));
       }
     },

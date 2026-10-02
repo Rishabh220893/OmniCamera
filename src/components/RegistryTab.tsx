@@ -24,6 +24,10 @@ interface RegistryTabProps {
   onLoadDemoGrid: () => void;
   isLoadingDemoGrid?: boolean;
   demoGridStatus?: { type: 'live' | 'fallback'; message: string } | null;
+  onDismissDemoGridStatus?: () => void;
+  /** True when the server's analysis worker is running, so server-side analysis can be switched on. */
+  serverAnalysisAvailable?: boolean;
+  onSetServerAnalysisAll?: (enabled: boolean) => void;
   gapReport: GapAnalysisReport;
   auditTrail: RegistryAuditEntry[];
 }
@@ -37,8 +41,8 @@ const MAINTENANCE_BADGE: Record<string, string> = {
 
 export default function RegistryTab({
   cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute,
-  isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, onLoadDemoGrid, isLoadingDemoGrid, demoGridStatus,
-  gapReport, auditTrail
+  isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, onLoadDemoGrid, isLoadingDemoGrid, demoGridStatus, onDismissDemoGridStatus,
+  serverAnalysisAvailable, onSetServerAnalysisAll, gapReport, auditTrail
 }: RegistryTabProps) {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('all');
@@ -91,12 +95,18 @@ export default function RegistryTab({
                 onClick={onLoadDemoGrid}
                 disabled={isLoadingDemoGrid}
                 className="btn-secondary !py-2 !px-4 text-xs disabled:opacity-60 whitespace-nowrap"
-                title="Fetches the current camera list live from the grid's own catalogue, falling back to a bundled list if that's unreachable"
+                title="Fetches the current camera list live from the grid's own catalogue and adds every camera in it (existing cameras are matched by stream URL and only gain missing details). If the catalogue can't be reached, a built-in list is used and you are told."
               >
                 {isLoadingDemoGrid
                   ? <><Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.75} /> Loading grid...</>
-                  : <><LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> Load demo grid</>}
+                  : <><LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} /> Onboard grid cameras</>}
               </button>
+              {serverAnalysisAvailable && onSetServerAnalysisAll && (
+                <div className="flex items-center gap-1" role="group" aria-label="Server-side analysis for all remote cameras">
+                  <button onClick={() => onSetServerAnalysisAll(true)} className="btn-secondary !py-2 !px-3 text-xs whitespace-nowrap" title="Have the server capture and analyze every remote-feed camera on its own schedule — no browser tab needed">Analyze all on server</button>
+                  <button onClick={() => onSetServerAnalysisAll(false)} className="btn-secondary !py-2 !px-3 text-xs whitespace-nowrap" title="Stop server-side analysis for all cameras">Stop</button>
+                </div>
+              )}
               <div className="relative">
                 <input type="file" id="registry-csv-upload" className="hidden" accept=".csv" onChange={onCsvUpload} />
                 <label htmlFor="registry-csv-upload" className="btn-secondary !py-2 !px-4 text-xs cursor-pointer whitespace-nowrap inline-flex items-center gap-2">
@@ -116,7 +126,8 @@ export default function RegistryTab({
           demoGridStatus.type === 'live' ? 'bg-success-soft text-success' : 'bg-warning-soft text-warning'
         )}>
           {demoGridStatus.type === 'live' ? <CheckCircle2 className="w-4 h-4 shrink-0" strokeWidth={1.75} /> : <AlertTriangle className="w-4 h-4 shrink-0" strokeWidth={1.75} />}
-          {demoGridStatus.message}
+          <span className="flex-1">{demoGridStatus.message}</span>
+          {onDismissDemoGridStatus && <button onClick={onDismissDemoGridStatus} className="shrink-0 underline font-bold" aria-label="Dismiss message">Dismiss</button>}
         </div>
       )}
 

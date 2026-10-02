@@ -19,6 +19,10 @@ View your app in AI Studio: https://ai.studio/apps/0c62847a-918a-415d-8189-9b3a6
 3. Run the app:
    `npm run dev`
 
+## Onboarding the camera grid
+
+One-click, idempotent onboarding of the whole grid catalogue (with an honest warning when only the built-in list could be used) and sizing guidance for ~50 cameras — see [`docs/onboarding.md`](docs/onboarding.md).
+
 ## Vehicle tracking
 
 Plate search with exact matches, confirmable look-alike ("possible") matches, route reconstruction with plausibility flags, and CSV export — see [`docs/vehicle-tracking.md`](docs/vehicle-tracking.md).

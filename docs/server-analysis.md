@@ -5,7 +5,7 @@ Capture and AI analysis normally run in the browser tab (`App.tsx`), so cameras 
 ## How it works
 
 - Cameras with `serverAnalysis: true` in their registry record are watched through a Firestore subscription (Admin SDK).
-- Each camera is scheduled on its own `interval` (minimum 5 s). First runs are spread out so cameras added together don't all fire at once.
+- Each camera is scheduled on its own `interval` (minimum 5 s), measured from when its last run *started*. Cameras added together are spread evenly across the interval so they don't all fire at once. Sizing guidance: `docs/onboarding.md`.
 - Due cameras go through a bounded queue (`ANALYSIS_CONCURRENCY`, default 4). A camera that is already queued or running is never queued twice — it just runs late.
 - Per job: grab a frame with ffmpeg (direct RTSP for grid cameras, falling back to the HLS proxy; other `rtsp://`, image and HLS/MP4 URLs also work) → Gemini analysis (the same function behind `/api/gemini/analyze-frame`) → write a `logs` document (same shape the UI already reads, plus `analyzedBy: "server"`) → update the camera's `lastAnalysisTime` → fire the camera's webhook.
 - Failures back off exponentially (interval × 2^failures, capped at 5 min). The error is saved on the camera as `lastAnalysisError` (only when the text changes) and cleared on recovery.

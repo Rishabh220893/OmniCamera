@@ -100,13 +100,8 @@ export interface WorkerStatus {
 }
 
 const MIN_INTERVAL_S = 5;
-
-/** Stable spread so cameras added together don't all fire in the same second. */
-function startupJitterMs(id: string, intervalMs: number): number {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return h % intervalMs;
-}
+/** A camera is never re-run sooner than this after a run finishes, even if its run took longer than its interval. */
+const MIN_GAP_AFTER_RUN_MS = 2_000;
 
 export function backoffDelayMs(intervalMs: number, failures: number, maxMs: number): number {
   if (failures <= 0) return intervalMs;
@@ -127,19 +122,23 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
 
   function applyCameras(cameras: WorkerCamera[]) {
     const seen = new Set<string>();
+    const added: WorkerCamera[] = [];
     for (const camera of cameras) {
       seen.add(camera.id);
       const existing = states.get(camera.id);
-      if (existing) {
-        existing.camera = camera; // pick up edited thresholds/URL/interval without losing schedule state
-      } else {
-        const ms = intervalMsOf(camera);
-        states.set(camera.id, {
-          camera, nextDueAt: deps.now() + startupJitterMs(camera.id, ms),
-          failures: 0, lastRunAt: null, lastSuccessAt: null, lastError: null,
-        });
-      }
+      if (existing) existing.camera = camera; // pick up edited thresholds/URL/interval without losing schedule state
+      else added.push(camera);
     }
+    // Cameras that appear together (e.g. a whole catalogue onboarded at once) are spread evenly
+    // across their interval, in id order so every instance agrees, instead of all firing in the
+    // same second. The first starts immediately.
+    added.sort((a, b) => a.id.localeCompare(b.id));
+    added.forEach((camera, k) => {
+      states.set(camera.id, {
+        camera, nextDueAt: deps.now() + Math.floor((k / added.length) * intervalMsOf(camera)),
+        failures: 0, lastRunAt: null, lastSuccessAt: null, lastError: null,
+      });
+    });
     for (const id of [...states.keys()]) if (!seen.has(id)) states.delete(id);
   }
 
@@ -183,7 +182,8 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       }
     }
 
-    state.lastRunAt = deps.now();
+    const startedAt = deps.now();
+    state.lastRunAt = startedAt;
     try {
       const [frame, ctx] = await Promise.all([deps.grabFrame(camera), getUserContext(camera.userId)]);
       const data = await deps.analyze({ imageBase64: frame.toString('base64'), camera, ...ctx });
@@ -219,8 +219,13 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       // must not write to Firestore every retry.
       if (changed) await deps.updateCamera(camera.id, { lastAnalysisError: message }).catch(() => { /* best effort */ });
     } finally {
-      // Re-arm from completion time, so a slow capture never causes back-to-back runs.
-      state.nextDueAt = deps.now() + backoffDelayMs(intervalMsOf(state.camera), state.failures, opts.maxBackoffMs);
+      // Keep the configured cadence: the next run is due one interval after this one *started*, not
+      // after it finished (otherwise a 60 s camera whose run takes 15 s would only run every 75 s).
+      // The floor stops a run that outlasts its interval from being followed by an instant re-run.
+      state.nextDueAt = Math.max(
+        startedAt + backoffDelayMs(intervalMsOf(state.camera), state.failures, opts.maxBackoffMs),
+        deps.now() + MIN_GAP_AFTER_RUN_MS,
+      );
       await deps.release?.(camera.id, state.nextDueAt).catch((err) => deps.log.warn(`[ANALYSIS] Could not release lease on ${camera.name}:`, err));
     }
   }

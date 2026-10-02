@@ -21,10 +21,24 @@
  * one thing the guide states outright.
  */
 
+import { parseLatLng } from './bulkImport';
+
 export interface SentinelCameraEntry {
   name: string;
   remoteStreamUrl: string;
   isLive: boolean | null;
+  /** Present only if the catalogue provides valid coordinates. */
+  lat?: number;
+  lng?: number;
+  department?: string;
+}
+
+/** `bundled-fallback` means the real catalogue was unreachable and the server substituted its built-in list. */
+export type CatalogueSource = 'live' | 'bundled-fallback';
+
+export interface SentinelCatalogue {
+  entries: SentinelCameraEntry[];
+  source: CatalogueSource;
 }
 
 function firstString(obj: Record<string, unknown>, keys: string[]): string | null {
@@ -48,24 +62,79 @@ function firstBoolean(obj: Record<string, unknown>, keys: string[]): boolean | n
   return null;
 }
 
-/** Digs into a couple of plausible wrapper shapes to find the actual camera array. */
-function extractCameraArray(payload: unknown): Record<string, unknown>[] {
-  if (Array.isArray(payload)) return payload.filter((v): v is Record<string, unknown> => typeof v === 'object' && v !== null);
-  if (payload && typeof payload === 'object') {
-    for (const key of ['cameras', 'data', 'items', 'streams', 'results']) {
-      const val = (payload as Record<string, unknown>)[key];
-      if (Array.isArray(val)) return val.filter((v): v is Record<string, unknown> => typeof v === 'object' && v !== null);
-    }
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * Digs into a few plausible wrapper shapes to find the camera list: a bare
+ * array, an array under a common key, or an object keyed by camera id
+ * (`{ "cam01": {...}, "cam02": {...} }`), in which case the key becomes the id.
+ */
+export function extractCameraArray(payload: unknown): Record<string, unknown>[] {
+  const records = (arr: unknown[]) => arr.filter(isRecord);
+  if (Array.isArray(payload)) return records(payload);
+  if (!isRecord(payload)) return [];
+  for (const key of ['cameras', 'data', 'items', 'streams', 'results']) {
+    const val = payload[key];
+    if (Array.isArray(val)) return records(val);
+    if (isRecord(val)) return keyedRecords(val);
   }
-  return [];
+  return keyedRecords(payload);
 }
 
-export async function fetchSentinelCatalogue(streamAccessPassword: string, streamAccessEmail?: string): Promise<SentinelCameraEntry[]> {
+function keyedRecords(obj: Record<string, unknown>): Record<string, unknown>[] {
+  const entries = Object.entries(obj);
+  if (entries.length === 0 || !entries.every(([, v]) => isRecord(v))) return [];
+  return entries.map(([key, v]) => ({ id: key, ...(v as Record<string, unknown>) }));
+}
+
+/** Coordinates from `lat`/`lng`-style fields, or from a nested `location`/`coordinates`/`geo` object. */
+function readCoordinates(cam: Record<string, unknown>): { lat: number; lng: number } | undefined {
+  const direct = parseLatLng(cam.lat ?? cam.latitude, cam.lng ?? cam.lon ?? cam.long ?? cam.longitude);
+  if (direct) return direct;
+  for (const key of ['location', 'coordinates', 'coords', 'geo', 'position']) {
+    const nested = cam[key];
+    if (isRecord(nested)) {
+      const c = parseLatLng(nested.lat ?? nested.latitude, nested.lng ?? nested.lon ?? nested.long ?? nested.longitude);
+      if (c) return c;
+    }
+  }
+  return undefined;
+}
+
+/** Turns a catalogue response into registry-ready entries. Pure, so it can be tested without a network. */
+export function parseCatalogue(payload: unknown): SentinelCameraEntry[] {
+  const seenIds = new Set<string>();
+  const entries: SentinelCameraEntry[] = [];
+  for (const cam of extractCameraArray(payload)) {
+    const id = firstString(cam, ['id', 'camera_id', 'cam_id', 'camId']);
+    if (!id || seenIds.has(id.toLowerCase())) continue;
+    seenIds.add(id.toLowerCase());
+
+    // `location` is a text label in some catalogues and an object of coordinates in others.
+    const label = firstString(cam, ['location', 'name', 'label', 'site', 'title']) || `Camera ${id}`;
+    const name = label.toLowerCase().includes(id.toLowerCase()) ? label : `${id} ${label}`.trim();
+    const coords = readCoordinates(cam);
+    entries.push({
+      name,
+      // The id -> HLS URL mapping is the one thing the integrator guide states outright.
+      remoteStreamUrl: `https://cctv.corp8.cloud/${id}/index.m3u8`,
+      isLive: firstBoolean(cam, ['live', 'is_live', 'status', 'online']),
+      ...(coords ? coords : {}),
+      department: firstString(cam, ['department', 'dept', 'department_name']) ?? undefined,
+    });
+  }
+  return entries;
+}
+
+export async function fetchSentinelCatalogue(streamAccessPassword: string, streamAccessEmail?: string): Promise<SentinelCatalogue> {
   const res = await fetch(`/api/camera-catalogue?host=${encodeURIComponent('cctv.corp8.cloud')}${streamAccessPassword ? `&password=${encodeURIComponent(streamAccessPassword)}` : ''}${streamAccessEmail ? `&email=${encodeURIComponent(streamAccessEmail)}` : ''}`);
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Catalogue request failed (${res.status}): ${text.slice(0, 200)}`);
   }
+  // The server answers 200 with its own built-in 30-camera list when the real
+  // catalogue is unreachable; without this check that is indistinguishable from the real thing.
+  const source: CatalogueSource = res.headers.get('X-Catalogue-Source') === 'bundled-fallback' ? 'bundled-fallback' : 'live';
 
   let payload: unknown;
   try {
@@ -74,26 +143,9 @@ export async function fetchSentinelCatalogue(streamAccessPassword: string, strea
     throw new Error(`Catalogue response wasn't valid JSON: ${text.slice(0, 200)}`);
   }
 
-  const rawCameras = extractCameraArray(payload);
-  if (rawCameras.length === 0) {
-    throw new Error(`Catalogue response had no recognizable camera list. Raw shape: ${text.slice(0, 300)}`);
-  }
-
-  const entries: SentinelCameraEntry[] = [];
-  for (const cam of rawCameras) {
-    const id = firstString(cam, ['id', 'camera_id', 'cam_id', 'camId']);
-    if (!id) continue;
-
-    const label = firstString(cam, ['location', 'name', 'label', 'site', 'title']) || `Camera ${id}`;
-    const isLive = firstBoolean(cam, ['live', 'is_live', 'status', 'online']);
-    const remoteStreamUrl = `https://cctv.corp8.cloud/${id}/index.m3u8`;
-
-    const name = label.toLowerCase().includes(id.toLowerCase()) ? label : `${id} ${label}`.trim();
-    entries.push({ name, remoteStreamUrl, isLive });
-  }
-
+  const entries = parseCatalogue(payload);
   if (entries.length === 0) {
-    throw new Error(`Catalogue returned ${rawCameras.length} entries but none had a usable id field.`);
+    throw new Error(`Catalogue response had no usable cameras. Raw shape: ${text.slice(0, 300)}`);
   }
-  return entries;
+  return { entries, source };
 }

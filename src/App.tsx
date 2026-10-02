@@ -14,6 +14,7 @@ import { buildSightings, PlateSighting } from './lib/plateTracking';
 import { recordSightings } from './lib/plateStore';
 import { DEMO_GRID_CAMERAS } from './data/demoGridCameras';
 import { fetchSentinelCatalogue } from './lib/sentinelCatalogue';
+import { chunk, describeSummary, ImportSummary, parseLatLng, planBulkImport, summarizePlan } from './lib/bulkImport';
 
 import OnboardingScreen from './components/OnboardingScreen';
 import AuthScreen from './components/AuthScreen';
@@ -82,7 +83,7 @@ function createDefaultCamera(id: string, name: string): CameraConfig {
  * Collapses cameras that point at the same remote stream URL down to one.
  * bulkImportCameras already guards new imports against creating these, but
  * that check only ever ran against whatever was in local state at click
- * time — a "Load demo grid" click fired again before the first batch's
+ * time — an "Onboard grid cameras" click fired again before the first batch's
  * Firestore writes had round-tripped back through onSnapshot (or a second
  * CSV import of the same grid in an earlier session, before that guard
  * existed) leaves genuine duplicate documents on record. Loading N
@@ -153,6 +154,11 @@ export default function App() {
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
   const [isLoadingDemoGrid, setIsLoadingDemoGrid] = useState(false);
   const [demoGridStatus, setDemoGridStatus] = useState<{ type: 'live' | 'fallback'; message: string } | null>(null);
+  // Whether the server's analysis worker is running (enables the bulk "Analyze on server" control).
+  const [serverAnalysisAvailable, setServerAnalysisAvailable] = useState(false);
+  useEffect(() => {
+    fetch('/api/analysis/config').then(r => r.json()).then(d => setServerAnalysisAvailable(!!d.enabled)).catch(() => setServerAnalysisAvailable(false));
+  }, []);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -975,32 +981,19 @@ export default function App() {
     } catch (error) { handleFirestoreError(error, OperationType.DELETE, `cameras/${id}`); }
   };
 
-  const bulkImportCameras = async (rows: Record<string, string>[]) => {
-    if (!user) return;
-    // Re-importing the same file (or clicking "Load demo grid" twice) would
-    // otherwise create a second copy of every camera that already has a
-    // matching remote feed URL registered.
-    const existingUrls = new Set(
-      camerasRef.current.filter(c => c.remoteStreamUrl.trim()).map(c => c.remoteStreamUrl.trim().toLowerCase())
-    );
-    const valid = rows.filter(r => {
-      if (!r.name?.trim()) return false;
-      const url = r.remoteStreamUrl?.trim().toLowerCase();
-      return !url || !existingUrls.has(url);
-    });
-    const localCreated: CameraConfig[] = [];
-    const dbCreated: Array<{ ref: DocumentReference; fields: Omit<CameraConfig, 'id'> }> = [];
+  // Firestore allows 500 operations per batch; each camera costs two (the camera and its audit entry).
+  const IMPORT_CHUNK = 200;
 
-    for (const row of valid) {
+  const bulkImportCameras = async (rows: Record<string, string>[]): Promise<ImportSummary | null> => {
+    if (!user) return null;
+    // Matched by stream URL, so re-importing the same list (or clicking "Onboard grid cameras" twice)
+    // never duplicates a camera — and fills in details an earlier import didn't have.
+    const plan = planBulkImport(rows, camerasRef.current);
+    const summary = summarizePlan(plan);
+
+    const newFields = (row: Record<string, string>): Omit<CameraConfig, 'id'> => {
       const hasRemoteFeed = !!row.remoteStreamUrl?.trim();
-      // Guards against duplicate URLs within the same import batch too, not
-      // just against cameras already on record.
-      if (hasRemoteFeed) {
-        const url = row.remoteStreamUrl.trim().toLowerCase();
-        if (existingUrls.has(url)) continue;
-        existingUrls.add(url);
-      }
-      const fields: Omit<CameraConfig, 'id'> = {
+      return {
         ...defaultCameraFields(row.name.trim()),
         department: row.department || undefined,
         ownership: row.ownership || undefined,
@@ -1009,7 +1002,8 @@ export default function App() {
         maintenanceStatus: (row.maintenanceStatus as CameraConfig['maintenanceStatus']) || 'operational',
         installDate: row.installDate || undefined,
         storageDetails: row.storageDetails || undefined,
-        location: row.lat && row.lng ? { lat: parseFloat(row.lat), lng: parseFloat(row.lng) } : undefined,
+        // Validated: a blank/NaN/out-of-range coordinate must not be stored as a location.
+        location: parseLatLng(row.lat, row.lng),
         // A remoteStreamUrl column onboards a real feed directly; otherwise
         // fall back to the simulated demo feed so the card isn't broken.
         useRemoteFeed: hasRemoteFeed,
@@ -1017,39 +1011,53 @@ export default function App() {
         useSimulatedFeed: !hasRemoteFeed,
         onboardedVia: 'bulk_import',
       };
-      if (user.uid === 'demo-guest') {
-        const id = `guest-cam-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-        localCreated.push({ id, ...fields });
-      } else {
-        const docRef = doc(collection(db, 'cameras'));
-        dbCreated.push({ ref: docRef, fields });
+    };
+
+    if (user.uid === 'demo-guest') {
+      const created = plan.create.map(row => ({
+        id: `guest-cam-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, ...newFields(row),
+      }));
+      const fillById = new Map(plan.update.map(u => [u.id, u.fields]));
+      if (created.length > 0 || fillById.size > 0) {
+        setCameras(prev => [...prev.map(c => (fillById.has(c.id) ? { ...c, ...fillById.get(c.id) } : c)), ...created]);
+        setAuditTrail(prev => [
+          ...created.map(c => ({ id: `local-${c.id}`, cameraId: c.id, cameraName: c.name, action: 'create' as const, source: 'bulk_import' as const, performedBy: 'guest', timestamp: new Date() })),
+          ...plan.update.map(u => ({ id: `local-${u.id}-${Date.now()}`, cameraId: u.id, cameraName: u.name, action: 'update' as const, source: 'bulk_import' as const, performedBy: 'guest', timestamp: new Date() })),
+          ...prev
+        ]);
       }
+      return summary;
     }
-    if (user.uid === 'demo-guest' && localCreated.length > 0) {
-      setCameras(prev => [...prev, ...localCreated]);
-      setAuditTrail(prev => [
-        ...localCreated.map(c => ({ id: `local-${c.id}`, cameraId: c.id, cameraName: c.name, action: 'create' as const, source: 'bulk_import' as const, performedBy: 'guest', timestamp: new Date() })),
-        ...prev
-      ]);
-    } else if (dbCreated.length > 0) {
-      try {
+
+    type Op = { kind: 'create'; ref: DocumentReference; fields: Omit<CameraConfig, 'id'> } | { kind: 'update'; id: string; name: string; fields: Record<string, unknown> };
+    const ops: Op[] = [
+      ...plan.create.map(row => ({ kind: 'create' as const, ref: doc(collection(db, 'cameras')), fields: newFields(row) })),
+      ...plan.update.map(u => ({ kind: 'update' as const, id: u.id, name: u.name, fields: u.fields })),
+    ];
+    let committed = 0;
+    try {
+      for (const group of chunk(ops, IMPORT_CHUNK)) {
         const batch = writeBatch(db);
-        for (const item of dbCreated) {
-          batch.set(item.ref, {
-            ...item.fields,
-            userId: user.uid,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
+        for (const op of group) {
+          const cameraId = op.kind === 'create' ? op.ref.id : op.id;
+          const cameraName = op.kind === 'create' ? op.fields.name : op.name;
+          if (op.kind === 'create') batch.set(op.ref, { ...op.fields, userId: user.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+          else batch.update(doc(db, 'cameras', op.id), { ...op.fields, updatedAt: serverTimestamp() });
+          // The audit entry commits atomically with the change it describes.
+          batch.set(doc(collection(db, 'registryAudit')), {
+            cameraId, cameraName, action: op.kind, source: 'bulk_import', userId: user.uid, performedBy: user.email || user.uid, timestamp: serverTimestamp(),
           });
         }
         await batch.commit();
-        Promise.allSettled(
-          dbCreated.map(item => logRegistryAudit(item.ref.id, item.fields.name, 'create', 'bulk_import'))
-        ).catch(err => console.warn('Audit trail log failed:', err));
-      } catch (error) {
-        console.error('Bulk import batch failed:', error);
+        committed += group.length;
       }
+    } catch (error) {
+      console.error('Bulk import batch failed:', error);
+      // Report what actually landed rather than the plan.
+      const created = Math.min(committed, plan.create.length);
+      return { ...summary, created, updated: Math.max(0, committed - plan.create.length) };
     }
+    return summary;
   };
 
   const handleRegistryCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1057,7 +1065,11 @@ export default function App() {
     e.target.value = '';
     if (!file || !user) return;
     const text = await file.text();
-    await bulkImportCameras(parseCsv(text));
+    const result = await bulkImportCameras(parseCsv(text));
+    if (result) {
+      setDemoGridStatus({ type: 'live', message: `CSV import: ${describeSummary(result)}` });
+      setTimeout(() => setDemoGridStatus(null), 12000);
+    }
   };
 
   // Tries the grid's own live catalogue first (see fetchSentinelCatalogue) —
@@ -1069,20 +1081,51 @@ export default function App() {
   const loadDemoGrid = async () => {
     setIsLoadingDemoGrid(true);
     setDemoGridStatus(null);
+    let keepStatus = false;
     try {
-      const live = await fetchSentinelCatalogue(streamAccessPassword, streamAccessEmail);
-      await bulkImportCameras(live.map(c => ({
+      const { entries, source } = await fetchSentinelCatalogue(streamAccessPassword, streamAccessEmail);
+      const result = await bulkImportCameras(entries.map(c => ({
         name: c.name, remoteStreamUrl: c.remoteStreamUrl,
         connectivityStatus: c.isLive === true ? 'online' : c.isLive === false ? 'offline' : 'unknown',
+        lat: c.lat !== undefined ? String(c.lat) : '', lng: c.lng !== undefined ? String(c.lng) : '',
+        department: c.department || '',
       })));
-      setDemoGridStatus({ type: 'live', message: `Loaded ${live.length} cameras from the grid catalogue.` });
+      if (source === 'bundled-fallback') {
+        // The server couldn't reach the real catalogue and substituted its built-in list — say so,
+        // because the live grid may have more cameras than this.
+        keepStatus = true;
+        setDemoGridStatus({ type: 'fallback', message: `The live grid catalogue couldn't be reached, so the built-in list of ${entries.length} cameras was used instead — the real grid may have more. Check Settings → stream access credentials, then load again. ${result ? describeSummary(result) : ''}` });
+      } else {
+        setDemoGridStatus({ type: 'live', message: `Catalogue lists ${entries.length} cameras. ${result ? describeSummary(result) : ''}` });
+      }
     } catch (err) {
       console.warn('Live Sentinel catalogue fetch failed, falling back to the bundled demo list:', err);
-      await bulkImportCameras(DEMO_GRID_CAMERAS);
-      setDemoGridStatus({ type: 'fallback', message: 'Loaded bundled demo list. (Live catalogue requires Stream Access credentials configured in Settings).' });
+      keepStatus = true;
+      const result = await bulkImportCameras(DEMO_GRID_CAMERAS);
+      setDemoGridStatus({ type: 'fallback', message: `Couldn't read the grid catalogue, so the built-in list of ${DEMO_GRID_CAMERAS.length} cameras was used instead — the real grid may have more. (Stream access credentials are set in Settings.) ${result ? describeSummary(result) : ''}` });
     } finally {
       setIsLoadingDemoGrid(false);
-      setTimeout(() => setDemoGridStatus(null), 8000);
+      // Warnings stay until the next action; only the all-good message fades.
+      if (!keepStatus) setTimeout(() => setDemoGridStatus(null), 12000);
+    }
+  };
+
+  // Turns server-side analysis on/off for every camera that has a remote feed (the only kind a server can capture).
+  const setServerAnalysisForAll = async (enabled: boolean) => {
+    if (!user) return;
+    const targets = camerasRef.current.filter(c => c.useRemoteFeed && c.remoteStreamUrl.trim() && !!c.serverAnalysis !== enabled);
+    if (targets.length === 0) return;
+    setCameras(prev => prev.map(c => (targets.some(t => t.id === c.id) ? { ...c, serverAnalysis: enabled } : c)));
+    if (user.uid === 'demo-guest') return;
+    try {
+      for (const group of chunk(targets, 400)) {
+        const batch = writeBatch(db);
+        group.forEach(c => batch.update(doc(db, 'cameras', c.id), { serverAnalysis: enabled, updatedAt: serverTimestamp() }));
+        await batch.commit();
+      }
+    } catch (error) {
+      console.error('Could not update server analysis for all cameras:', error);
+      setDbError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -1217,7 +1260,8 @@ export default function App() {
                       routePlate={routePlate} routePoints={routePoints} onClearRoute={clearRoute}
                       isAdmin={isAdmin} onAddCamera={() => { addCamera(); handleJumpToSetup(); }}
                       onRemoveCamera={removeCamera} onCsvUpload={handleRegistryCsvUpload} onExportCsv={exportRegistryCsv}
-                      onLoadDemoGrid={loadDemoGrid} isLoadingDemoGrid={isLoadingDemoGrid} demoGridStatus={demoGridStatus}
+                      onLoadDemoGrid={loadDemoGrid} isLoadingDemoGrid={isLoadingDemoGrid} demoGridStatus={demoGridStatus} onDismissDemoGridStatus={() => setDemoGridStatus(null)}
+                      serverAnalysisAvailable={serverAnalysisAvailable} onSetServerAnalysisAll={setServerAnalysisForAll}
                       gapReport={gapReport} auditTrail={auditTrail}
                     />
                   )}
