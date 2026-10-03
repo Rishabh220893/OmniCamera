@@ -85,24 +85,39 @@ export function captureHlsSnapshot(
     // Queue wait timeout prevents getting queued indefinitely behind other cameras
     queueTimeout = setTimeout(() => finish(new Error('Snapshot queue wait timed out')), 180_000);
 
-    // Attempt fast server-side extraction first (< 2s), bypassing heavy browser MSE overhead
-    const fastSnapshotUrl = `/api/camera-snapshot?url=${encodeURIComponent(url)}`;
-    fetch(fastSnapshotUrl, { signal })
-      .then(async (res) => {
-        if (res.ok && !settled) {
-          const blob = await res.blob();
-          if (blob && blob.size > 500) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              if (reader.result && typeof reader.result === 'string' && !settled) {
-                finish(undefined, reader.result);
-              }
-            };
-            reader.readAsDataURL(blob);
-          }
-        }
-      })
-      .catch(() => {});
+    // Fast path: the server grabs one still over RTSP (a second or two), skipping the browser's HLS
+    // machinery entirely. It needs the grid credentials, so they travel as headers. The heavy
+    // browser-side HLS load below only runs if this fails, never alongside it: every tile doing both
+    // opened a full HLS session per tile, which is what the grid's per-account limits cannot take.
+    const tryFastSnapshot = async (): Promise<string | null> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 25_000);
+      const onOuterAbort = () => controller.abort();
+      signal?.addEventListener('abort', onOuterAbort, { once: true });
+      try {
+        const res = await fetch(`/api/camera-snapshot?url=${encodeURIComponent(url)}`, {
+          signal: controller.signal,
+          headers: {
+            ...(password ? { 'X-Stream-Password': password } : {}),
+            ...(email ? { 'X-Stream-Email': email } : {}),
+          },
+        });
+        if (!res.ok) return null;
+        const blob = await res.blob();
+        if (!blob || blob.size <= 500) return null;
+        return await new Promise<string | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onOuterAbort);
+      }
+    };
 
     const proxiedUrl = `/api/proxy-hls?url=${encodeURIComponent(url)}${password ? `&password=${encodeURIComponent(password)}` : ''}${email ? `&email=${encodeURIComponent(email)}` : ''}`;
 
@@ -131,6 +146,14 @@ export function captureHlsSnapshot(
 
       overallTimeout = setTimeout(() => finish(new Error('Snapshot timed out')), timeoutMs);
 
+      tryFastSnapshot().then((fast) => {
+        if (settled) return;
+        if (fast) { finish(undefined, fast); return; }
+        startHls();
+      });
+    });
+
+    const startHls = () => {
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = proxiedUrl;
         video.addEventListener('playing', capture, { once: true });
@@ -171,6 +194,6 @@ export function captureHlsSnapshot(
       } else {
         finish(new Error('This browser does not support HLS playback.'));
       }
-    });
+    };
   });
 }

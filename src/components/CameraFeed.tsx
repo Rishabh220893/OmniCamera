@@ -214,9 +214,11 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // uses (see fallbackToHls below) — its manifests/segments routinely take
   // 20-45s, so a snapshot cycle over it is refreshed far less often than
   // the WHEP path to avoid stacking up overlapping slow requests.
-  const HLS_SNAPSHOT_REFRESH_MS = 90_000;
+  const HLS_SNAPSHOT_REFRESH_MS = 120_000;
   useEffect(() => {
-    if (liveVideo || !isRemote || streamType !== 'hls' || !whepCamId || !shouldConnect) return;
+    if (liveVideo || !isRemote || streamType !== 'hls' || !shouldConnect) return;
+    // Cameras without a WHEP id (WHEP is opt-in per URL) take stills over the server's RTSP/HLS path.
+    const mode: 'whep' | 'hls' = whepCamId ? playbackMode : 'hls';
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     // A ref, not the snapshotUrl state itself, so a failed refresh can tell
@@ -260,9 +262,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       // schedules the next attempt — not this stale closure's delay.
       let switchingToHls = false;
       try {
-        const url = playbackMode === 'hls'
+        const url = mode === 'hls'
           ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, email: streamAccessEmail, signal: abortController.signal })
-          : await captureWhepSnapshot(whepCamId, { signal: abortController.signal, streamAccessPassword, streamAccessEmail });
+          : await captureWhepSnapshot(whepCamId!, { signal: abortController.signal, streamAccessPassword, streamAccessEmail });
         if (cancelled) return;
         hasSnapshot = true;
         setCachedSnapshot(camera.id, url);
@@ -274,7 +276,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         const message = err instanceof Error ? err.message : 'Snapshot unavailable.';
         // If WHEP fails for any reason (timeout, ICE blocked, or 400 codec rejection),
         // seamlessly switch this tile's snapshot loop to HLS instead of stalling in error.
-        if (playbackMode === 'whep') {
+        if (mode === 'whep') {
           whepFailedCameras.add(camera.id);
           switchingToHls = true;
           setPlaybackMode('hls');
@@ -289,11 +291,11 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
             setStatus('connecting');
           }
           setRemoteError(message);
-          console.warn(`[CameraFeed] ${camera.id} (${playbackMode}) capture unavailable: ${message}`);
+          console.warn(`[CameraFeed] ${camera.id} (${mode}) capture unavailable: ${message}`);
         }
       } finally {
         if (!cancelled && !switchingToHls) {
-          const delay = playbackMode === 'hls' ? HLS_SNAPSHOT_REFRESH_MS : SNAPSHOT_REFRESH_MS;
+          const delay = mode === 'hls' ? HLS_SNAPSHOT_REFRESH_MS : SNAPSHOT_REFRESH_MS;
           timer = setTimeout(captureLoop, delay);
         }
       }
