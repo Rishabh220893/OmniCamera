@@ -49,9 +49,16 @@ const UPSTREAM_BROWSER_HEADERS: Record<string, string> = {
   'sec-ch-ua-platform': '"Windows"',
 };
 
-// Confirmed Sentinel Camera Grid credentials for cctv.corp8.cloud access
-const DEFAULT_STREAM_EMAIL = 'rishabh.bhasin06@gmail.com';
-const DEFAULT_STREAM_PASSWORD = '8JY8-D5YX-7WRS';
+// The camera grid's email and password come from the caller (Settings → stream access, sent as
+// X-Stream-Email / X-Stream-Password or query parameters) or from the server's STREAM_EMAIL /
+// STREAM_PASSWORD. Nothing is built into the code.
+function streamCredentials(req: express.Request): { email: string; password: string } {
+  return {
+    email: (req.header('X-Stream-Email') || (req.query.email as string | undefined) || process.env.STREAM_EMAIL || '').trim(),
+    password: (req.header('X-Stream-Password') || (req.query.password as string | undefined) || process.env.STREAM_PASSWORD || '').trim(),
+  };
+}
+const MISSING_CREDENTIALS_MESSAGE = 'Stream access email and password are not set. Enter them under Settings → stream access, or set STREAM_EMAIL and STREAM_PASSWORD on the server.';
 
 let aiClient: GoogleGenAI | null = null;
 function getAI(): GoogleGenAI {
@@ -175,6 +182,14 @@ const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CON
 const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 100);
 const HLS_MANIFEST_CACHE_MS = Math.max(1_000, Number(process.env.HLS_MANIFEST_CACHE_MS) || 120_000);
 const manifestLogAt = new Map<string, number>();
+// The grid caps each account's viewing time and answers "403 … watch time limit reached … wait for your
+// cooldown". Retrying only wastes budget (and may extend the cooldown), so once it says that the proxy
+// stops contacting the grid for a while and answers immediately instead. The grid does not say how long
+// the cooldown lasts, so this is a guess; override with HLS_COOLDOWN_MS.
+const HLS_COOLDOWN_MS = Math.max(10_000, Number(process.env.HLS_COOLDOWN_MS) || 5 * 60_000);
+const GRID_LIMIT_RE = /watch time limit|cooldown/i;
+let gridCooldownUntil = 0;
+let gridCooldownMessage = '';
 // A manifest already being fetched: later requests for it wait for that result instead of queueing their own.
 const pendingManifests = new Map<string, Promise<void>>();
 let hlsUpstreamActive = 0;
@@ -510,16 +525,26 @@ async function startServer() {
   // through this proxy, carrying the same auth.
   app.get('/api/proxy-hls', async (req, res) => {
     const targetUrl = req.query.url as string;
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD;
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL;
+    const { email, password } = streamCredentials(req);
     if (!targetUrl) {
       res.status(400).send("Parameter 'url' is required");
+      return;
+    }
+    if (!password) {
+      res.status(401).send(MISSING_CREDENTIALS_MESSAGE);
       return;
     }
 
     const isManifest = targetUrl.toLowerCase().includes('.m3u8');
     const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
     const isTsSegment = /\.ts(\?|$)/i.test(targetUrl);
+
+    if (Date.now() < gridCooldownUntil) {
+      const retryAfter = Math.ceil((gridCooldownUntil - Date.now()) / 1000);
+      res.setHeader('Retry-After', String(retryAfter));
+      res.status(429).send(`The camera grid's watch-time limit was reached (${gridCooldownMessage}). Not contacting it for another ${retryAfter}s.`);
+      return;
+    }
 
     // The browser gives up on a slow request and retries; without this the server would keep working
     // on every abandoned one and the retries would queue up behind them.
@@ -588,6 +613,16 @@ async function startServer() {
       const headersAt = Date.now();
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
+        if (upstream.status === 403 && GRID_LIMIT_RE.test(bodyText)) {
+          if (Date.now() >= gridCooldownUntil) {
+            console.warn(`[PROXY HLS] The grid reports its watch-time limit is reached ("${bodyText.slice(0, 120)}"). Pausing all grid requests for ${Math.round(HLS_COOLDOWN_MS / 1000)}s.`);
+          }
+          gridCooldownUntil = Date.now() + HLS_COOLDOWN_MS;
+          gridCooldownMessage = bodyText.slice(0, 120);
+          res.setHeader('Retry-After', String(Math.round(HLS_COOLDOWN_MS / 1000)));
+          res.status(429).send(`The camera grid's watch-time limit was reached (${gridCooldownMessage}).`);
+          return;
+        }
         console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText}. Body: ${bodyText.slice(0, 200)}`);
         res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status).send(
           upstream.status >= 300 && upstream.status < 400
@@ -688,8 +723,11 @@ async function startServer() {
       res.status(400).send("Parameter 'url' or 'camId' is required");
       return;
     }
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD;
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL;
+    const { email, password } = streamCredentials(req);
+    if (!password || !email) {
+      res.status(401).send(MISSING_CREDENTIALS_MESSAGE);
+      return;
+    }
 
     const cacheKey = `${extractedCamId || targetUrl}|${email}|${password}`;
     const cached = snapshotCache.get(cacheKey);
@@ -789,8 +827,11 @@ async function startServer() {
     // auth when both are present: a partial credential (email with no
     // password, or vice versa) is guaranteed-wrong per the documented
     // format, so sending nothing is more honest than sending that.
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL).trim();
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD).trim();
+    const { email, password } = streamCredentials(req);
+    if (!email || !password) {
+      res.status(401).send(MISSING_CREDENTIALS_MESSAGE);
+      return;
+    }
     const upstreamHeaders: Record<string, string> = { ...UPSTREAM_BROWSER_HEADERS, 'Content-Type': 'application/sdp' };
     if (email && password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
 
@@ -894,8 +935,7 @@ async function startServer() {
   // proxy bug, and this is the only way to tell the difference.
   app.get('/api/camera-catalogue', async (req, res) => {
     const targetHost = req.query.host as string;
-    const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined)) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD;
-    const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined)) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL;
+    const { email, password } = streamCredentials(req);
     if (!targetHost) {
       res.status(400).send("Parameter 'host' is required");
       return;
@@ -1205,9 +1245,12 @@ Analyze this context to answer user queries:
     } else {
       const db = registryDb;
       const creds = {
-        email: process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL,
-        password: process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD,
+        email: process.env.STREAM_EMAIL || '',
+        password: process.env.STREAM_PASSWORD || '',
       };
+      if (!creds.email || !creds.password) {
+        console.warn('[ANALYSIS] STREAM_EMAIL / STREAM_PASSWORD are not set, so server-side analysis cannot read grid cameras. Other camera URLs still work.');
+      }
       // Several instances can share the work: set ANALYSIS_DISTRIBUTED=true and each camera is
       // claimed through a Firestore lease before it is analysed (see server/leaseStore.ts).
       const instanceId = randomUUID();

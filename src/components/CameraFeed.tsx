@@ -71,7 +71,7 @@ const MAX_RETRY_DELAY_MS = 30_000;
 // Remember cameras where WHEP failed to avoid repeating failed WHEP connection cycles
 const whepFailedCameras = new Set<string>();
 
-export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onStatusChange, shouldConnect = true, liveVideo = true }: CameraFeedProps) {
+export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onStatusChange, shouldConnect: shouldConnectProp = true, liveVideo = true }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -103,6 +103,17 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   const isRemote = !!camera.useRemoteFeed && !!camera.remoteStreamUrl;
   const streamType = isRemote ? detectStreamType(camera.remoteStreamUrl) : null;
   const whepCamId = isRemote && streamType === 'hls' ? deriveWhepCamId(camera.remoteStreamUrl) : null;
+
+  // The grid needs the account's email and password and the app no longer ships any default, so a remote
+  // grid tile without them must not try to connect (every attempt would be refused and counted against
+  // the grid's request limits). It says so instead.
+  const credsMissing = isRemote && streamType === 'hls' && (!streamAccessPassword || !streamAccessEmail);
+  const shouldConnect = shouldConnectProp && !credsMissing;
+  useEffect(() => {
+    if (!credsMissing) return;
+    setStatus('error');
+    setRemoteError('Stream access email and password are not set. Add them under Settings → stream access.');
+  }, [credsMissing]);
 
   // A fresh camera (or one whose URL changed) always gets a clean shot at
   // WHEP again — unless it has already proven to fail WHEP.
@@ -586,10 +597,8 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     const clearWatchdog = () => clearTimeout(watchdog);
     video.addEventListener('playing', clearWatchdog);
 
-    const defaultPwd = '8JY8-D5YX-7WRS';
-    const defaultEml = 'rishabh.bhasin06@gmail.com';
-    const effectivePwd = streamAccessPassword || defaultPwd;
-    const effectiveEml = streamAccessEmail || defaultEml;
+    const effectivePwd = streamAccessPassword || '';
+    const effectiveEml = streamAccessEmail || '';
 
     const proxiedUrl = (url: string) =>
       `/api/proxy-hls?url=${encodeURIComponent(url)}&password=${encodeURIComponent(effectivePwd)}&email=${encodeURIComponent(effectiveEml)}`;
