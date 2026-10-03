@@ -172,6 +172,7 @@ const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CON
 // Newest segments served per playlist (6 s each) and how long a rewritten playlist may be reused.
 const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 10);
 const HLS_MANIFEST_CACHE_MS = 4_000;
+const manifestLogAt = new Map<string, number>();
 let hlsUpstreamActive = 0;
 const hlsUpstreamWaiters: Array<() => void> = [];
 async function withHlsUpstreamSlot<T>(task: () => Promise<T>): Promise<T> {
@@ -529,8 +530,10 @@ async function startServer() {
       }
     }
 
+    const queuedAt = Date.now();
     try {
       await withHlsUpstreamSlot(async () => {
+      const slotAt = Date.now();
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
         const headers: Record<string, string> = {
           ...UPSTREAM_BROWSER_HEADERS,
@@ -563,6 +566,7 @@ async function startServer() {
         upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(), redirect: 'manual' }, fetchOpts);
       }
 
+      const headersAt = Date.now();
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
         console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText}. Body: ${bodyText.slice(0, 200)}`);
@@ -576,6 +580,7 @@ async function startServer() {
 
       if (isManifest) {
         const text = await upstream.text();
+        const bodyAt = Date.now();
         if (!text.replace(/^\uFEFF/, '').trimStart().startsWith('#EXTM3U')) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
           console.warn(`[PROXY HLS] Upstream returned non-manifest for ${targetUrl}: ${text.slice(0, 200)}`);
@@ -583,8 +588,14 @@ async function startServer() {
           return;
         }
         const trim = trimLiveManifest(text, HLS_LIVE_WINDOW_SEGMENTS);
-        if (trim.trimmed) {
-          console.log(`[PROXY HLS] ${new URL(targetUrl).pathname}: playlist listed ${trim.totalSegments} segments (${text.length} bytes); serving the newest ${trim.keptSegments}${trim.hadEndList ? ' [has ENDLIST]' : ''}${trim.hadPlaylistType ? ' [had PLAYLIST-TYPE]' : ''}`);
+        // Where the time goes: queued here, waiting for the grid to start answering, or downloading the body.
+        const path = new URL(targetUrl).pathname;
+        const timings = `queued ${((slotAt - queuedAt) / 1000).toFixed(1)}s, grid first byte ${((headersAt - slotAt) / 1000).toFixed(1)}s, body ${((bodyAt - headersAt) / 1000).toFixed(1)}s`;
+        const slow = bodyAt - queuedAt > 10_000;
+        const lastLogged = manifestLogAt.get(path) ?? 0;
+        if (slow || Date.now() - lastLogged > 300_000) {
+          manifestLogAt.set(path, Date.now());
+          console.log(`[PROXY HLS] ${path}: ${trim.totalSegments} segments (${text.length} bytes)${trim.trimmed ? `, serving the newest ${trim.keptSegments}` : ''}${trim.hadEndList ? ' [ENDLIST]' : ''}${trim.hadPlaylistType ? ' [PLAYLIST-TYPE]' : ''}; ${timings}`);
         }
         const cleanText = trim.text.replace(/^\uFEFF/, '');
         const baseUrl = new URL(targetUrl);
