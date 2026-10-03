@@ -225,14 +225,24 @@ const pendingManifests = new Map<string, Promise<void>>();
 // the old 7 s limit cut off most attempts.
 const RTSP_SNAPSHOT_TIMEOUT_MS = Math.max(5_000, Number(process.env.RTSP_SNAPSHOT_TIMEOUT_MS) || 20_000);
 const SNAPSHOT_CONCURRENCY = Math.max(1, Number(process.env.SNAPSHOT_CONCURRENCY) || 3);
-let snapshotActive = 0;
-const snapshotWaiters: Array<() => void> = [];
-async function withSnapshotSlot<T>(task: () => Promise<T>): Promise<T> {
-  if (snapshotActive >= SNAPSHOT_CONCURRENCY) await new Promise<void>((resolve) => snapshotWaiters.push(resolve));
-  snapshotActive++;
-  try { return await task(); }
-  finally { snapshotActive--; snapshotWaiters.shift()?.(); }
+function createLimiter(max: number) {
+  let active = 0;
+  const waiters: Array<() => void> = [];
+  return async function <T>(task: () => Promise<T>): Promise<T> {
+    if (active >= max) await new Promise<void>((resolve) => waiters.push(resolve));
+    active++;
+    try { return await task(); }
+    finally { active--; waiters.shift()?.(); }
+  };
 }
+const withSnapshotSlot = createLimiter(SNAPSHOT_CONCURRENCY);
+// Some grid cameras send a keyframe only every 20-40 s, and an RTSP grab cannot produce a clean picture
+// before one arrives. Cameras that have already timed out get their own lane, a longer timeout and a
+// longer-lived cache, so they never hold up the cameras that answer in a few seconds.
+const RTSP_SLOW_TIMEOUT_MS = Math.max(20_000, Number(process.env.RTSP_SLOW_SNAPSHOT_TIMEOUT_MS) || 60_000);
+const withSlowSnapshotSlot = createLimiter(Math.max(1, Number(process.env.SLOW_SNAPSHOT_CONCURRENCY) || 2));
+const slowCams = new Set<string>();
+const inflightSnapshots = new Map<string, Promise<Buffer | null>>();
 let hlsUpstreamActive = 0;
 const hlsUpstreamWaiters: Array<() => void> = [];
 async function withHlsUpstreamSlot<T>(task: () => Promise<T>): Promise<T> {
@@ -767,7 +777,8 @@ async function startServer() {
     const cacheKey = `${extractedCamId || targetUrl}|${email}|${password}`;
     const cached = snapshotCache.get(cacheKey);
     const now = Date.now();
-    if (cached && (now - cached.timestamp) < 15_000) {
+    const cacheTtlMs = slowCams.has(extractedCamId.toLowerCase()) ? 300_000 : 60_000;
+    if (cached && (now - cached.timestamp) < cacheTtlMs) {
       res.setHeader('Content-Type', 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=10');
       res.status(200).send(cached.buffer);
@@ -780,35 +791,48 @@ async function startServer() {
     const tag = extractedCamId || targetUrl;
 
     try {
-      let frameBuffer: Buffer | null = null;
+      // Requests for a camera that is already being captured share that capture (a retrying tile would
+      // otherwise queue a second one behind it), and the result is cached even if the first client left.
+      let work = inflightSnapshots.get(cacheKey);
+      if (!work) {
+        const camKey = extractedCamId.toLowerCase();
+        const slow = !!camKey && slowCams.has(camKey);
+        const lane = slow ? withSlowSnapshotSlot : withSnapshotSlot;
+        work = lane(async (): Promise<Buffer | null> => {
+          let frame: Buffer | null = null;
+          // Try ultra-fast direct RTSP first if we have a camId
+          if (extractedCamId) {
+            const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
+            const encodedPassword = encodeURIComponent(password);
+            const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${camKey}`;
+            const rtsp = await extractFrameDetailed(rtspUrl, true, slow ? RTSP_SLOW_TIMEOUT_MS : RTSP_SNAPSHOT_TIMEOUT_MS);
+            frame = rtsp.buffer;
+            if (rtsp.buffer) clearGridBlock(email, password);
+            else if (/401 Unauthorized|authorization failed/i.test(rtsp.stderrTail)) tripGridBlock(email, password, 'RTSP', 'RTSP 401 Unauthorized');
+            // A camera that timed out, or needed over 12 s, is slow by nature: use the slow lane from now on.
+            if (rtsp.failure === 'timeout' || (rtsp.buffer && rtsp.ms > 12_000)) slowCams.add(camKey);
+            else if (rtsp.buffer) slowCams.delete(camKey);
+            console.log(`[SNAPSHOT] ${tag} rtsp${slow ? ' (slow lane)' : ''} ${rtsp.buffer ? 'ok' : `FAILED (${rtsp.failure})`} in ${(rtsp.ms / 1000).toFixed(1)}s${rtsp.buffer ? '' : `: ${scrub(rtsp.stderrTail).slice(-300)}`}`);
+          }
 
-      await withSnapshotSlot(async () => {
-      // Try ultra-fast direct RTSP first if we have a camId
-      if (extractedCamId) {
-        const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
-        const encodedPassword = encodeURIComponent(password);
-        const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${extractedCamId.toLowerCase()}`;
-        const rtsp = await extractFrameDetailed(rtspUrl, true, RTSP_SNAPSHOT_TIMEOUT_MS);
-        frameBuffer = rtsp.buffer;
-        if (rtsp.buffer) clearGridBlock(email, password);
-        else if (/401 Unauthorized|authorization failed/i.test(rtsp.stderrTail)) tripGridBlock(email, password, 'RTSP', 'RTSP 401 Unauthorized');
-        console.log(`[SNAPSHOT] ${tag} rtsp ${rtsp.buffer ? 'ok' : `FAILED (${rtsp.failure})`} in ${(rtsp.ms / 1000).toFixed(1)}s${rtsp.buffer ? '' : `: ${scrub(rtsp.stderrTail).slice(-300)}`}`);
+          // Grid cameras are RTSP-only here: the HLS route through ffmpeg is slow, burns the grid's per-account
+          // limits and has failed every time ("not in allowed_segment_extensions"), so a failed RTSP grab just
+          // fails and the tile retries later. Other camera URLs have no RTSP route and still use proxied HLS
+          // (not while the grid's watch-time limit is active).
+          if (!frame && targetUrl && !extractedCamId && !gridBlockedFor(email, password)) {
+            const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
+            const hlsFrame = await extractFrameDetailed(localProxyUrl, false, 15_000);
+            frame = hlsFrame.buffer;
+            console.log(`[SNAPSHOT] ${tag} hls fallback ${hlsFrame.buffer ? 'ok' : `FAILED (${hlsFrame.failure})`} in ${(hlsFrame.ms / 1000).toFixed(1)}s${hlsFrame.buffer ? '' : `: ${scrub(hlsFrame.stderrTail).slice(-300)}`}`);
+          }
+          if (frame && frame.length > 500) snapshotCache.set(cacheKey, { buffer: frame, timestamp: Date.now() });
+          return frame;
+        }).finally(() => { inflightSnapshots.delete(cacheKey); });
+        inflightSnapshots.set(cacheKey, work);
       }
-
-      // Grid cameras are RTSP-only here: the HLS route through ffmpeg is slow, burns the grid's per-account
-      // limits and has failed every time ("not in allowed_segment_extensions"), so a failed RTSP grab just
-      // fails and the tile retries later. Other camera URLs have no RTSP route and still use proxied HLS
-      // (not while the grid's watch-time limit is active).
-      if (!frameBuffer && targetUrl && !extractedCamId && !gridBlockedFor(email, password)) {
-        const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
-        const hlsFrame = await extractFrameDetailed(localProxyUrl, false, 15_000);
-        frameBuffer = hlsFrame.buffer;
-        console.log(`[SNAPSHOT] ${tag} hls fallback ${hlsFrame.buffer ? 'ok' : `FAILED (${hlsFrame.failure})`} in ${(hlsFrame.ms / 1000).toFixed(1)}s${hlsFrame.buffer ? '' : `: ${scrub(hlsFrame.stderrTail).slice(-300)}`}`);
-      }
-      });
+      const frameBuffer = await work;
 
       if (frameBuffer && frameBuffer.length > 500) {
-        snapshotCache.set(cacheKey, { buffer: frameBuffer, timestamp: Date.now() });
         res.setHeader('Content-Type', 'image/jpeg');
         res.setHeader('Cache-Control', 'public, max-age=10');
         res.status(200).send(frameBuffer);
