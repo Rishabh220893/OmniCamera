@@ -6,6 +6,7 @@ import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/str
 import { startWhep, captureWhepSnapshot } from '../lib/whepClient';
 import { captureHlsSnapshot } from '../lib/hlsSnapshot';
 import { getCachedSnapshot, setCachedSnapshot, hasCachedSnapshot } from '../lib/snapshotCache';
+import { useMediaConfig, mediaFailedCameras, gridCamId, mediaPlaylistUrl, mediaAuthHeader } from '../lib/mediaServer';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -73,6 +74,7 @@ const whepFailedCameras = new Set<string>();
 
 export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs, mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onStatusChange, shouldConnect: shouldConnectProp = true, liveVideo = true }: CameraFeedProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const mediaCfg = useMediaConfig();
   const remoteImgRef = useRef<HTMLImageElement>(null);
   const simCanvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef<SimEntity[]>([]);
@@ -505,12 +507,20 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   useEffect(() => {
     if (!isRemote || streamType !== 'hls' || !shouldConnect || !liveVideo) return;
     if (whepCamId && playbackMode !== 'hls') return;
+    // Wait for the media server answer (it arrives once) so a tile does not first connect through the proxy.
+    if (mediaCfg === null) return;
     const video = videoRef.current;
     if (!video) return;
     setRemoteError(null);
     setStatus('connecting');
     let cancelled = false;
     let verifyTimer: ReturnType<typeof setInterval> | null = null;
+
+    // Play from the media server when there is one: it pulls each camera once and serves any number of
+    // viewers, so this tile adds no load to the grid or to this app's server. Safari's native HLS cannot
+    // send the viewer login, and a camera whose media-server stream failed uses the app's proxy instead.
+    const mediaCamId = gridCamId(camera.remoteStreamUrl);
+    const useMedia = !!(mediaCfg?.enabled && mediaCamId && !mediaFailedCameras.has(camera.id) && !video.canPlayType('application/vnd.apple.mpegurl'));
 
     const startFrameVerification = () => {
       if (verifyTimer || cancelled) return;
@@ -599,9 +609,11 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       }, retryDelayRef.current);
     };
     // Above the manifest and fragment stage timeouts combined
+    // (A media-server camera can need longer: some grid cameras only send a keyframe every 20-40 s.)
     const watchdog = setTimeout(() => {
+      if (useMedia) mediaFailedCameras.add(camera.id);
       scheduleReconnect('Timed out waiting for a real picture from this stream.');
-    }, 60_000);
+    }, useMedia ? 90_000 : 60_000);
     const clearWatchdog = () => clearTimeout(watchdog);
     video.addEventListener('playing', clearWatchdog);
 
@@ -632,11 +644,15 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         capLevelToPlayerSize: true,
         startPosition: -1,
         xhrSetup: (xhr) => {
-          xhr.setRequestHeader('X-Stream-Password', effectivePwd);
-          xhr.setRequestHeader('X-Stream-Email', effectiveEml);
+          if (useMedia && mediaCfg) {
+            xhr.setRequestHeader('Authorization', mediaAuthHeader(mediaCfg));
+          } else {
+            xhr.setRequestHeader('X-Stream-Password', effectivePwd);
+            xhr.setRequestHeader('X-Stream-Email', effectiveEml);
+          }
         },
       });
-      hls.loadSource(proxiedUrl(camera.remoteStreamUrl));
+      hls.loadSource(useMedia && mediaCfg && mediaCamId ? mediaPlaylistUrl(mediaCfg, mediaCamId) : proxiedUrl(camera.remoteStreamUrl));
       hls.attachMedia(video);
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         video.play().catch(() => {});
@@ -656,6 +672,12 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         // the first decoder error will bounce on those streams."
         if (data.fatal) {
           clearWatchdog();
+          // A failed media-server stream (down, wrong login, blocked) falls back to the app's own proxy.
+          if (useMedia) {
+            mediaFailedCameras.add(camera.id);
+            scheduleReconnect(`Media server unavailable (${data.details}); using the direct route.`);
+            return;
+          }
           const isAuth = data.response?.code === 401 || data.response?.code === 403;
           if (isAuth) {
             const authMsg = 'Stream credentials rejected by camera network (401). Check Settings > Stream Access Password or switch to simulated feed.';
@@ -683,7 +705,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       video.removeEventListener('playing', clearWatchdog);
       hls?.destroy();
     };
-  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, streamAccessEmail, retryGeneration, whepCamId, playbackMode, shouldConnect, liveVideo]);
+  }, [isRemote, streamType, camera.remoteStreamUrl, streamAccessPassword, streamAccessEmail, retryGeneration, whepCamId, playbackMode, shouldConnect, liveVideo, mediaCfg]);
 
   // Simulated feed animation loop — self-contained per instance so grid tiles
   // each animate independently.

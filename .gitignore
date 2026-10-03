@@ -8,3 +8,7 @@ npm-debug.log*
 .DS_Store
 .vscode/
 *.local
+
+# Files MediaMTX generates when run from this folder
+media-server/*.key
+media-server/*.crt

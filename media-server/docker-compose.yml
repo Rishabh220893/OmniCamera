@@ -1,0 +1,9 @@
+services:
+  media:
+    build: .
+    env_file: .env
+    ports:
+      - "8888:8888"        # HLS (HTTP)
+      - "8889:8889"        # WebRTC signalling (HTTP)
+      - "8189:8189/udp"    # WebRTC media
+    restart: unless-stopped
