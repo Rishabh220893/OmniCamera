@@ -21,9 +21,13 @@ CAMERA_IDS="${CAMERA_IDS:-}"
 MEDIA_HLS_PORT="${MEDIA_HLS_PORT:-8888}"
 MEDIA_WEBRTC_PORT="${MEDIA_WEBRTC_PORT:-8889}"
 MEDIA_WEBRTC_UDP_PORT="${MEDIA_WEBRTC_UDP_PORT:-8189}"
+MEDIA_API_PORT="${MEDIA_API_PORT:-9997}"
 MEDIA_ALLOW_ORIGIN="${MEDIA_ALLOW_ORIGIN:-*}"
 MEDIA_PUBLIC_HOST="${MEDIA_PUBLIC_HOST:-}"
-MEDIA_HLS_VARIANT="${MEDIA_HLS_VARIANT:-lowLatency}"
+# fmp4 = standard HLS: about 1 request a second per camera and tolerant of a slow or distant connection.
+# lowLatency saves a few seconds of delay but fetches tiny parts several times a second; in testing with a
+# 300 ms network delay it stalled (14 buffering events in 45 s against none for fmp4) and made 4x the requests.
+MEDIA_HLS_VARIANT="${MEDIA_HLS_VARIANT:-fmp4}"
 # Some grid cameras only send a keyframe every 20-40 s and a stream cannot start before one arrives.
 SOURCE_START_TIMEOUT="${SOURCE_START_TIMEOUT:-60s}"
 # How long a camera stays pulled from the grid after its last viewer leaves: the HLS muxer waits
@@ -91,7 +95,7 @@ authInternalUsers:
       - action: metrics
 # Local-only, used by the health check.
 api: yes
-apiAddress: 127.0.0.1:9997
+apiAddress: 127.0.0.1:$MEDIA_API_PORT
 rtsp: no
 rtmp: no
 srt: no
