@@ -6,11 +6,22 @@ import { spawn } from 'child_process';
  * worker so both use the exact same ffmpeg invocation.
  */
 
-/** Pulls one JPEG frame out of `inputUrl` with ffmpeg; null on timeout/failure. */
-export function extractFrameWithFfmpeg(inputUrl: string, isRtsp: boolean, timeoutMs = 8_000): Promise<Buffer | null> {
+export interface FrameResult {
+  buffer: Buffer | null;
+  ms: number;
+  /** Why there is no frame: 'timeout', 'exit <code>', 'spawn: <message>'. Undefined on success. */
+  failure?: string;
+  /** Last lines ffmpeg printed on stderr, for diagnosing a failure. May contain the input URL. */
+  stderrTail: string;
+}
+
+/** Like extractFrameWithFfmpeg but also reports how long it took and why it failed. */
+export function extractFrameDetailed(inputUrl: string, isRtsp: boolean, timeoutMs = 8_000): Promise<FrameResult> {
   return new Promise((resolve) => {
+    const started = Date.now();
     const args = [
       '-y',
+      '-loglevel', 'error',
       ...(isRtsp ? ['-rtsp_transport', 'tcp'] : []),
       '-i', inputUrl,
       '-vframes', '1',
@@ -20,20 +31,31 @@ export function extractFrameWithFfmpeg(inputUrl: string, isRtsp: boolean, timeou
     ];
     const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
+    let stderr = '';
     ffmpeg.stdout.on('data', (chunk) => chunks.push(chunk));
+    ffmpeg.stderr.on('data', (chunk) => { stderr = (stderr + chunk.toString()).slice(-1500); });
+    let done = false;
+    const finish = (buffer: Buffer | null, failure?: string) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ buffer, ms: Date.now() - started, failure, stderrTail: stderr.trim() });
+    };
     const timer = setTimeout(() => {
       ffmpeg.kill('SIGKILL');
-      resolve(null);
+      finish(null, 'timeout');
     }, timeoutMs);
     ffmpeg.on('close', (code) => {
-      clearTimeout(timer);
-      resolve(code === 0 && chunks.length > 0 ? Buffer.concat(chunks) : null);
+      if (code === 0 && chunks.length > 0) finish(Buffer.concat(chunks));
+      else finish(null, `exit ${code}`);
     });
-    ffmpeg.on('error', () => {
-      clearTimeout(timer);
-      resolve(null);
-    });
+    ffmpeg.on('error', (err) => finish(null, `spawn: ${err.message}`));
   });
+}
+
+/** Pulls one JPEG frame out of `inputUrl` with ffmpeg; null on timeout/failure. */
+export async function extractFrameWithFfmpeg(inputUrl: string, isRtsp: boolean, timeoutMs = 8_000): Promise<Buffer | null> {
+  return (await extractFrameDetailed(inputUrl, isRtsp, timeoutMs)).buffer;
 }
 
 export interface FfmpegCheck { available: boolean; version?: string }

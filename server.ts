@@ -6,7 +6,7 @@ import { google } from 'googleapis';
 import { GoogleGenAI } from '@google/genai';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
-import { checkFfmpeg, extractFrameWithFfmpeg, grabFrame, isSafeCameraUrl } from './server/frameSource';
+import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, isSafeCameraUrl } from './server/frameSource';
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 import { createAnprClient, AnprClient } from './server/anprClient';
 import { mergePlates } from './server/plateMerge';
@@ -701,7 +701,10 @@ async function startServer() {
       return;
     }
 
-    const extractFromUrl = extractFrameWithFfmpeg;
+    // ffmpeg's error text can echo the input URL, which carries the grid credentials.
+    const scrub = (text: string) => [email, encodeURIComponent(email), encodeURIComponent(email).replace(/@/g, '%40'), password, encodeURIComponent(password)]
+      .filter(Boolean).reduce((t, secret) => t.split(secret).join('***'), text);
+    const tag = extractedCamId || targetUrl;
 
     try {
       let frameBuffer: Buffer | null = null;
@@ -711,13 +714,17 @@ async function startServer() {
         const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
         const encodedPassword = encodeURIComponent(password);
         const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${extractedCamId.toLowerCase()}`;
-        frameBuffer = await extractFromUrl(rtspUrl, true, 7_000);
+        const rtsp = await extractFrameDetailed(rtspUrl, true, 7_000);
+        frameBuffer = rtsp.buffer;
+        console.log(`[SNAPSHOT] ${tag} rtsp ${rtsp.buffer ? 'ok' : `FAILED (${rtsp.failure})`} in ${(rtsp.ms / 1000).toFixed(1)}s${rtsp.buffer ? '' : `: ${scrub(rtsp.stderrTail).slice(-300)}`}`);
       }
 
       // If RTSP didn't yield a frame or no camId, fall back to proxied HLS
       if (!frameBuffer && targetUrl) {
         const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
-        frameBuffer = await extractFromUrl(localProxyUrl, false, 15_000);
+        const hlsFrame = await extractFrameDetailed(localProxyUrl, false, 15_000);
+        frameBuffer = hlsFrame.buffer;
+        console.log(`[SNAPSHOT] ${tag} hls fallback ${hlsFrame.buffer ? 'ok' : `FAILED (${hlsFrame.failure})`} in ${(hlsFrame.ms / 1000).toFixed(1)}s${hlsFrame.buffer ? '' : `: ${scrub(hlsFrame.stderrTail).slice(-300)}`}`);
       }
 
       if (frameBuffer && frameBuffer.length > 500) {
