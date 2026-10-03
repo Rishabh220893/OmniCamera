@@ -192,6 +192,17 @@ let gridCooldownUntil = 0;
 let gridCooldownMessage = '';
 // A manifest already being fetched: later requests for it wait for that result instead of queueing their own.
 const pendingManifests = new Map<string, Promise<void>>();
+// Each snapshot runs an ffmpeg process (tens of MB each); on a small instance several at once can exhaust
+// memory, and the grid limits how much one account can pull at a time anyway.
+const SNAPSHOT_CONCURRENCY = Math.max(1, Number(process.env.SNAPSHOT_CONCURRENCY) || 3);
+let snapshotActive = 0;
+const snapshotWaiters: Array<() => void> = [];
+async function withSnapshotSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (snapshotActive >= SNAPSHOT_CONCURRENCY) await new Promise<void>((resolve) => snapshotWaiters.push(resolve));
+  snapshotActive++;
+  try { return await task(); }
+  finally { snapshotActive--; snapshotWaiters.shift()?.(); }
+}
 let hlsUpstreamActive = 0;
 const hlsUpstreamWaiters: Array<() => void> = [];
 async function withHlsUpstreamSlot<T>(task: () => Promise<T>): Promise<T> {
@@ -747,6 +758,7 @@ async function startServer() {
     try {
       let frameBuffer: Buffer | null = null;
 
+      await withSnapshotSlot(async () => {
       // Try ultra-fast direct RTSP first if we have a camId
       if (extractedCamId) {
         const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
@@ -757,13 +769,14 @@ async function startServer() {
         console.log(`[SNAPSHOT] ${tag} rtsp ${rtsp.buffer ? 'ok' : `FAILED (${rtsp.failure})`} in ${(rtsp.ms / 1000).toFixed(1)}s${rtsp.buffer ? '' : `: ${scrub(rtsp.stderrTail).slice(-300)}`}`);
       }
 
-      // If RTSP didn't yield a frame or no camId, fall back to proxied HLS
-      if (!frameBuffer && targetUrl) {
+      // If RTSP didn't yield a frame or no camId, fall back to proxied HLS (not while the grid's limit is active)
+      if (!frameBuffer && targetUrl && Date.now() >= gridCooldownUntil) {
         const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
         const hlsFrame = await extractFrameDetailed(localProxyUrl, false, 15_000);
         frameBuffer = hlsFrame.buffer;
         console.log(`[SNAPSHOT] ${tag} hls fallback ${hlsFrame.buffer ? 'ok' : `FAILED (${hlsFrame.failure})`} in ${(hlsFrame.ms / 1000).toFixed(1)}s${hlsFrame.buffer ? '' : `: ${scrub(hlsFrame.stderrTail).slice(-300)}`}`);
       }
+      });
 
       if (frameBuffer && frameBuffer.length > 500) {
         snapshotCache.set(cacheKey, { buffer: frameBuffer, timestamp: Date.now() });

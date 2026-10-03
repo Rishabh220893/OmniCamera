@@ -82,7 +82,10 @@ function CameraTile({
     return () => clearTimeout(timer);
   }, [status, shouldConnect]);
 
-  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis || !hidden;
+  // Only the focused camera, the active one and anything selected for analysis decode live video. Every
+  // other grid tile shows a periodically refreshed still: a browser (and the grid, which limits how much
+  // each account can watch at once) cannot sustain dozens of live streams.
+  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis;
 
   const feed = (
     <CameraFeed

@@ -377,7 +377,13 @@ export function captureWhepSnapshot(camId: string, opts: { timeoutMs?: number; s
 
     // Fast server-side snapshot endpoint extracts a pristine RTSP frame in ~1.5s
     const fastSnapshotUrl = `/api/camera-snapshot?camId=${encodeURIComponent(camId)}`;
-    fetch(fastSnapshotUrl, { signal })
+    fetch(fastSnapshotUrl, {
+      signal,
+      headers: {
+        ...(opts.streamAccessPassword ? { 'X-Stream-Password': opts.streamAccessPassword } : {}),
+        ...(opts.streamAccessEmail ? { 'X-Stream-Email': opts.streamAccessEmail } : {}),
+      },
+    })
       .then(async (res) => {
         if (res.ok && !settled) {
           const blob = await res.blob();
