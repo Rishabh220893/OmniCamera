@@ -82,7 +82,7 @@ If the media server is down, a tile falls back to the app's own route for that c
 | `MEDIA_IDLE_CLOSE` | 60s | How long a camera stays pulled after its last viewer leaves. **Do not set it below your slowest camera's keyframe interval**: the timer also runs while a stream waits for its first keyframe, so a camera that sends one every 30 s would never start (seen in testing at 15 s). |
 | `SOURCE_CLOSE_AFTER` | 5s | Extra wait before the pull is dropped. Total idle time is the sum of the two. |
 | `SOURCE_START_TIMEOUT` | 60s | How long to wait for a camera to start |
-| `MEDIA_HLS_VARIANT` | lowLatency | `mpegts` is the most compatible but slower |
+| `MEDIA_HLS_VARIANT` | fmp4 | Standard HLS: about 1 request/s per camera, smooth over a slow or distant link, a few seconds of delay. `lowLatency` cuts the delay but fetches tiny parts several times a second; with a simulated 300 ms network delay it stalled (14 buffering events in 45 s, none for `fmp4`). `mpegts` is the most compatible. |
 
 ## What was and was not tested
 

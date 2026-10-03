@@ -67,3 +67,8 @@ test('entrypoint: a single quote in a secret cannot break out of the YAML', { sk
   assert.doesNotMatch(r.yml, /^evil:/m);
   assert.ok(r.yml.includes("''"), 'quotes are doubled');
 });
+
+test('entrypoint: standard HLS (fmp4) by default, overridable', { skip: !HAS_SH && 'sh not available' }, () => {
+  assert.match(run(base).yml, /hlsVariant: fmp4/);
+  assert.match(run({ ...base, MEDIA_HLS_VARIANT: 'lowLatency' }).yml, /hlsVariant: lowLatency/);
+});
