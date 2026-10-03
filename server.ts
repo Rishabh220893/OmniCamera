@@ -12,6 +12,7 @@ import { createAnprClient, AnprClient } from './server/anprClient';
 import { mergePlates } from './server/plateMerge';
 import { writeSightings } from './server/sightingStore';
 import { createFirestoreLeases } from './server/leaseStore';
+import { trimLiveManifest } from './server/hlsManifest';
 import { randomUUID } from 'crypto';
 
 // Dedicated plate detector + OCR service (anpr-service/). Optional: when
@@ -165,6 +166,21 @@ async function generateContentWithFallback(
 // camera queued behind this proxy is waiting on, so the whole grid stalls
 // behind a single bad camera. A short timeout plus a couple of retries
 // turns that into "this one camera fails fast" instead.
+// The grid enforces one session per IP and answered ~30 simultaneous requests too slowly to finish, so the
+// HLS proxy lets only a few through at a time and queues the rest instead of timing them all out together.
+const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CONCURRENCY) || 8);
+// Newest segments served per playlist (6 s each) and how long a rewritten playlist may be reused.
+const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 10);
+const HLS_MANIFEST_CACHE_MS = 4_000;
+let hlsUpstreamActive = 0;
+const hlsUpstreamWaiters: Array<() => void> = [];
+async function withHlsUpstreamSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (hlsUpstreamActive >= HLS_UPSTREAM_CONCURRENCY) await new Promise<void>((resolve) => hlsUpstreamWaiters.push(resolve));
+  hlsUpstreamActive++;
+  try { return await task(); }
+  finally { hlsUpstreamActive--; hlsUpstreamWaiters.shift()?.(); }
+}
+
 async function fetchUpstream(url: string, options: RequestInit = {}, { timeoutMs = 20_000, retries = 1 }: { timeoutMs?: number; retries?: number } = {}): Promise<Response> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -504,7 +520,7 @@ async function startServer() {
     const manifestCacheKey = `${targetUrl}|${email || ''}|${password || ''}`;
     if (isManifest && manifestCache.has(manifestCacheKey)) {
       const cached = manifestCache.get(manifestCacheKey)!;
-      if (Date.now() - cached.cachedAt < 300_000) {
+      if (Date.now() - cached.cachedAt < HLS_MANIFEST_CACHE_MS) {
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('X-Cache', 'HIT');
@@ -514,6 +530,7 @@ async function startServer() {
     }
 
     try {
+      await withHlsUpstreamSlot(async () => {
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
         const headers: Record<string, string> = {
           ...UPSTREAM_BROWSER_HEADERS,
@@ -565,7 +582,11 @@ async function startServer() {
           res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest.');
           return;
         }
-        const cleanText = text.replace(/^\uFEFF/, '');
+        const trim = trimLiveManifest(text, HLS_LIVE_WINDOW_SEGMENTS);
+        if (trim.trimmed) {
+          console.log(`[PROXY HLS] ${new URL(targetUrl).pathname}: playlist listed ${trim.totalSegments} segments (${text.length} bytes); serving the newest ${trim.keptSegments}${trim.hadEndList ? ' [has ENDLIST]' : ''}${trim.hadPlaylistType ? ' [had PLAYLIST-TYPE]' : ''}`);
+        }
+        const cleanText = trim.text.replace(/^\uFEFF/, '');
         const baseUrl = new URL(targetUrl);
         const passwordQuery = password ? `&password=${encodeURIComponent(password)}` : '';
         const emailQuery = email ? `&email=${encodeURIComponent(email)}` : '';
@@ -612,6 +633,7 @@ async function startServer() {
         res.setHeader('Cache-Control', isTsSegment || isKeyFile ? 'public, max-age=300' : 'no-store');
         res.status(200).send(Buffer.from(arrayBuffer));
       }
+      });
     } catch (err: unknown) {
       const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError' || /aborted due to timeout/i.test(err.message));
       console.warn(`[PROXY HLS] ${isTimeout ? 'Upstream request timed out' : 'Upstream proxy error'} for ${targetUrl}:`, err instanceof Error ? err.message : String(err));
