@@ -22,7 +22,9 @@ export function extractFrameDetailed(inputUrl: string, isRtsp: boolean, timeoutM
     const args = [
       '-y',
       '-loglevel', 'error',
-      ...(isRtsp ? ['-rtsp_transport', 'tcp'] : []),
+      // RTSP: the stream's codec details come with the session setup, so a long probe only delays the first
+      // frame (ffmpeg's default analyses up to 5 s of video before decoding anything).
+      ...(isRtsp ? ['-rtsp_transport', 'tcp', '-fflags', 'nobuffer', '-analyzeduration', '1000000', '-probesize', '500000'] : []),
       '-i', inputUrl,
       '-vframes', '1',
       '-f', 'image2',
