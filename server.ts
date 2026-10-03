@@ -34,6 +34,20 @@ const anprClient: AnprClient | null = process.env.ANPR_SERVICE_URL
 // itself just can't serve fast enough.
 const UPSTREAM_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
+// The grid answers "403 browser required" to a bare Chrome User-Agent. Verified by hand with curl: the same
+// session cookie that was refused with only a User-Agent got the manifest once these headers were added.
+const UPSTREAM_BROWSER_HEADERS: Record<string, string> = {
+  'User-Agent': UPSTREAM_USER_AGENT,
+  'Accept': '*/*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Sec-Fetch-Dest': 'empty',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'same-origin',
+  'sec-ch-ua': '"Chromium";v="128", "Not;A=Brand";v="24"',
+  'sec-ch-ua-mobile': '?0',
+  'sec-ch-ua-platform': '"Windows"',
+};
+
 // Confirmed Sentinel Camera Grid credentials for cctv.corp8.cloud access
 const DEFAULT_STREAM_EMAIL = 'rishabh.bhasin06@gmail.com';
 const DEFAULT_STREAM_PASSWORD = '8JY8-D5YX-7WRS';
@@ -419,7 +433,7 @@ async function startServer() {
             await fetchUpstream(logoutUrl, {
               method: 'GET',
               headers: {
-                'User-Agent': UPSTREAM_USER_AGENT,
+                ...UPSTREAM_BROWSER_HEADERS,
                 ...(oldCookie ? { 'Cookie': oldCookie } : {})
               },
               redirect: 'manual'
@@ -437,8 +451,8 @@ async function startServer() {
         const res = await fetchUpstream(loginUrl, {
           method: 'POST',
           headers: {
+            ...UPSTREAM_BROWSER_HEADERS,
             'Content-Type': 'application/x-www-form-urlencoded',
-            'User-Agent': UPSTREAM_USER_AGENT,
             'Referer': new URL('/', targetUrl).toString()
           },
           body,
@@ -502,7 +516,7 @@ async function startServer() {
     try {
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
         const headers: Record<string, string> = {
-          'User-Agent': UPSTREAM_USER_AGENT,
+          ...UPSTREAM_BROWSER_HEADERS,
           'Referer': new URL('/', targetUrl).toString()
         };
         if (password) headers['Authorization'] = 'Basic ' + Buffer.from(`${email || ''}:${password}`).toString('base64');
@@ -713,7 +727,7 @@ async function startServer() {
     // format, so sending nothing is more honest than sending that.
     const email = (req.header('X-Stream-Email') || (req.query.email as string | undefined) || process.env.STREAM_EMAIL || DEFAULT_STREAM_EMAIL).trim();
     const password = (req.header('X-Stream-Password') || (req.query.password as string | undefined) || process.env.STREAM_PASSWORD || DEFAULT_STREAM_PASSWORD).trim();
-    const upstreamHeaders: Record<string, string> = { 'Content-Type': 'application/sdp' };
+    const upstreamHeaders: Record<string, string> = { ...UPSTREAM_BROWSER_HEADERS, 'Content-Type': 'application/sdp' };
     if (email && password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
 
     try {
@@ -826,7 +840,7 @@ async function startServer() {
     try {
       const base = `https://${targetHost}`;
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
-        const headers: Record<string, string> = { 'User-Agent': UPSTREAM_USER_AGENT };
+        const headers: Record<string, string> = { ...UPSTREAM_BROWSER_HEADERS };
         if (password) headers['Authorization'] = 'Basic ' + Buffer.from(`${email || ''}:${password}`).toString('base64');
         if (cookie) headers['Cookie'] = cookie;
         return headers;
