@@ -113,7 +113,7 @@ Legend: ✅ done · 🟡 partly · ❌ not done · ⛔ not possible for a partic
 | — | Recording, storage and playback | ❌ | Needed for "recorded viewing" in the demo; a media server (go2rtc/MediaMTX) + segment storage + time/camera index + playback UI |
 
 ### Operational leftovers (from earlier discussion)
-- [ ] **Rotate the grid password** committed in `server.ts` (`DEFAULT_STREAM_EMAIL/PASSWORD`), set `STREAM_EMAIL/STREAM_PASSWORD` in the environment, then remove the defaults from code
+- [x] The grid email/password are no longer in the code (server or front end). Each user enters theirs under Settings → stream access; the server can also use `STREAM_EMAIL` / `STREAM_PASSWORD`. The old password is still in git history, so **rotate it with the organiser**
 - [ ] **Deploy the Firestore rules** and do one end-to-end sighting test
 - [ ] Confirm **ffmpeg** on the host (`/api/analysis/config`)
 - [ ] Run the **ANPR accuracy check** on real frames and tune the confidence threshold

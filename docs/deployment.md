@@ -54,7 +54,7 @@ Google AI Studio → *Get API key* → create a key → this is `GEMINI_API_KEY`
 | Variable | Required | Value / purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | **Yes** | From step 2 |
-| `STREAM_EMAIL`, `STREAM_PASSWORD` | **Yes (do this)** | The camera grid's credentials. Without them the server falls back to credentials **hard-coded in `server.ts`** — rotate that password with the organiser and set the new one here |
+| `STREAM_EMAIL`, `STREAM_PASSWORD` | Optional | The camera grid's credentials, used when a request carries none (and always by the server-side analysis worker). Nothing is built into the code: without these, tiles need the email/password entered under Settings → stream access, and grid routes answer 401 until one of the two is set |
 | `FIREBASE_SERVICE_ACCOUNT` | For registry API + server-side analysis | The service-account JSON from step 1.5 (whole JSON as one value) |
 | `REGISTRY_API_KEY` | If `FIREBASE_SERVICE_ACCOUNT` is set | Make one up (`openssl rand -hex 32`); required header `X-Registry-Api-Key` for `/api/registry/*` and `/api/analysis/status` |
 | `SERVER_ANALYSIS` | For server-side analysis | `true` (also needs `FIREBASE_SERVICE_ACCOUNT` + `GEMINI_API_KEY`) |
@@ -178,5 +178,5 @@ It must show: reachable, the expected device, "API key accepted", plates in your
 ## 10. Security notes
 
 - The "Admin" role is a profile field a user can set for themselves in Settings (pilot-scale stand-in, see `firestore.rules`) — not a real security boundary.
-- Rotate the grid password that is hard-coded in `server.ts`; the old value stays in git history.
+- The grid password is no longer in the code, but the old value stays in git history — rotate it with the organiser.
 - Never commit `.env`, the Firebase service-account JSON, or API keys.

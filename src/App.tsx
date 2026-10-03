@@ -139,16 +139,15 @@ export default function App() {
   const [selectedGuideId, setSelectedGuideId] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [googleSheetsId, setGoogleSheetsId] = useState<string>('');
-  const DEFAULT_SENTINEL_EMAIL = 'rishabh.bhasin06@gmail.com';
-  const DEFAULT_SENTINEL_PASSWORD = '8JY8-D5YX-7WRS';
+  // No credentials are shipped with the app: each user enters their own under Settings → stream access.
   const [streamAccessPassword, setStreamAccessPassword] = useState<string>(
-    () => localStorage.getItem('demo-guest-streamAccessPassword') || localStorage.getItem('omni_stream_password') || DEFAULT_SENTINEL_PASSWORD
+    () => localStorage.getItem('demo-guest-streamAccessPassword') || localStorage.getItem('omni_stream_password') || ''
   );
   // RTSP/WHEP on the grid's raw origin authenticate with email:password
   // (Basic auth, email as username) — a separate credential from the HLS
   // path's password-only login, per the grid's integrator guide.
   const [streamAccessEmail, setStreamAccessEmail] = useState<string>(
-    () => localStorage.getItem('demo-guest-streamAccessEmail') || localStorage.getItem('omni_stream_email') || DEFAULT_SENTINEL_EMAIL
+    () => localStorage.getItem('demo-guest-streamAccessEmail') || localStorage.getItem('omni_stream_email') || ''
   );
   const [isSaveLoading, setIsSaveLoading] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
@@ -305,13 +304,13 @@ export default function App() {
             setTheme(data.theme || 'dark');
             if (data.notificationPrefs) setNotificationPrefs(data.notificationPrefs);
             setGoogleSheetsId(data.googleSheetsId || '');
-            setStreamAccessPassword(data.streamAccessPassword || DEFAULT_SENTINEL_PASSWORD);
+            setStreamAccessPassword(data.streamAccessPassword || localStorage.getItem('omni_stream_password') || '');
             // Pre-fills with the signed-in Google email on a first read (a
             // reasonable default — the two are often the same person's
             // email) if nothing's been explicitly set yet; still editable
             // in Settings since the grid-registered email isn't guaranteed
             // to match the login email.
-            setStreamAccessEmail(data.streamAccessEmail || DEFAULT_SENTINEL_EMAIL);
+            setStreamAccessEmail(data.streamAccessEmail || localStorage.getItem('omni_stream_email') || '');
             setUserDepartment(data.department || '');
             setUserRole(data.role || 'admin');
             localStorage.setItem(`user-${firebaseUser.uid}-googleSheetsId`, data.googleSheetsId || '');
@@ -748,7 +747,7 @@ export default function App() {
           ctx.drawImage(refs.video, 0, 0, width, height);
         } else {
           // Robust server-side snapshot fallback — ensures frame capture succeeds even before video mounts
-          const snapshotUrl = `/api/camera-snapshot?url=${encodeURIComponent(camera.remoteStreamUrl)}&password=${encodeURIComponent(streamAccessPassword || DEFAULT_SENTINEL_PASSWORD)}&email=${encodeURIComponent(streamAccessEmail || DEFAULT_SENTINEL_EMAIL)}`;
+          const snapshotUrl = `/api/camera-snapshot?url=${encodeURIComponent(camera.remoteStreamUrl)}&password=${encodeURIComponent(streamAccessPassword)}&email=${encodeURIComponent(streamAccessEmail)}`;
           const res = await fetch(snapshotUrl);
           if (res.ok) {
             const blob = await res.blob();
