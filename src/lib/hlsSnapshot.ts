@@ -89,6 +89,7 @@ export function captureHlsSnapshot(
     // machinery entirely. It needs the grid credentials, so they travel as headers. The heavy
     // browser-side HLS load below only runs if this fails, never alongside it: every tile doing both
     // opened a full HLS session per tile, which is what the grid's per-account limits cannot take.
+    let blocked: { retryAfterMs: number; message: string } | null = null;
     const tryFastSnapshot = async (): Promise<string | null> => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 70_000);
@@ -102,6 +103,12 @@ export function captureHlsSnapshot(
             ...(email ? { 'X-Stream-Email': email } : {}),
           },
         });
+        if (res.status === 429) {
+          // The grid is refusing this account (watch-time limit or rejected login). Retrying now only adds load.
+          const retryAfterSec = Number(res.headers.get('Retry-After')) || 300;
+          blocked = { retryAfterMs: retryAfterSec * 1000, message: (await res.text().catch(() => '')) || 'The camera grid is refusing this account.' };
+          return null;
+        }
         if (!res.ok) return null;
         const blob = await res.blob();
         if (!blob || blob.size <= 500) return null;
@@ -149,6 +156,7 @@ export function captureHlsSnapshot(
       tryFastSnapshot().then((fast) => {
         if (settled) return;
         if (fast) { finish(undefined, fast); return; }
+        if (blocked) { finish(Object.assign(new Error((blocked as { message: string }).message), { retryAfterMs: (blocked as { retryAfterMs: number }).retryAfterMs })); return; }
         // Loading the whole stream in the browser to grab one frame is the heavy path that overloaded the
         // grid; it is opt-in, and by default a failed fast snapshot just fails so the tile retries later.
         if (!browserFallback) { finish(new Error('Snapshot unavailable from the server')); return; }
