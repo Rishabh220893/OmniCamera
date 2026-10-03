@@ -41,6 +41,31 @@ Environment: `ANPR_DEVICE` (`auto`|`cuda`|`cpu`), `ANPR_API_KEY`, `ANPR_DETECTOR
 
 Then on the main server: `ANPR_SERVICE_URL=https://<where-it-runs>`, `ANPR_API_KEY=<same secret>`.
 
+## Every-session checklist (ANPR on your own PC through a quick tunnel)
+
+Do this each time you want plate reading with the dedicated service. If you skip it, the app still works and reads plates with Gemini (shown as "unverified").
+
+**Start**
+
+1. **Window A, the service:**
+   ```powershell
+   cd C:\Users\Risha\OmniCamera\anpr-service
+   .\.venv\Scripts\Activate.ps1
+   $env:ANPR_API_KEY = "<your ANPR key>"; $env:ANPR_DEVICE = "cpu"
+   python -m uvicorn anpr_service.main:app --host 127.0.0.1 --port 8000
+   ```
+   Wait for `Application startup complete`. Leave the window open.
+2. **Window B, the tunnel:** `cloudflared tunnel --url http://localhost:8000`, then copy the `https://….trycloudflare.com` address it prints. **It is new every time.** Leave the window open.
+3. **Check it:** `curl.exe https://<that address>/healthz` shows `"status":"ok"`.
+4. **Render:** your app service, Environment, set `ANPR_SERVICE_URL` to the new address (no trailing slash), Save. It redeploys in a couple of minutes. `ANPR_API_KEY` stays the same unless you changed it.
+5. **Confirm:** `https://<your app>/api/analysis/config` shows `"anpr":true`, and `/api/analysis/status` (with your registry key) shows `anpr.healthy: true`.
+
+**Stop**
+
+- Press Ctrl+C in both windows. Nothing else is needed: an old `ANPR_SERVICE_URL` left on Render simply fails, and after 3 failures the app stops calling it for a minute at a time and reads plates with Gemini.
+
+**Only the address changes each time.** To stop updating it: a named Cloudflare tunnel (needs a domain on Cloudflare), an ngrok fixed address, a rented machine with a fixed address, or the service running as its own always-on Render service.
+
 ## The API key (`ANPR_API_KEY`)
 
 **It has nothing to do with the GPU.** It is a shared password that stops strangers from using your ANPR service (and its compute). You invent it — there is nothing to sign up for.
