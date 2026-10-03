@@ -295,7 +295,8 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         }
       } finally {
         if (!cancelled && !switchingToHls) {
-          const delay = mode === 'hls' ? HLS_SNAPSHOT_REFRESH_MS : SNAPSHOT_REFRESH_MS;
+          // A tile that has no picture yet retries sooner than one that is just refreshing.
+          const delay = mode === 'hls' ? (hasSnapshot || hasCachedSnapshot(camera.id) ? HLS_SNAPSHOT_REFRESH_MS : 30_000) : SNAPSHOT_REFRESH_MS;
           timer = setTimeout(captureLoop, delay);
         }
       }

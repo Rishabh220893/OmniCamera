@@ -194,6 +194,9 @@ let gridCooldownMessage = '';
 const pendingManifests = new Map<string, Promise<void>>();
 // Each snapshot runs an ffmpeg process (tens of MB each); on a small instance several at once can exhaust
 // memory, and the grid limits how much one account can pull at a time anyway.
+// The grid's RTSP origin took 5-7 s to hand over a first frame in practice (it waits for a keyframe), so
+// the old 7 s limit cut off most attempts.
+const RTSP_SNAPSHOT_TIMEOUT_MS = Math.max(5_000, Number(process.env.RTSP_SNAPSHOT_TIMEOUT_MS) || 20_000);
 const SNAPSHOT_CONCURRENCY = Math.max(1, Number(process.env.SNAPSHOT_CONCURRENCY) || 3);
 let snapshotActive = 0;
 const snapshotWaiters: Array<() => void> = [];
@@ -764,13 +767,16 @@ async function startServer() {
         const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
         const encodedPassword = encodeURIComponent(password);
         const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${extractedCamId.toLowerCase()}`;
-        const rtsp = await extractFrameDetailed(rtspUrl, true, 7_000);
+        const rtsp = await extractFrameDetailed(rtspUrl, true, RTSP_SNAPSHOT_TIMEOUT_MS);
         frameBuffer = rtsp.buffer;
         console.log(`[SNAPSHOT] ${tag} rtsp ${rtsp.buffer ? 'ok' : `FAILED (${rtsp.failure})`} in ${(rtsp.ms / 1000).toFixed(1)}s${rtsp.buffer ? '' : `: ${scrub(rtsp.stderrTail).slice(-300)}`}`);
       }
 
-      // If RTSP didn't yield a frame or no camId, fall back to proxied HLS (not while the grid's limit is active)
-      if (!frameBuffer && targetUrl && Date.now() >= gridCooldownUntil) {
+      // Grid cameras are RTSP-only here: the HLS route through ffmpeg is slow, burns the grid's per-account
+      // limits and has failed every time ("not in allowed_segment_extensions"), so a failed RTSP grab just
+      // fails and the tile retries later. Other camera URLs have no RTSP route and still use proxied HLS
+      // (not while the grid's watch-time limit is active).
+      if (!frameBuffer && targetUrl && !extractedCamId && Date.now() >= gridCooldownUntil) {
         const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
         const hlsFrame = await extractFrameDetailed(localProxyUrl, false, 15_000);
         frameBuffer = hlsFrame.buffer;

@@ -44,9 +44,9 @@ const STAGE_TIMEOUT_MS = 38_000;
 
 export function captureHlsSnapshot(
   url: string,
-  opts: { password?: string; email?: string; timeoutMs?: number; signal?: AbortSignal } = {}
+  opts: { password?: string; email?: string; timeoutMs?: number; signal?: AbortSignal; browserFallback?: boolean } = {}
 ): Promise<string> {
-  const { password, email, timeoutMs = 90_000, signal } = opts;
+  const { password, email, timeoutMs = 90_000, signal, browserFallback = false } = opts;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('Snapshot aborted')); return; }
 
@@ -91,7 +91,7 @@ export function captureHlsSnapshot(
     // opened a full HLS session per tile, which is what the grid's per-account limits cannot take.
     const tryFastSnapshot = async (): Promise<string | null> => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 25_000);
+      const timer = setTimeout(() => controller.abort(), 70_000);
       const onOuterAbort = () => controller.abort();
       signal?.addEventListener('abort', onOuterAbort, { once: true });
       try {
@@ -149,6 +149,9 @@ export function captureHlsSnapshot(
       tryFastSnapshot().then((fast) => {
         if (settled) return;
         if (fast) { finish(undefined, fast); return; }
+        // Loading the whole stream in the browser to grab one frame is the heavy path that overloaded the
+        // grid; it is opt-in, and by default a failed fast snapshot just fails so the tile retries later.
+        if (!browserFallback) { finish(new Error('Snapshot unavailable from the server')); return; }
         startHls();
       });
     });
