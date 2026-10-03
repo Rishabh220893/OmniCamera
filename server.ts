@@ -175,6 +175,14 @@ const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CON
 const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 100);
 const HLS_MANIFEST_CACHE_MS = Math.max(1_000, Number(process.env.HLS_MANIFEST_CACHE_MS) || 120_000);
 const manifestLogAt = new Map<string, number>();
+// The grid caps each account's viewing time and answers "403 … watch time limit reached … wait for your
+// cooldown". Retrying only wastes budget (and may extend the cooldown), so once it says that the proxy
+// stops contacting the grid for a while and answers immediately instead. The grid does not say how long
+// the cooldown lasts, so this is a guess; override with HLS_COOLDOWN_MS.
+const HLS_COOLDOWN_MS = Math.max(10_000, Number(process.env.HLS_COOLDOWN_MS) || 5 * 60_000);
+const GRID_LIMIT_RE = /watch time limit|cooldown/i;
+let gridCooldownUntil = 0;
+let gridCooldownMessage = '';
 // A manifest already being fetched: later requests for it wait for that result instead of queueing their own.
 const pendingManifests = new Map<string, Promise<void>>();
 let hlsUpstreamActive = 0;
@@ -521,6 +529,13 @@ async function startServer() {
     const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
     const isTsSegment = /\.ts(\?|$)/i.test(targetUrl);
 
+    if (Date.now() < gridCooldownUntil) {
+      const retryAfter = Math.ceil((gridCooldownUntil - Date.now()) / 1000);
+      res.setHeader('Retry-After', String(retryAfter));
+      res.status(429).send(`The camera grid's watch-time limit was reached (${gridCooldownMessage}). Not contacting it for another ${retryAfter}s.`);
+      return;
+    }
+
     // The browser gives up on a slow request and retries; without this the server would keep working
     // on every abandoned one and the retries would queue up behind them.
     let clientGone = false;
@@ -588,6 +603,16 @@ async function startServer() {
       const headersAt = Date.now();
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
+        if (upstream.status === 403 && GRID_LIMIT_RE.test(bodyText)) {
+          if (Date.now() >= gridCooldownUntil) {
+            console.warn(`[PROXY HLS] The grid reports its watch-time limit is reached ("${bodyText.slice(0, 120)}"). Pausing all grid requests for ${Math.round(HLS_COOLDOWN_MS / 1000)}s.`);
+          }
+          gridCooldownUntil = Date.now() + HLS_COOLDOWN_MS;
+          gridCooldownMessage = bodyText.slice(0, 120);
+          res.setHeader('Retry-After', String(Math.round(HLS_COOLDOWN_MS / 1000)));
+          res.status(429).send(`The camera grid's watch-time limit was reached (${gridCooldownMessage}).`);
+          return;
+        }
         console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText}. Body: ${bodyText.slice(0, 200)}`);
         res.status(upstream.status >= 300 && upstream.status < 400 ? 401 : upstream.status).send(
           upstream.status >= 300 && upstream.status < 400
