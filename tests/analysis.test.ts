@@ -230,9 +230,14 @@ test('cadence is measured from when a run started, with a short floor if a run o
   assert.equal(Date.parse(fast.worker.status().cameras[0].nextDueAt) - t0, 10_000, 'a quick run keeps the exact 10 s cadence');
 });
 
-test('ffmpeg check: finds a real binary, reports a missing one as unavailable', async () => {
-  const found = await checkFfmpeg();
-  assert.equal(found.available, true);
-  assert.match(found.version ?? '', /ffmpeg version/i);
+test('ffmpeg check: finds a real binary, reports a missing one as unavailable', async (t) => {
+  // A missing binary must always be reported as unavailable, whatever the host has installed.
   assert.deepEqual(await checkFfmpeg('definitely-not-installed-ffmpeg'), { available: false });
+
+  const found = await checkFfmpeg();
+  if (!found.available) {
+    t.skip('ffmpeg is not on PATH on this machine, so the "finds a real binary" half cannot run');
+    return;
+  }
+  assert.match(found.version ?? '', /ffmpeg version/i);
 });
