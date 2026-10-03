@@ -182,14 +182,41 @@ const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CON
 const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 100);
 const HLS_MANIFEST_CACHE_MS = Math.max(1_000, Number(process.env.HLS_MANIFEST_CACHE_MS) || 120_000);
 const manifestLogAt = new Map<string, number>();
-// The grid caps each account's viewing time and answers "403 … watch time limit reached … wait for your
-// cooldown". Retrying only wastes budget (and may extend the cooldown), so once it says that the proxy
-// stops contacting the grid for a while and answers immediately instead. The grid does not say how long
-// the cooldown lasts, so this is a guess; override with HLS_COOLDOWN_MS.
+// The grid caps each account's viewing time. Over the limit it answers "403 watch time limit reached ...
+// wait for your cooldown" on HLS and "401 Unauthorized" on RTSP and WHEP, and every retry just adds load (and
+// may extend the cooldown). So once any route sees that, all grid routes stop contacting the grid for that
+// account for a while and answer 429 straight away. The grid does not say how long the cooldown lasts, so the
+// first pause is a guess (HLS_COOLDOWN_MS, default 5 min) and it doubles on each repeat up to 30 min.
+// Keyed by the credentials, so entering corrected ones is not held up by the old account's block, and a
+// wrong password is never mistaken for someone else's limit.
 const HLS_COOLDOWN_MS = Math.max(10_000, Number(process.env.HLS_COOLDOWN_MS) || 5 * 60_000);
 const GRID_LIMIT_RE = /watch time limit|cooldown/i;
-let gridCooldownUntil = 0;
-let gridCooldownMessage = '';
+const gridBlocks = new Map<string, { until: number; trips: number; message: string }>();
+const gridKey = (email: string, password: string) => `${email}\u0000${password}`;
+function gridBlockedFor(email: string, password: string): { retryAfterSec: number; message: string } | null {
+  const b = gridBlocks.get(gridKey(email, password));
+  if (!b || Date.now() >= b.until) return null;
+  return { retryAfterSec: Math.ceil((b.until - Date.now()) / 1000), message: b.message };
+}
+function tripGridBlock(email: string, password: string, source: string, message: string): number {
+  const key = gridKey(email, password);
+  const prev = gridBlocks.get(key);
+  const trips = prev && Date.now() < prev.until + 60_000 ? prev.trips + 1 : 0;
+  const ms = Math.min(HLS_COOLDOWN_MS * 2 ** Math.min(trips, 3), HLS_COOLDOWN_MS * 6);
+  if (!prev || Date.now() >= prev.until) {
+    console.warn(`[GRID] ${source}: the grid refused this account (${message}). Pausing every grid request for it for ${Math.round(ms / 1000)}s.`);
+  }
+  gridBlocks.set(key, { until: Date.now() + ms, trips, message });
+  return Math.round(ms / 1000);
+}
+function clearGridBlock(email: string, password: string) {
+  const b = gridBlocks.get(gridKey(email, password));
+  if (b) gridBlocks.set(gridKey(email, password), { ...b, trips: 0 });
+}
+function sendGridBlocked(res: express.Response, blocked: { retryAfterSec: number; message: string }) {
+  res.setHeader('Retry-After', String(blocked.retryAfterSec));
+  res.status(429).send(`The camera grid is refusing this account (${blocked.message}). Not contacting it for another ${blocked.retryAfterSec}s.`);
+}
 // A manifest already being fetched: later requests for it wait for that result instead of queueing their own.
 const pendingManifests = new Map<string, Promise<void>>();
 // Each snapshot runs an ffmpeg process (tens of MB each); on a small instance several at once can exhaust
@@ -553,12 +580,8 @@ async function startServer() {
     const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
     const isTsSegment = /\.ts(\?|$)/i.test(targetUrl);
 
-    if (Date.now() < gridCooldownUntil) {
-      const retryAfter = Math.ceil((gridCooldownUntil - Date.now()) / 1000);
-      res.setHeader('Retry-After', String(retryAfter));
-      res.status(429).send(`The camera grid's watch-time limit was reached (${gridCooldownMessage}). Not contacting it for another ${retryAfter}s.`);
-      return;
-    }
+    const blockedNow = gridBlockedFor(email, password);
+    if (blockedNow) { sendGridBlocked(res, blockedNow); return; }
 
     // The browser gives up on a slow request and retries; without this the server would keep working
     // on every abandoned one and the retries would queue up behind them.
@@ -628,13 +651,8 @@ async function startServer() {
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
         if (upstream.status === 403 && GRID_LIMIT_RE.test(bodyText)) {
-          if (Date.now() >= gridCooldownUntil) {
-            console.warn(`[PROXY HLS] The grid reports its watch-time limit is reached ("${bodyText.slice(0, 120)}"). Pausing all grid requests for ${Math.round(HLS_COOLDOWN_MS / 1000)}s.`);
-          }
-          gridCooldownUntil = Date.now() + HLS_COOLDOWN_MS;
-          gridCooldownMessage = bodyText.slice(0, 120);
-          res.setHeader('Retry-After', String(Math.round(HLS_COOLDOWN_MS / 1000)));
-          res.status(429).send(`The camera grid's watch-time limit was reached (${gridCooldownMessage}).`);
+          tripGridBlock(email, password, 'HLS', bodyText.slice(0, 120));
+          sendGridBlocked(res, gridBlockedFor(email, password) ?? { retryAfterSec: Math.round(HLS_COOLDOWN_MS / 1000), message: bodyText.slice(0, 120) });
           return;
         }
         console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText}. Body: ${bodyText.slice(0, 200)}`);
@@ -743,6 +761,9 @@ async function startServer() {
       return;
     }
 
+    const blockedSnap = gridBlockedFor(email, password);
+    if (blockedSnap) { sendGridBlocked(res, blockedSnap); return; }
+
     const cacheKey = `${extractedCamId || targetUrl}|${email}|${password}`;
     const cached = snapshotCache.get(cacheKey);
     const now = Date.now();
@@ -769,6 +790,8 @@ async function startServer() {
         const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${extractedCamId.toLowerCase()}`;
         const rtsp = await extractFrameDetailed(rtspUrl, true, RTSP_SNAPSHOT_TIMEOUT_MS);
         frameBuffer = rtsp.buffer;
+        if (rtsp.buffer) clearGridBlock(email, password);
+        else if (/401 Unauthorized|authorization failed/i.test(rtsp.stderrTail)) tripGridBlock(email, password, 'RTSP', 'RTSP 401 Unauthorized');
         console.log(`[SNAPSHOT] ${tag} rtsp ${rtsp.buffer ? 'ok' : `FAILED (${rtsp.failure})`} in ${(rtsp.ms / 1000).toFixed(1)}s${rtsp.buffer ? '' : `: ${scrub(rtsp.stderrTail).slice(-300)}`}`);
       }
 
@@ -776,7 +799,7 @@ async function startServer() {
       // limits and has failed every time ("not in allowed_segment_extensions"), so a failed RTSP grab just
       // fails and the tile retries later. Other camera URLs have no RTSP route and still use proxied HLS
       // (not while the grid's watch-time limit is active).
-      if (!frameBuffer && targetUrl && !extractedCamId && Date.now() >= gridCooldownUntil) {
+      if (!frameBuffer && targetUrl && !extractedCamId && !gridBlockedFor(email, password)) {
         const localProxyUrl = `http://localhost:${PORT}/api/proxy-hls?url=${encodeURIComponent(targetUrl)}&password=${encodeURIComponent(password)}&email=${encodeURIComponent(email)}`;
         const hlsFrame = await extractFrameDetailed(localProxyUrl, false, 15_000);
         frameBuffer = hlsFrame.buffer;
@@ -790,7 +813,9 @@ async function startServer() {
         res.setHeader('Cache-Control', 'public, max-age=10');
         res.status(200).send(frameBuffer);
       } else {
-        res.status(502).send('Failed to extract snapshot frame from camera stream');
+        const nowBlocked = gridBlockedFor(email, password);
+        if (nowBlocked) sendGridBlocked(res, nowBlocked);
+        else res.status(502).send('Failed to extract snapshot frame from camera stream');
       }
     } catch (err: unknown) {
       res.status(500).send(err instanceof Error ? err.message : 'Snapshot extraction failed');
@@ -851,6 +876,8 @@ async function startServer() {
       res.status(401).send(MISSING_CREDENTIALS_MESSAGE);
       return;
     }
+    const blockedWhep = gridBlockedFor(email, password);
+    if (blockedWhep) { sendGridBlocked(res, blockedWhep); return; }
     const upstreamHeaders: Record<string, string> = { ...UPSTREAM_BROWSER_HEADERS, 'Content-Type': 'application/sdp' };
     if (email && password) upstreamHeaders['Authorization'] = 'Basic ' + Buffer.from(`${email}:${password}`).toString('base64');
 
@@ -868,6 +895,7 @@ async function startServer() {
           console.info(`[WHEP PROXY] Upstream camera auth rejected for camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
           const wwwAuth = upstream.headers.get('www-authenticate');
           if (wwwAuth) res.setHeader('WWW-Authenticate', wwwAuth);
+          tripGridBlock(email, password, 'WHEP', `WHEP ${upstream.status} ${answer.slice(0, 80)}`);
         } else {
           console.warn(`[WHEP PROXY] Upstream rejected camId=${camId} -> ${upstream.status} (${email && password ? 'credentials sent' : 'no credentials sent'}). Body: ${answer.slice(0, 300)}`);
         }
@@ -875,6 +903,7 @@ async function startServer() {
         return;
       }
 
+      clearGridBlock(email, password);
       // MediaMTX answers with a Location header identifying this session's
       // resource (for later PATCH/DELETE) — usually a path relative to this
       // same origin. Resolve it to an absolute URL now so the client doesn't

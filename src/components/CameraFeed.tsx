@@ -214,7 +214,9 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // uses (see fallbackToHls below) — its manifests/segments routinely take
   // 20-45s, so a snapshot cycle over it is refreshed far less often than
   // the WHEP path to avoid stacking up overlapping slow requests.
-  const HLS_SNAPSHOT_REFRESH_MS = 120_000;
+  // Every snapshot is a short viewing session on the grid, which caps how much one account may watch, so
+  // refreshes are deliberately slow; a tab nobody is looking at does not refresh at all.
+  const HLS_SNAPSHOT_REFRESH_MS = 300_000;
   useEffect(() => {
     if (liveVideo || !isRemote || streamType !== 'hls' || !shouldConnect) return;
     // Cameras without a WHEP id (WHEP is opt-in per URL) take stills over the server's RTSP/HLS path.
@@ -252,6 +254,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // structural rather than a one-off blip.
     const captureLoop = async () => {
       if (cancelled) return;
+      if (document.hidden) { timer = setTimeout(captureLoop, 15_000); return; }
       if (!hasSnapshot && !hasCachedSnapshot(camera.id)) {
         setStatus((s) => (s === 'live' ? s : 'connecting'));
       }
@@ -261,6 +264,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       // re-run (triggered by the playbackMode dependency below) is what
       // schedules the next attempt — not this stale closure's delay.
       let switchingToHls = false;
+      let retryAfterMs = 0;
       try {
         const url = mode === 'hls'
           ? await captureHlsSnapshot(camera.remoteStreamUrl, { password: streamAccessPassword, email: streamAccessEmail, signal: abortController.signal })
@@ -274,6 +278,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Snapshot unavailable.';
+        retryAfterMs = (err as { retryAfterMs?: number } | null)?.retryAfterMs ?? 0;
         // If WHEP fails for any reason (timeout, ICE blocked, or 400 codec rejection),
         // seamlessly switch this tile's snapshot loop to HLS instead of stalling in error.
         if (mode === 'whep') {
@@ -296,7 +301,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       } finally {
         if (!cancelled && !switchingToHls) {
           // A tile that has no picture yet retries sooner than one that is just refreshing.
-          const delay = mode === 'hls' ? (hasSnapshot || hasCachedSnapshot(camera.id) ? HLS_SNAPSHOT_REFRESH_MS : 30_000) : SNAPSHOT_REFRESH_MS;
+          const delay = Math.max(retryAfterMs, mode === 'hls' ? (hasSnapshot || hasCachedSnapshot(camera.id) ? HLS_SNAPSHOT_REFRESH_MS : 90_000) : SNAPSHOT_REFRESH_MS);
           timer = setTimeout(captureLoop, delay);
         }
       }

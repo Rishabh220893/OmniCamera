@@ -24,7 +24,11 @@ export function extractFrameDetailed(inputUrl: string, isRtsp: boolean, timeoutM
       '-loglevel', 'error',
       // RTSP: the stream's codec details come with the session setup, so a long probe only delays the first
       // frame (ffmpeg's default analyses up to 5 s of video before decoding anything).
-      ...(isRtsp ? ['-rtsp_transport', 'tcp', '-fflags', 'nobuffer', '-analyzeduration', '1000000', '-probesize', '500000'] : []),
+      // - skip_frame nokey: decode only keyframes. Joining a stream mid-sequence otherwise decodes every
+      //   frame (and prints "co located POCs unavailable" / "reference picture missing") until the next
+      //   keyframe, which on a small CPU is most of the time these snapshots were taking.
+      // - allowed_media_types video: do not set up the audio track at all.
+      ...(isRtsp ? ['-rtsp_transport', 'tcp', '-allowed_media_types', 'video', '-fflags', 'nobuffer', '-analyzeduration', '1000000', '-probesize', '500000', '-skip_frame', 'nokey'] : []),
       '-i', inputUrl,
       '-vframes', '1',
       '-f', 'image2',
