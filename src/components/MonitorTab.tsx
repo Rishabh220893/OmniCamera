@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { hasCachedSnapshot } from '../lib/snapshotCache';
+import { useMediaConfig, mediaFailedCameras, gridCamId } from '../lib/mediaServer';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
@@ -85,7 +86,11 @@ function CameraTile({
   // Only the focused camera, the active one and anything selected for analysis decode live video. Every
   // other grid tile shows a periodically refreshed still: a browser (and the grid, which limits how much
   // each account can watch at once) cannot sustain dozens of live streams.
-  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis;
+  // With a media server (which serves any number of viewers from one pull per camera) the first N grid tiles
+  // play live as well; the rest stay stills. N is capped by what a browser can decode at once.
+  const media = useMediaConfig();
+  const mediaLive = !!media?.enabled && cameraIndex !== undefined && cameraIndex <= (media.maxLiveTiles ?? 12) && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
+  const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis || mediaLive;
 
   const feed = (
     <CameraFeed

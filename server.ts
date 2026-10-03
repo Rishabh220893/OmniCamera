@@ -5,6 +5,7 @@ import { createServer as createViteServer } from 'vite';
 import { google } from 'googleapis';
 import { GoogleGenAI } from '@google/genai';
 import { initializeApp, cert } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, isSafeCameraUrl } from './server/frameSource';
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
@@ -1382,6 +1383,30 @@ Analyze this context to answer user queries:
   }
 
   // Lets the UI know whether the "Analyze on server" toggle can do anything.
+  // Media server (media-server/): the app's browsers play the cameras from it directly, so video does not
+  // have to pass through this server. This tells a signed-in browser where it is and how to log in. The
+  // viewer password is only handed to a verified Firebase user (MEDIA_ALLOW_GUESTS=true skips that check,
+  // for local demos only), so it is not simply public.
+  app.get('/api/media/config', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const base = (process.env.MEDIA_SERVER_URL || '').trim().replace(/\/+$/, '');
+    const viewerPassword = process.env.MEDIA_VIEWER_PASSWORD || '';
+    if (!base || !viewerPassword) { res.json({ enabled: false }); return; }
+    if (process.env.MEDIA_ALLOW_GUESTS !== 'true') {
+      const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+      if (!idToken || !registryDb) { res.json({ enabled: false, reason: 'sign-in required' }); return; }
+      try { await getAuth().verifyIdToken(idToken); }
+      catch { res.json({ enabled: false, reason: 'sign-in could not be verified' }); return; }
+    }
+    res.json({
+      enabled: true,
+      hlsUrl: base,
+      user: 'viewer',
+      password: viewerPassword,
+      maxLiveTiles: Math.max(1, Number(process.env.MEDIA_MAX_LIVE_TILES) || 12),
+    });
+  });
+
   app.get('/api/analysis/config', async (_req, res) => {
     // ffmpeg is what captures frames server-side; without it the worker and snapshot route cannot work.
     res.status(200).json({ enabled: analysisWorker !== null, anpr: anprClient !== null, ffmpeg: (await checkFfmpeg()).available });

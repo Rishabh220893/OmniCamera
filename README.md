@@ -27,6 +27,10 @@ One-click, idempotent onboarding of the whole grid catalogue (with an honest war
 
 Plate search with exact matches, confirmable look-alike ("possible") matches, route reconstruction with plausibility flags, and CSV export — see [`docs/vehicle-tracking.md`](docs/vehicle-tracking.md).
 
+## Media server (live video for many cameras)
+
+`media-server/` pulls each camera once and serves it to all browsers, so a wall of live tiles does not run through the app server. No signup or API key is needed for the software. Setup, hosting options and what was tested: [`docs/media-server.md`](docs/media-server.md).
+
 ## Deploy
 
 This is a standard Node/Express server (`server.ts`, built via `npm run build` into `dist/server.cjs`, started via `npm start`) — it needs a real Node host, **not** an edge/Workers platform like Cloudflare Pages/Workers, since it depends on `firebase-admin` and `googleapis`, which require Node's native networking stack.
