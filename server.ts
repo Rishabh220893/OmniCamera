@@ -169,9 +169,14 @@ async function generateContentWithFallback(
 // The grid enforces one session per IP and answered ~30 simultaneous requests too slowly to finish, so the
 // HLS proxy lets only a few through at a time and queues the rest instead of timing them all out together.
 const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CONCURRENCY) || 8);
-// Newest segments served per playlist (6 s each) and how long a rewritten playlist may be reused.
-const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 10);
-const HLS_MANIFEST_CACHE_MS = 4_000;
+// Newest segments served per playlist (6 s each, so 100 is about 10 minutes of video) and how long a
+// rewritten playlist may be reused. The grid's playlists are recordings that end with ENDLIST, so a window
+// must be long enough to be worth watching; the cache makes player retries and page reloads instant.
+const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 100);
+const HLS_MANIFEST_CACHE_MS = Math.max(1_000, Number(process.env.HLS_MANIFEST_CACHE_MS) || 120_000);
+const manifestLogAt = new Map<string, number>();
+// A manifest already being fetched: later requests for it wait for that result instead of queueing their own.
+const pendingManifests = new Map<string, Promise<void>>();
 let hlsUpstreamActive = 0;
 const hlsUpstreamWaiters: Array<() => void> = [];
 async function withHlsUpstreamSlot<T>(task: () => Promise<T>): Promise<T> {
@@ -516,21 +521,38 @@ async function startServer() {
     const isKeyFile = /\.key(\?|$)/i.test(targetUrl);
     const isTsSegment = /\.ts(\?|$)/i.test(targetUrl);
 
-    // If this is a manifest and we have a cached version that is under 5 minutes old, serve immediately!
+    // The browser gives up on a slow request and retries; without this the server would keep working
+    // on every abandoned one and the retries would queue up behind them.
+    let clientGone = false;
+    res.on('close', () => { if (!res.writableEnded) clientGone = true; });
+
     const manifestCacheKey = `${targetUrl}|${email || ''}|${password || ''}`;
-    if (isManifest && manifestCache.has(manifestCacheKey)) {
-      const cached = manifestCache.get(manifestCacheKey)!;
-      if (Date.now() - cached.cachedAt < HLS_MANIFEST_CACHE_MS) {
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.setHeader('Cache-Control', 'no-cache');
-        res.setHeader('X-Cache', 'HIT');
-        res.status(200).send(cached.content);
-        return;
+    const sendCachedManifest = (): boolean => {
+      const cached = isManifest ? manifestCache.get(manifestCacheKey) : undefined;
+      if (!cached || Date.now() - cached.cachedAt >= HLS_MANIFEST_CACHE_MS) return false;
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('X-Cache', 'HIT');
+      res.status(200).send(cached.content);
+      return true;
+    };
+    if (sendCachedManifest()) return;
+
+    if (isManifest) {
+      const inflight = pendingManifests.get(manifestCacheKey);
+      if (inflight) {
+        await inflight;
+        if (clientGone || sendCachedManifest()) return;
       }
     }
+    let finishPending: (() => void) | undefined;
+    if (isManifest) pendingManifests.set(manifestCacheKey, new Promise<void>((resolve) => { finishPending = resolve; }));
 
+    const queuedAt = Date.now();
     try {
       await withHlsUpstreamSlot(async () => {
+      if (clientGone) return;
+      const slotAt = Date.now();
       const buildHeaders = (cookie?: string | null): Record<string, string> => {
         const headers: Record<string, string> = {
           ...UPSTREAM_BROWSER_HEADERS,
@@ -563,6 +585,7 @@ async function startServer() {
         upstream = await fetchUpstream(targetUrl, { headers: buildHeaders(), redirect: 'manual' }, fetchOpts);
       }
 
+      const headersAt = Date.now();
       if (!upstream.ok) {
         const bodyText = await upstream.text().catch(() => '');
         console.warn(`[PROXY HLS] Upstream rejected ${targetUrl} -> ${upstream.status} ${upstream.statusText}. Body: ${bodyText.slice(0, 200)}`);
@@ -576,6 +599,7 @@ async function startServer() {
 
       if (isManifest) {
         const text = await upstream.text();
+        const bodyAt = Date.now();
         if (!text.replace(/^\uFEFF/, '').trimStart().startsWith('#EXTM3U')) {
           if (cacheKey) sessionCookieCache.delete(cacheKey);
           console.warn(`[PROXY HLS] Upstream returned non-manifest for ${targetUrl}: ${text.slice(0, 200)}`);
@@ -583,8 +607,14 @@ async function startServer() {
           return;
         }
         const trim = trimLiveManifest(text, HLS_LIVE_WINDOW_SEGMENTS);
-        if (trim.trimmed) {
-          console.log(`[PROXY HLS] ${new URL(targetUrl).pathname}: playlist listed ${trim.totalSegments} segments (${text.length} bytes); serving the newest ${trim.keptSegments}${trim.hadEndList ? ' [has ENDLIST]' : ''}${trim.hadPlaylistType ? ' [had PLAYLIST-TYPE]' : ''}`);
+        // Where the time goes: queued here, waiting for the grid to start answering, or downloading the body.
+        const path = new URL(targetUrl).pathname;
+        const timings = `queued ${((slotAt - queuedAt) / 1000).toFixed(1)}s, grid first byte ${((headersAt - slotAt) / 1000).toFixed(1)}s, body ${((bodyAt - headersAt) / 1000).toFixed(1)}s`;
+        const slow = bodyAt - queuedAt > 10_000;
+        const lastLogged = manifestLogAt.get(path) ?? 0;
+        if (slow || Date.now() - lastLogged > 300_000) {
+          manifestLogAt.set(path, Date.now());
+          console.log(`[PROXY HLS] ${path}: ${trim.totalSegments} segments (${text.length} bytes)${trim.trimmed ? `, serving the newest ${trim.keptSegments}` : ''}${trim.hadEndList ? ' [ENDLIST]' : ''}${trim.hadPlaylistType ? ' [PLAYLIST-TYPE]' : ''}; ${timings}`);
         }
         const cleanText = trim.text.replace(/^\uFEFF/, '');
         const baseUrl = new URL(targetUrl);
@@ -637,7 +667,12 @@ async function startServer() {
     } catch (err: unknown) {
       const isTimeout = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError' || /aborted due to timeout/i.test(err.message));
       console.warn(`[PROXY HLS] ${isTimeout ? 'Upstream request timed out' : 'Upstream proxy error'} for ${targetUrl}:`, err instanceof Error ? err.message : String(err));
-      res.status(isTimeout ? 504 : 502).send(err instanceof Error ? err.message : 'Error proxying HLS resource');
+      if (!res.headersSent) res.status(isTimeout ? 504 : 502).send(err instanceof Error ? err.message : 'Error proxying HLS resource');
+    } finally {
+      if (isManifest) {
+        pendingManifests.delete(manifestCacheKey);
+        finishPending?.();
+      }
     }
   });
 
