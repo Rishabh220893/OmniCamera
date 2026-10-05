@@ -240,9 +240,9 @@ const withSnapshotSlot = createLimiter(SNAPSHOT_CONCURRENCY);
 // Some grid cameras send a keyframe only every 20-40 s, and an RTSP grab cannot produce a clean picture
 // before one arrives. Cameras that have already timed out get their own lane, a longer timeout and a
 // longer-lived cache, so they never hold up the cameras that answer in a few seconds.
-// Floor of 50 s: a camera with a 20-40 s keyframe interval cannot produce a frame inside a shorter budget
-// (production logs showed slow-lane grabs still being cut at 20 s).
-const RTSP_SLOW_TIMEOUT_MS = Math.max(50_000, Number(process.env.RTSP_SLOW_SNAPSHOT_TIMEOUT_MS) || 60_000);
+// Floor of 90 s: a clean keyframe can take 30-40 s on a fast link (measured locally on cam07) and longer on a small
+// instance; a 50 s limit still cut off cam07/cam25. The result is cached, so a client that gave up still benefits.
+const RTSP_SLOW_TIMEOUT_MS = Math.max(90_000, Number(process.env.RTSP_SLOW_SNAPSHOT_TIMEOUT_MS) || 60_000);
 const withSlowSnapshotSlot = createLimiter(Math.max(1, Number(process.env.SLOW_SNAPSHOT_CONCURRENCY) || 2));
 const slowCams = new Set<string>();
 const inflightSnapshots = new Map<string, Promise<Buffer | null>>();
