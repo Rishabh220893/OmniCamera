@@ -520,7 +520,10 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // viewers, so this tile adds no load to the grid or to this app's server. Safari's native HLS cannot
     // send the viewer login, and a camera whose media-server stream failed uses the app's proxy instead.
     const mediaCamId = gridCamId(camera.remoteStreamUrl);
-    const useMedia = !!(mediaCfg?.enabled && mediaCamId && !mediaFailedCameras.has(camera.id) && !video.canPlayType('application/vnd.apple.mpegurl'));
+    // Prefer hls.js wherever it runs: recent Chrome also plays HLS natively (canPlayType says 'maybe'), but the
+    // native player cannot send the media server's login header, so it would silently bypass the media server.
+    const nativeHls = !Hls.isSupported() && !!video.canPlayType('application/vnd.apple.mpegurl');
+    const useMedia = !!(mediaCfg?.enabled && mediaCamId && !mediaFailedCameras.has(camera.id) && !nativeHls);
 
     const startFrameVerification = () => {
       if (verifyTimer || cancelled) return;
@@ -628,7 +631,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     video.muted = true;
     video.playsInline = true;
 
-    if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    if (nativeHls) {
       video.src = proxiedUrl(camera.remoteStreamUrl);
     } else if (Hls.isSupported()) {
       hls = new Hls({
