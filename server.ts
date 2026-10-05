@@ -240,7 +240,9 @@ const withSnapshotSlot = createLimiter(SNAPSHOT_CONCURRENCY);
 // Some grid cameras send a keyframe only every 20-40 s, and an RTSP grab cannot produce a clean picture
 // before one arrives. Cameras that have already timed out get their own lane, a longer timeout and a
 // longer-lived cache, so they never hold up the cameras that answer in a few seconds.
-const RTSP_SLOW_TIMEOUT_MS = Math.max(20_000, Number(process.env.RTSP_SLOW_SNAPSHOT_TIMEOUT_MS) || 60_000);
+// Floor of 50 s: a camera with a 20-40 s keyframe interval cannot produce a frame inside a shorter budget
+// (production logs showed slow-lane grabs still being cut at 20 s).
+const RTSP_SLOW_TIMEOUT_MS = Math.max(50_000, Number(process.env.RTSP_SLOW_SNAPSHOT_TIMEOUT_MS) || 60_000);
 const withSlowSnapshotSlot = createLimiter(Math.max(1, Number(process.env.SLOW_SNAPSHOT_CONCURRENCY) || 2));
 const slowCams = new Set<string>();
 const inflightSnapshots = new Map<string, Promise<Buffer | null>>();
@@ -806,7 +808,17 @@ async function startServer() {
             const encodedEmail = encodeURIComponent(email).replace(/@/g, '%40');
             const encodedPassword = encodeURIComponent(password);
             const rtspUrl = `rtsp://${encodedEmail}:${encodedPassword}@103.250.160.189:8554/stream/${camKey}`;
-            const rtsp = await extractFrameDetailed(rtspUrl, true, slow ? RTSP_SLOW_TIMEOUT_MS : RTSP_SNAPSHOT_TIMEOUT_MS);
+            const rtspTimeout = slow ? RTSP_SLOW_TIMEOUT_MS : RTSP_SNAPSHOT_TIMEOUT_MS;
+            let rtsp = await extractFrameDetailed(rtspUrl, true, rtspTimeout);
+            // The grid's RTSP port sometimes refuses a session outright ("Connection refused", or an immediate
+            // EOF) within a few seconds, when several arrive together. That is transient, so retry after a short
+            // pause rather than failing the tile for a full refresh cycle. Not for timeouts or 401s.
+            for (let retry = 0; retry < 2 && !rtsp.buffer && rtsp.failure?.startsWith('exit') && rtsp.ms < 10_000
+              && /Connection refused|Connection reset|after EOF|Server returned 5\d\d/i.test(rtsp.stderrTail)
+              && !/401 Unauthorized|authorization failed/i.test(rtsp.stderrTail); retry++) {
+              await new Promise((r) => setTimeout(r, 2_000 * (retry + 1) + Math.random() * 1_000));
+              rtsp = await extractFrameDetailed(rtspUrl, true, rtspTimeout);
+            }
             frame = rtsp.buffer;
             if (rtsp.buffer) clearGridBlock(email, password);
             else if (/401 Unauthorized|authorization failed/i.test(rtsp.stderrTail)) tripGridBlock(email, password, 'RTSP', 'RTSP 401 Unauthorized');
