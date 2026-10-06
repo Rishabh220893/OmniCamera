@@ -15,3 +15,6 @@ media-server/*.crt
 
 # Local demo: the MediaMTX binary and its generated config (contains the grid login)
 media-server/bin/
+
+# Runner output (process logs, grabbed test frames)
+.demo-logs/
