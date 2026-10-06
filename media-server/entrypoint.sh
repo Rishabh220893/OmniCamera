@@ -24,6 +24,11 @@ MEDIA_WEBRTC_UDP_PORT="${MEDIA_WEBRTC_UDP_PORT:-8189}"
 MEDIA_API_PORT="${MEDIA_API_PORT:-9997}"
 MEDIA_ALLOW_ORIGIN="${MEDIA_ALLOW_ORIGIN:-*}"
 MEDIA_PUBLIC_HOST="${MEDIA_PUBLIC_HOST:-}"
+# HLS sessions are tied to the viewer's IP address. Behind a hosting proxy (Render, Cloudflare) every request
+# can arrive from a different proxy address, so sessions "disappear" (401 "session not found") unless MediaMTX
+# takes the real IP from X-Forwarded-For. Trusting every proxy only lets a viewer pick the IP of its own session;
+# the viewer password is still checked on every request.
+MEDIA_TRUSTED_PROXIES="${MEDIA_TRUSTED_PROXIES:-0.0.0.0/0,::/0}"
 # fmp4 = standard HLS: about 1 request a second per camera and tolerant of a slow or distant connection.
 # lowLatency saves a few seconds of delay but fetches tiny parts several times a second; in testing with a
 # 300 ms network delay it stalled (14 buffering events in 45 s against none for fmp4) and made 4x the requests.
@@ -43,6 +48,10 @@ CONFIG="${MEDIAMTX_CONFIG:-/tmp/mediamtx.yml}"
 case "$MEDIA_VIEWER_PASSWORD" in
   *[!A-Za-z0-9\!\$\(\)\*+.\;\<=\>\[\]^_,@#\&-]*)
     echo "MEDIA_VIEWER_PASSWORD may only contain letters, digits and ! \$ ( ) * + . ; < = > [ ] ^ _ , @ # & - (MediaMTX's own rule). A random hex string is safest." >&2; exit 1 ;;
+esac
+
+case "$MEDIA_TRUSTED_PROXIES" in
+  *[!0-9A-Fa-f:./,\ ]*) echo "MEDIA_TRUSTED_PROXIES must be comma-separated IPs or CIDRs." >&2; exit 1 ;;
 esac
 
 # Percent-encode a string for use inside a URL's user:password part.
@@ -75,6 +84,9 @@ PASS_ENC=$(urlencode "$GRID_PASSWORD")
 ORIGINS=""
 for o in $(printf '%s' "$MEDIA_ALLOW_ORIGIN" | tr ',' ' '); do ORIGINS="$ORIGINS$(yq "$o"), "; done
 ORIGINS="[${ORIGINS%, }]"
+PROXIES=""
+for o in $(printf '%s' "$MEDIA_TRUSTED_PROXIES" | tr ',' ' '); do PROXIES="$PROXIES$(yq "$o"), "; done
+PROXIES="[${PROXIES%, }]"
 HOSTS="[]"
 if [ -n "$MEDIA_PUBLIC_HOST" ]; then HOSTS="[$(yq "$MEDIA_PUBLIC_HOST")]"; fi
 
@@ -107,6 +119,7 @@ hlsVariant: $MEDIA_HLS_VARIANT
 # The HLS muxer has its own idle timer (default 60 s) that keeps a camera pulled.
 hlsMuxerCloseAfter: $MEDIA_IDLE_CLOSE
 hlsAllowOrigins: $ORIGINS
+hlsTrustedProxies: $PROXIES
 webrtc: yes
 webrtcAddress: :$MEDIA_WEBRTC_PORT
 webrtcLocalUDPAddress: :$MEDIA_WEBRTC_UDP_PORT

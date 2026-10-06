@@ -72,3 +72,12 @@ test('entrypoint: standard HLS (fmp4) by default, overridable', { skip: !HAS_SH 
   assert.match(run(base).yml, /hlsVariant: fmp4/);
   assert.match(run({ ...base, MEDIA_HLS_VARIANT: 'lowLatency' }).yml, /hlsVariant: lowLatency/);
 });
+
+test('entrypoint: HLS trusts proxies by default so sessions keep one client IP behind Render', { skip: !HAS_SH && 'sh not available' }, () => {
+  const r = run(base);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.yml, /hlsTrustedProxies: \['0\.0\.0\.0\/0', '::\/0'\]/);
+  const custom = run({ ...base, MEDIA_TRUSTED_PROXIES: '10.0.0.0/8' });
+  assert.match(custom.yml, /hlsTrustedProxies: \['10\.0\.0\.0\/8'\]/);
+  assert.notEqual(run({ ...base, MEDIA_TRUSTED_PROXIES: "1.1.1.1'; evil: 1" }).status, 0);
+});
