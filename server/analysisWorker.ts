@@ -1,4 +1,6 @@
-import { createAnalysisQueue, QueueStats } from './analysisQueue';
+import type { QueueStats } from './analysisQueue';
+import { AnalysisJob, JobBackend, JobOutcome, createLocalBackend } from './jobBackend';
+import type { FrameGate } from './frameGate';
 import { AnalysisResult, buildLogDocument } from './logEntry';
 import { buildSightings, LatLng, PlateSighting } from '../src/lib/plateTracking';
 import type { ClaimResult } from './leaseStore';
@@ -52,6 +54,13 @@ export interface WorkerDeps {
   claim?(cameraId: string, now: number, leaseMs: number): Promise<ClaimResult>;
   release?(cameraId: string, nextDueAt: number): Promise<void>;
   instanceId?: string;
+  /**
+   * Optional pre-filter run on every captured frame: unchanged scenes skip the model call (see
+   * frameGate.ts). Absent = every frame is analysed.
+   */
+  gate?: FrameGate;
+  /** Where jobs travel between scheduler and executors. Default: in-process queue. */
+  backend?: JobBackend;
   log: Pick<Console, 'info' | 'warn' | 'error'>;
 }
 
@@ -62,6 +71,11 @@ export interface WorkerOptions {
   userContextTtlMs: number;
   /** How long a claimed camera stays reserved; must exceed the slowest capture + analysis. */
   leaseMs: number;
+  /**
+   * all (default): schedule and execute here. scheduler: only decide what is due and queue it.
+   * worker: only execute queued jobs. The split needs a shared backend (Redis).
+   */
+  role: 'all' | 'scheduler' | 'worker';
 }
 
 export const DEFAULT_WORKER_OPTIONS: WorkerOptions = {
@@ -70,6 +84,7 @@ export const DEFAULT_WORKER_OPTIONS: WorkerOptions = {
   maxBackoffMs: 5 * 60_000,
   userContextTtlMs: 60_000,
   leaseMs: 120_000,
+  role: 'all',
 };
 
 interface CameraState {
@@ -91,6 +106,10 @@ export interface WorkerStatus {
   overdue: number;
   /** How late the most-overdue camera is, in seconds. Growing means capacity is too low for the camera count. */
   maxLagSeconds: number;
+  role: WorkerOptions['role'];
+  backend: JobBackend['kind'];
+  /** Runs the frame gate judged unchanged, so no model call and no log row were produced. */
+  skippedUnchanged: number;
   /** Times another instance already held / had just analysed a camera this instance tried to run. */
   skippedClaims: number;
   cameras: Array<{
@@ -110,13 +129,18 @@ export function backoffDelayMs(intervalMs: number, failures: number, maxMs: numb
 
 export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<WorkerOptions> = {}) {
   const opts = { ...DEFAULT_WORKER_OPTIONS, ...overrides };
-  const queue = createAnalysisQueue({ concurrency: opts.concurrency });
+  const backend = deps.backend ?? createLocalBackend({ concurrency: opts.concurrency });
   const states = new Map<string, CameraState>();
   const contextCache = new Map<string, { at: number; value: Promise<UserContext> }>();
   let unsubscribe: (() => void) | null = null;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let started = false;
   let skippedClaims = 0;
-  const running = new Set<string>();
+  let skippedUnchanged = 0;
+  // Cameras queued or running somewhere, with when they were queued.
+  const inflight = new Map<string, number>();
+  // Cameras this process is actually executing right now.
+  const executing = new Set<string>();
 
   const intervalMsOf = (c: WorkerCamera) => Math.max(MIN_INTERVAL_S, c.interval || 60) * 1000;
 
@@ -152,17 +176,17 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     return value;
   }
 
-  async function runCamera(state: CameraState) {
-    running.add(state.camera.id);
-    try {
-      await runCameraJob(state);
-    } finally {
-      running.delete(state.camera.id);
-    }
+  /**
+   * The executor half: claim, capture, gate, analyse, record. Stateless between calls (everything it
+   * needs rides in the job), so it can run in this process or in any number of separate workers.
+   */
+  async function execute(job: AnalysisJob): Promise<JobOutcome> {
+    executing.add(job.camera.id);
+    try { return await executeInner(job); } finally { executing.delete(job.camera.id); }
   }
 
-  async function runCameraJob(state: CameraState) {
-    const { camera } = state;
+  async function executeInner(job: AnalysisJob): Promise<JobOutcome> {
+    const { camera } = job;
 
     // With several instances, only the one that wins the shared lease analyses this camera.
     if (deps.claim) {
@@ -172,99 +196,181 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       } catch (err) {
         // Can't coordinate → don't analyse (risking a duplicate); try again shortly.
         deps.log.warn(`[ANALYSIS] Could not claim ${camera.name}:`, err);
-        state.nextDueAt = deps.now() + 5_000;
-        return;
+        return { cameraId: camera.id, startedAt: null, ok: true, error: job.lastError, failures: job.failures, nextDueAt: deps.now() + 5_000 };
       }
       if (claim.claimed === false) {
-        skippedClaims++;
-        state.nextDueAt = Math.max(deps.now() + 1_000, claim.retryAt);
-        return;
+        return { cameraId: camera.id, startedAt: null, ok: true, skipped: 'held', error: job.lastError, failures: job.failures, nextDueAt: Math.max(deps.now() + 1_000, claim.retryAt) };
       }
     }
 
     const startedAt = deps.now();
-    state.lastRunAt = startedAt;
+    let failures = job.failures;
+    let lastError = job.lastError;
+    let skipped: JobOutcome['skipped'];
+    let ok = false;
     try {
       const [frame, ctx] = await Promise.all([deps.grabFrame(camera), getUserContext(camera.userId)]);
-      const data = await deps.analyze({ imageBase64: frame.toString('base64'), camera, ...ctx });
-      const doc = buildLogDocument({ id: camera.id, name: camera.name, sensitivity: camera.sensitivity, userId: camera.userId }, data, new Date(deps.now()));
-      await deps.writeLog(doc);
 
-      // Plate sightings feed vehicle search and route reconstruction. A failure here
-      // must not discard the analysis that was just logged.
-      const sightings = buildSightings(
-        { id: camera.id, name: camera.name, department: camera.department, location: camera.location },
-        doc.timestamp, doc.detectedPlates, doc.plateReads, doc.plateSource as PlateSighting['source'],
-      );
-      await deps.writeSightings(camera.userId, sightings).catch((err) => deps.log.warn(`[ANALYSIS] Could not record plate sightings for ${camera.name}:`, err));
+      // Cheap pre-filter: an unchanged scene is not worth a model call (or a log row).
+      const decision = deps.gate ? await deps.gate.check(camera.id, frame, deps.now()) : null;
+      let doc: ReturnType<typeof buildLogDocument> | null = null;
+      if (decision && !decision.analyze) {
+        skipped = 'unchanged';
+      } else {
+        const data = await deps.analyze({ imageBase64: frame.toString('base64'), camera, ...ctx });
+        doc = buildLogDocument({ id: camera.id, name: camera.name, sensitivity: camera.sensitivity, userId: camera.userId }, data, new Date(deps.now()));
+        await deps.writeLog(doc);
+        // Only now does this frame become the gate's baseline — a failed analysis must not.
+        decision?.commit();
 
-      const recovered = state.lastError !== null;
-      state.failures = 0;
-      state.lastError = null;
-      state.lastSuccessAt = deps.now();
-      await deps.updateCamera(camera.id, { lastAnalysisTime: new Date(deps.now()), ...(recovered ? { lastAnalysisError: null } : {}) })
-        .catch((err) => deps.log.warn(`[ANALYSIS] Could not update camera ${camera.id}:`, err));
+        // Plate sightings feed vehicle search and route reconstruction. A failure here
+        // must not discard the analysis that was just logged.
+        const sightings = buildSightings(
+          { id: camera.id, name: camera.name, department: camera.department, location: camera.location },
+          doc.timestamp, doc.detectedPlates, doc.plateReads, doc.plateSource as PlateSighting['source'],
+        );
+        await deps.writeSightings(camera.userId, sightings).catch((err) => deps.log.warn(`[ANALYSIS] Could not record plate sightings for ${camera.name}:`, err));
+      }
 
-      if (camera.webhookUrl) {
+      const recovered = lastError !== null;
+      failures = 0;
+      lastError = null;
+      ok = true;
+      // A skipped run writes nothing unless it just cleared an error: that is the point of skipping.
+      if (doc || recovered) {
+        await deps.updateCamera(camera.id, { ...(doc ? { lastAnalysisTime: new Date(deps.now()) } : {}), ...(recovered ? { lastAnalysisError: null } : {}) })
+          .catch((err) => deps.log.warn(`[ANALYSIS] Could not update camera ${camera.id}:`, err));
+      }
+
+      if (doc && camera.webhookUrl) {
         const payload = { camera_id: camera.id, camera_name: camera.name, alert: doc.summary, timestamp: doc.timestamp, data: doc };
         deps.sendWebhook(camera.webhookUrl, payload).catch((err) => deps.log.warn(`[ANALYSIS] Webhook failed for ${camera.name}:`, err));
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const changed = state.lastError !== message;
-      state.failures++;
-      state.lastError = message;
-      deps.log.warn(`[ANALYSIS] "${camera.name}" failed (attempt ${state.failures}): ${message}`);
+      const changed = lastError !== message;
+      failures++;
+      lastError = message;
+      deps.log.warn(`[ANALYSIS] "${camera.name}" failed (attempt ${failures}): ${message}`);
       // Only persist when the error text changes — a camera that stays down
       // must not write to Firestore every retry.
       if (changed) await deps.updateCamera(camera.id, { lastAnalysisError: message }).catch(() => { /* best effort */ });
-    } finally {
-      // Keep the configured cadence: the next run is due one interval after this one *started*, not
-      // after it finished (otherwise a 60 s camera whose run takes 15 s would only run every 75 s).
-      // The floor stops a run that outlasts its interval from being followed by an instant re-run.
-      state.nextDueAt = Math.max(
-        startedAt + backoffDelayMs(intervalMsOf(state.camera), state.failures, opts.maxBackoffMs),
-        deps.now() + MIN_GAP_AFTER_RUN_MS,
-      );
-      await deps.release?.(camera.id, state.nextDueAt).catch((err) => deps.log.warn(`[ANALYSIS] Could not release lease on ${camera.name}:`, err));
     }
+
+    // Keep the configured cadence: the next run is due one interval after this one *started*, not
+    // after it finished (otherwise a 60 s camera whose run takes 15 s would only run every 75 s).
+    // The floor stops a run that outlasts its interval from being followed by an instant re-run.
+    const nextDueAt = Math.max(
+      startedAt + backoffDelayMs(intervalMsOf(camera), failures, opts.maxBackoffMs),
+      deps.now() + MIN_GAP_AFTER_RUN_MS,
+    );
+    await deps.release?.(camera.id, nextDueAt).catch((err) => deps.log.warn(`[ANALYSIS] Could not release lease on ${camera.name}:`, err));
+    return { cameraId: camera.id, startedAt, ok, skipped, error: lastError, failures, nextDueAt };
+  }
+
+  /** The scheduler half: fold an executor's report into the camera's schedule. */
+  function applyOutcome(cameraId: string, outcome: JobOutcome | { crashed: string }) {
+    inflight.delete(cameraId);
+    const state = states.get(cameraId);
+    if (!state) return; // camera was removed while its job ran
+    if ('crashed' in outcome) {
+      // The job died without reporting (worker lost, Redis error): treat it as a failed attempt.
+      state.failures++;
+      state.lastError = outcome.crashed;
+      state.nextDueAt = deps.now() + backoffDelayMs(intervalMsOf(state.camera), state.failures, opts.maxBackoffMs);
+      return;
+    }
+    if (outcome.skipped === 'held') skippedClaims++;
+    if (outcome.skipped === 'unchanged') skippedUnchanged++;
+    if (outcome.startedAt !== null) state.lastRunAt = outcome.startedAt;
+    if (outcome.ok && outcome.startedAt !== null) state.lastSuccessAt = deps.now();
+    state.failures = outcome.failures;
+    state.lastError = outcome.error;
+    state.nextDueAt = outcome.nextDueAt;
+  }
+
+  let wired = false;
+  /** Attach this process to the queue: execute jobs (unless scheduler-only) and hear their outcomes (unless worker-only). */
+  function wire() {
+    if (wired) return;
+    wired = true;
+    if (opts.role !== 'scheduler') backend.startConsuming(execute);
+    if (opts.role !== 'worker') backend.onOutcome(applyOutcome);
   }
 
   /** One scheduling pass: queue every due camera that isn't already queued/running. */
   function tick() {
+    wire();
     const now = deps.now();
-    for (const state of states.values()) {
-      if (now < state.nextDueAt || queue.has(state.camera.id)) continue;
-      queue.enqueue(state.camera.id, () => runCamera(state));
+    for (const [id, since] of inflight) {
+      // A job whose report never came back (executor killed, Redis flushed) must not park the camera forever.
+      if (now - since > opts.leaseMs * 2) inflight.delete(id);
     }
+    for (const state of states.values()) {
+      const id = state.camera.id;
+      if (now < state.nextDueAt || inflight.has(id)) continue;
+      inflight.set(id, now);
+      backend.enqueue({ camera: state.camera, failures: state.failures, lastError: state.lastError })
+        .then((accepted) => {
+          // Refused by a shared queue = a job for this camera already exists (e.g. queued before a
+          // scheduler restart). Stay in-flight; its outcome will arrive. A full local queue just retries.
+          if (!accepted && backend.kind === 'local') inflight.delete(id);
+        })
+        .catch((err) => {
+          inflight.delete(id);
+          deps.log.warn(`[ANALYSIS] Could not queue ${state.camera.name}:`, err);
+          state.nextDueAt = deps.now() + 5_000;
+        });
+    }
+  }
+
+  let cachedQueue: QueueStats = { queued: 0, active: 0, concurrency: opts.concurrency };
+  function queueStats(): QueueStats {
+    const s = backend.stats();
+    if (s instanceof Promise) { s.then((v) => { cachedQueue = v; }, () => { /* keep the last known value */ }); return cachedQueue; }
+    cachedQueue = s;
+    return s;
   }
 
   return {
     start() {
-      if (timer) return;
-      unsubscribe = deps.subscribeCameras(applyCameras, (err) => deps.log.error('[ANALYSIS] Camera subscription error:', err));
-      timer = setInterval(tick, opts.tickMs);
-      deps.log.info(`[ANALYSIS] Server-side analysis worker started (concurrency ${opts.concurrency}).`);
+      if (started) return;
+      started = true;
+      wire();
+      if (opts.role !== 'worker') {
+        unsubscribe = deps.subscribeCameras(applyCameras, (err) => deps.log.error('[ANALYSIS] Camera subscription error:', err));
+        timer = setInterval(tick, opts.tickMs);
+      }
+      deps.log.info(`[ANALYSIS] Server-side analysis started: role=${opts.role}, queue=${backend.kind}, concurrency ${opts.concurrency}.`);
     },
     stop() {
       if (timer) clearInterval(timer);
       timer = null;
       unsubscribe?.();
       unsubscribe = null;
+      started = false;
+    },
+    /** Stop and release the queue connection (Redis). */
+    async close() {
+      this.stop();
+      await backend.close();
     },
     status(): WorkerStatus {
       const now = deps.now();
       // Backlog: due, but not started. (A running camera keeps its old due time until it finishes.)
-      const waiting = [...states.values()].filter((st) => st.nextDueAt <= now && !running.has(st.camera.id));
+      const waiting = [...states.values()].filter((st) => st.nextDueAt <= now && !executing.has(st.camera.id));
       const lags = waiting.map((st) => now - st.nextDueAt);
       return {
-        running: timer !== null,
+        running: started,
+        role: opts.role,
+        backend: backend.kind,
         instanceId: deps.instanceId ?? null,
         distributed: Boolean(deps.claim),
-        queue: queue.stats(),
+        queue: queueStats(),
         overdue: waiting.length,
         maxLagSeconds: lags.length ? Math.round(Math.max(...lags) / 1000) : 0,
         skippedClaims,
+        skippedUnchanged,
         cameras: [...states.values()].map((s) => ({
           id: s.camera.id, name: s.camera.name, failures: s.failures,
           lastRunAt: s.lastRunAt ? new Date(s.lastRunAt).toISOString() : null,
@@ -276,7 +382,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     // Exposed for tests / manual driving.
     _applyCameras: applyCameras,
     _tick: tick,
-    _idle: () => queue.idle(),
+    _idle: () => backend.idle(),
   };
 }
 

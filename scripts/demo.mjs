@@ -1,0 +1,384 @@
+#!/usr/bin/env node
+/**
+ * One command to run everything for a demo, in any shell (PowerShell, cmd, Git Bash).
+ *
+ *   node scripts/demo.mjs check             pre-flight: is everything ready? (also runs inside `up`)
+ *   node scripts/demo.mjs up                start media server + scheduler + worker(s), watch them
+ *   node scripts/demo.mjs status            is analysis actually flowing? (queue, cameras, recent logs)
+ *   node scripts/demo.mjs analysis-off      un-flag every camera for server analysis (--yes to apply)
+ *   node scripts/demo.mjs stop              kill leftovers on the demo ports
+ *
+ * `up` options:  --workers N (default 1)   --dev (tsx + Vite instead of the production build)
+ *                --build (force a rebuild)  --single (one process, in-memory queue, no Redis)
+ *                --no-media   --no-pg   --all-logs (show every analysis in the Logs tab, not only notable ones)
+ *
+ * Settings come from scale.local (and demo.local if present). Both are git-ignored. See DEMO.md.
+ */
+import fs from 'node:fs';
+import net from 'node:net';
+import path from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// pg prints a long SSL-mode notice on every connect; it is noise for this tool.
+const emitWarning = process.emitWarning;
+process.emitWarning = (w, ...rest) => (/SSL modes/.test(String(w)) ? undefined : emitWarning.call(process, w, ...rest));
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const argv = process.argv.slice(2);
+const command = argv.find((a) => !a.startsWith('--')) || 'help';
+const flag = (f) => argv.includes(f);
+const opt = (f, d) => { const i = argv.indexOf(f); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
+const WIN = process.platform === 'win32';
+
+const APP_PORT = 3000, MEDIA_PORT = 8888;
+const WORKERS = Math.max(0, Number(opt('--workers', 1)));
+const GRID_HOST = '103.250.160.189';
+
+// ---------------------------------------------------------------- output helpers
+const C = { reset: '\x1b[0m', dim: '\x1b[2m', red: '\x1b[31m', green: '\x1b[32m', yellow: '\x1b[33m', cyan: '\x1b[36m', magenta: '\x1b[35m', blue: '\x1b[34m' };
+const paint = (c, s) => (process.stdout.isTTY ? C[c] + s + C.reset : s);
+const PASS = paint('green', 'PASS'), WARN = paint('yellow', 'WARN'), FAIL = paint('red', 'FAIL'), INFO = paint('cyan', 'INFO');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mask = (s) => String(s).replace(/(:\/\/[^:@/]*:)[^@]*@/g, '$1***@');
+
+// ---------------------------------------------------------------- config
+function parseEnvFile(file) {
+  const out = {};
+  if (!fs.existsSync(file)) return out;
+  for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 1) continue;
+    let v = line.slice(eq + 1).trim();
+    if (v.length >= 2 && ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"')))) v = v.slice(1, -1);
+    out[line.slice(0, eq).trim()] = v;
+  }
+  return out;
+}
+
+function loadConfig() {
+  const env = { ...process.env, ...parseEnvFile(path.join(ROOT, 'demo.local')), ...parseEnvFile(path.join(ROOT, 'scale.local')) };
+  env.GRID_EMAIL ||= env.STREAM_EMAIL;
+  env.GRID_PASSWORD ||= env.STREAM_PASSWORD;
+  env.STREAM_EMAIL ||= env.GRID_EMAIL;
+  env.STREAM_PASSWORD ||= env.GRID_PASSWORD;
+  env.MEDIA_VIEWER_PASSWORD ||= 'localdemo2026';
+  env.REGISTRY_API_KEY ||= 'test123';
+  env.SERVER_ANALYSIS ||= 'true';
+  if (flag('--no-pg')) for (const k of ['EVENT_STORE', 'DATABASE_URL', 'DATABASE_SSL', 'FIRESTORE_LOG_MODE']) delete env[k];
+  if (flag('--single')) { delete env.REDIS_URL; delete env.ANALYSIS_ROLE; }
+  // The Logs tab reads Firestore; by default only notable events are mirrored there once Postgres is the record.
+  if (flag('--all-logs')) env.FIRESTORE_LOG_MODE = 'all';
+  return env;
+}
+
+// ---------------------------------------------------------------- small probes
+const tcp = (host, port, ms = 5000) => new Promise((resolve) => {
+  const s = net.connect({ host, port });
+  const done = (ok) => { s.destroy(); resolve(ok); };
+  s.setTimeout(ms, () => done(false)); s.once('connect', () => done(true)); s.once('error', () => done(false));
+});
+const portFree = (port) => new Promise((resolve) => {
+  const s = net.createServer();
+  s.once('error', () => resolve(false));
+  s.once('listening', () => s.close(() => resolve(true)));
+  s.listen(port, '0.0.0.0');
+});
+async function getJson(url, headers = {}, ms = 8000) {
+  const r = await fetch(url, { headers, signal: AbortSignal.timeout(ms) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+function findBash() {
+  for (const p of ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe', '/bin/bash', '/usr/bin/bash']) if (fs.existsSync(p)) return p;
+  const r = spawnSync(WIN ? 'where' : 'which', ['bash'], { encoding: 'utf8' });
+  const hit = r.status === 0 ? r.stdout.split(/\r?\n/).find((l) => l && !/system32/i.test(l)) : null; // System32\bash.exe is WSL, not Git Bash
+  return hit || null;
+}
+function newestMtime(p) {
+  let newest = 0;
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) walk(f); else newest = Math.max(newest, fs.statSync(f).mtimeMs); } };
+  fs.statSync(p).isDirectory() ? walk(p) : (newest = fs.statSync(p).mtimeMs);
+  return newest;
+}
+const distStale = () => {
+  const dist = path.join(ROOT, 'dist', 'server.cjs');
+  if (!fs.existsSync(dist) || !fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) return true;
+  const built = fs.statSync(dist).mtimeMs;
+  return ['server.ts', 'server', 'src', 'index.html', 'package.json'].some((p) => fs.existsSync(path.join(ROOT, p)) && newestMtime(path.join(ROOT, p)) > built + 1000);
+};
+
+// ---------------------------------------------------------------- check
+async function check(cfg, { quiet = false } = {}) {
+  const rows = [];
+  const add = (level, what, detail = '') => rows.push({ level, what, detail });
+  const wantRedis = !flag('--single');
+  const wantPg = cfg.EVENT_STORE === 'postgres';
+
+  const major = Number(process.versions.node.split('.')[0]);
+  add(major >= 20 ? PASS : FAIL, 'Node.js', `v${process.versions.node}${major >= 20 ? '' : ' (need 20+)'}`);
+
+  const ff = spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' });
+  add(ff.status === 0 ? PASS : FAIL, 'ffmpeg', ff.status === 0 ? ff.stdout.split('\n')[0].slice(0, 40) : 'not found on PATH - frame capture will fail');
+
+  const missing = ['FIREBASE_SERVICE_ACCOUNT', 'GEMINI_API_KEY', 'STREAM_EMAIL', 'STREAM_PASSWORD'].filter((k) => !cfg[k]);
+  add(missing.length ? FAIL : PASS, 'scale.local values', missing.length ? 'missing: ' + missing.join(', ') : 'all required values set');
+  try { const j = JSON.parse(cfg.FIREBASE_SERVICE_ACCOUNT || ''); add(j.private_key && j.client_email ? PASS : FAIL, 'Firebase service account', 'project ' + j.project_id); }
+  catch { add(FAIL, 'Firebase service account', 'FIREBASE_SERVICE_ACCOUNT is not valid JSON (one line, in single quotes)'); }
+
+  if (wantRedis) {
+    if (!cfg.REDIS_URL) add(FAIL, 'Redis', 'REDIS_URL not set (use --single to run without Redis)');
+    else {
+      try {
+        const { default: Redis } = await import('ioredis');
+        const u = new URL(cfg.REDIS_URL);
+        const r = new Redis({ host: u.hostname, port: Number(u.port) || 6379, username: u.username || undefined, password: decodeURIComponent(u.password) || undefined, ...(u.protocol === 'rediss:' ? { tls: {} } : {}), connectTimeout: 10000, maxRetriesPerRequest: 1, lazyConnect: true, retryStrategy: () => null });
+        r.on('error', () => {});
+        const t0 = Date.now(); await r.connect(); await r.ping(); const ms = Date.now() - t0; r.disconnect();
+        add(PASS, 'Redis', `${u.hostname}  (${ms} ms)`);
+      } catch (e) { add(FAIL, 'Redis', mask(String(e.message)).slice(0, 90)); }
+    }
+  } else add(INFO, 'Redis', 'skipped (--single: in-memory queue)');
+
+  if (wantPg) {
+    try {
+      const { default: pg } = await import('pg');
+      const pool = new pg.Pool({ connectionString: cfg.DATABASE_URL, connectionTimeoutMillis: 20000 });
+      const t0 = Date.now(); await pool.query('select 1'); await pool.end();
+      add(PASS, 'Postgres', `reachable and warm (${Date.now() - t0} ms)`);
+    } catch (e) { add(FAIL, 'Postgres', mask(String(e.message)).slice(0, 90)); }
+  } else add(INFO, 'Postgres', 'not used (events go to Firestore)');
+
+  const [rtsp, whep] = await Promise.all([tcp(GRID_HOST, 8554), tcp(GRID_HOST, 8889)]);
+  add(rtsp ? PASS : WARN, 'Camera grid RTSP :8554', rtsp ? 'reachable' : 'unreachable (third-party server; analysis and media will fail until it is back)');
+  add(whep ? PASS : WARN, 'Camera grid WebRTC :8889', whep ? 'reachable' : 'unreachable');
+
+  const ports = [APP_PORT, ...Array.from({ length: WORKERS }, (_, i) => APP_PORT + 1 + i), ...(flag('--no-media') ? [] : [MEDIA_PORT])];
+  const busy = [];
+  for (const p of ports) if (!(await portFree(p))) busy.push(p);
+  add(busy.length ? FAIL : PASS, 'Ports', busy.length ? `in use: ${busy.join(', ')} - run: node scripts/demo.mjs stop` : `free: ${ports.join(', ')}`);
+
+  if (!flag('--no-media')) {
+    const bash = findBash();
+    add(bash ? PASS : FAIL, 'Git Bash (for the media server)', bash || 'not found - install Git for Windows, or use --no-media');
+    const bin = path.join(ROOT, 'media-server', 'bin', WIN ? 'mediamtx.exe' : 'mediamtx');
+    add(fs.existsSync(bin) ? PASS : WARN, 'MediaMTX binary', fs.existsSync(bin) ? 'present' : 'will be downloaded on first start (needs internet)');
+  }
+
+  if (!flag('--dev')) add(distStale() ? INFO : PASS, 'Production build', distStale() ? 'out of date - `up` will rebuild (about a minute)' : 'up to date');
+
+  if (cfg.ANPR_SERVICE_URL) {
+    try { const h = await getJson(cfg.ANPR_SERVICE_URL.replace(/\/+$/, '') + '/healthz', {}, 8000); add(PASS, 'ANPR service', `${h.status || 'ok'}, device ${h.device || '?'}`); }
+    catch (e) { add(WARN, 'ANPR service', `${cfg.ANPR_SERVICE_URL} not answering (${e.message}) - plates fall back to Gemini`); }
+  } else add(INFO, 'ANPR service', 'not configured - plates are read by Gemini (set ANPR_SERVICE_URL + ANPR_API_KEY to use it)');
+
+  if (!quiet) {
+    console.log(paint('cyan', '\nPre-flight check'));
+    for (const r of rows) console.log(`  ${r.level}  ${r.what.padEnd(34)} ${paint('dim', r.detail)}`);
+  }
+  const fails = rows.filter((r) => r.level === FAIL).length;
+  if (!quiet) console.log(fails ? paint('red', `\n${fails} problem(s) to fix before starting.\n`) : paint('green', '\nReady.\n'));
+  return fails;
+}
+
+// ---------------------------------------------------------------- processes
+const children = [];
+const seenOnce = new Set();
+function launch(label, color, cmd, args, env, opts = {}) {
+  const child = spawn(cmd, args, { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  fs.mkdirSync(path.join(ROOT, '.demo-logs'), { recursive: true });
+  const log = fs.createWriteStream(path.join(ROOT, '.demo-logs', `${label}.log`), { flags: 'w' });
+  const tag = paint(color, `[${label}]`.padEnd(10));
+  const pump = (stream) => {
+    let buf = '';
+    stream.on('data', (d) => {
+      log.write(d);
+      buf += d.toString();
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).replace(/\r$/, ''); buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        if (/Eviction policy is/.test(line)) { if (seenOnce.has('evict')) continue; seenOnce.add('evict'); }
+        if (NOISE.test(line) || (opts.hide && opts.hide.test(line))) continue;
+        console.log(`${tag} ${line}`);
+      }
+    });
+  };
+  pump(child.stdout); pump(child.stderr);
+  child.on('exit', (code) => { if (!shuttingDown) console.log(`${tag} ${paint('red', `exited with code ${code}`)} (see .demo-logs/${label}.log)`); });
+  children.push({ label, child });
+  return child;
+}
+// Library notices that repeat on every start and mean nothing for a demo.
+const NOISE = /SSL modes|next major version|To prepare for this change|sslmode=verify-full|uselibpqcompat|libpq-ssl|trace-warnings|CJS build of Vite/;
+let shuttingDown = false;
+function killTree(pid) {
+  if (WIN) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
+  else { try { process.kill(-pid); } catch { try { process.kill(pid); } catch { /* gone */ } } }
+}
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(paint('yellow', '\nStopping everything...'));
+  for (const { child } of children) if (child.pid) killTree(child.pid);
+  setTimeout(() => process.exit(0), 1500);
+}
+
+async function waitFor(what, fn, timeoutMs) {
+  const t0 = Date.now();
+  let lastErr = '';
+  while (Date.now() - t0 < timeoutMs) {
+    try { if (await fn()) return true; } catch (e) { lastErr = e.message; }
+    await sleep(1500);
+  }
+  console.log(`${FAIL}  ${what} did not come up within ${Math.round(timeoutMs / 1000)}s ${lastErr}`);
+  return false;
+}
+
+// ---------------------------------------------------------------- up
+async function up() {
+  const cfg = loadConfig();
+  if (await check(cfg)) process.exit(1);
+
+  const dev = flag('--dev');
+  if (!dev && (flag('--build') || distStale())) {
+    console.log(paint('cyan', 'Building the app (about a minute)...'));
+    const b = spawnSync(WIN ? 'npm.cmd run build' : 'npm run build', { cwd: ROOT, stdio: 'inherit', shell: true });
+    if (b.status !== 0) { console.log(`${FAIL}  build failed`); process.exit(1); }
+  }
+  const entry = dev ? [path.join(ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs'), 'server.ts'] : [path.join(ROOT, 'dist', 'server.cjs')];
+  const single = flag('--single');
+  const base = { ...cfg, NODE_ENV: dev ? 'development' : 'production' };
+
+  // 1. media server (MediaMTX), via the existing script in its media-only mode
+  if (!flag('--no-media')) {
+    const bash = findBash();
+    launch('media', 'blue', bash, ['scripts/local-demo.sh'], { ...base, MEDIA_ONLY: '1', PORT: String(APP_PORT), MEDIA_HLS_PORT: String(MEDIA_PORT) }, { hide: /^\s*$/ });
+    const ok = await waitFor('media server', async () => (await fetch(`http://127.0.0.1:${MEDIA_PORT}/cam01/index.m3u8?cookieCheck=1`, { signal: AbortSignal.timeout(4000) })).status === 401, 60_000);
+    if (!ok) { shutdown(); return; }
+    console.log(`${PASS}  media server up on :${MEDIA_PORT}`);
+  }
+
+  // 2. scheduler (also serves the web app), 3. workers
+  const schedEnv = { ...base, PORT: String(APP_PORT), ...(single ? {} : { ANALYSIS_ROLE: 'scheduler' }),
+    ...(flag('--no-media') ? {} : { MEDIA_SERVER_URL: `http://localhost:${MEDIA_PORT}`, MEDIA_ALLOW_GUESTS: 'true', MEDIA_MAX_LIVE_TILES: base.MEDIA_MAX_LIVE_TILES || '10' }) };
+  launch(single ? 'app' : 'scheduler', 'green', process.execPath, entry, schedEnv);
+  if (!single) for (let i = 0; i < WORKERS; i++) {
+    launch(`worker${i + 1}`, 'magenta', process.execPath, entry, { ...base, PORT: String(APP_PORT + 1 + i), ANALYSIS_ROLE: 'worker' });
+  }
+
+  const key = { 'X-Registry-Api-Key': cfg.REGISTRY_API_KEY };
+  const statusOf = (port) => getJson(`http://localhost:${port}/api/analysis/status`, key);
+  const ports = single ? [APP_PORT] : [APP_PORT, ...Array.from({ length: WORKERS }, (_, i) => APP_PORT + 1 + i)];
+  for (const p of ports) {
+    const ok = await waitFor(`server on :${p}`, async () => (await statusOf(p)).running === true, 180_000);
+    if (!ok) { shutdown(); return; }
+  }
+  console.log(paint('green', '\n=========================================================='));
+  console.log(paint('green', ` READY  ->  open  http://localhost:${APP_PORT}`));
+  console.log(paint('green', '=========================================================='));
+  console.log(' 1. Sign in with Google (not the offline demo).');
+  console.log(' 2. Tick the cameras to analyse -> header scope becomes "Selected" -> Activate Guard.');
+  console.log(' 3. Watch the [status] line below. At the end:  node scripts/demo.mjs analysis-off --yes');
+  console.log(paint('dim', ' Ctrl+C stops everything.\n'));
+
+  const beat = async () => {
+    try {
+      const s = await statusOf(APP_PORT);
+      const ok = s.cameras.filter((c) => c.lastSuccessAt).length;
+      const failing = s.cameras.filter((c) => c.failures > 0).length;
+      console.log(`${paint('cyan', '[status]'.padEnd(10))} cameras ${s.cameras.length} (ok ${ok}, failing ${failing})  queue ${s.queue.queued} queued / ${s.queue.active} active  overdue ${s.overdue} (lag ${s.maxLagSeconds}s)  skipped-unchanged ${s.skippedUnchanged}`);
+    } catch { /* server busy; next beat */ }
+  };
+  setInterval(beat, 30_000);
+}
+
+// ---------------------------------------------------------------- status
+async function adminDb(cfg) {
+  const { initializeApp, cert } = await import('firebase-admin/app');
+  const { getFirestore } = await import('firebase-admin/firestore');
+  return getFirestore(initializeApp({ credential: cert(JSON.parse(cfg.FIREBASE_SERVICE_ACCOUNT)) }));
+}
+
+async function status() {
+  const cfg = loadConfig();
+  const key = { 'X-Registry-Api-Key': cfg.REGISTRY_API_KEY };
+  console.log(paint('cyan', '\nProcesses'));
+  for (const port of [APP_PORT, APP_PORT + 1, APP_PORT + 2, APP_PORT + 3]) {
+    try {
+      const s = await getJson(`http://localhost:${port}/api/analysis/status`, key, 5000);
+      const extra = s.role === 'worker' ? '' : `  cameras ${s.cameras.length} (ok ${s.cameras.filter((c) => c.lastSuccessAt).length}, failing ${s.cameras.filter((c) => c.failures > 0).length})  overdue ${s.overdue} (lag ${s.maxLagSeconds}s)  skipped-unchanged ${s.skippedUnchanged}`;
+      console.log(`  ${PASS}  :${port}  ${String(s.role).padEnd(9)} queue=${s.backend}  ${s.queue.queued} queued / ${s.queue.active} active${extra}`);
+      for (const c of s.cameras.filter((c) => c.failures > 0).slice(0, 5)) console.log(`        ${paint('yellow', c.name.slice(0, 28).padEnd(28))} failures ${c.failures}  ${String(c.lastError).slice(0, 60)}`);
+    } catch (e) { if (port === APP_PORT) console.log(`  ${FAIL}  :${port}  not running (${e.message})`); }
+  }
+  try {
+    const r = await fetch(`http://127.0.0.1:${MEDIA_PORT}/cam01/index.m3u8?cookieCheck=1`, { signal: AbortSignal.timeout(4000) });
+    console.log(`  ${r.status === 401 ? PASS : WARN}  :${MEDIA_PORT}  media server (${r.status === 401 ? 'up' : 'HTTP ' + r.status})`);
+  } catch { console.log(`  ${WARN}  :${MEDIA_PORT}  media server not running`); }
+
+  console.log(paint('cyan', '\nFirestore'));
+  try {
+    const db = await adminDb(cfg);
+    const flagged = await db.collection('cameras').where('serverAnalysis', '==', true).get();
+    console.log(`  cameras flagged for server analysis: ${flagged.size}`);
+    const since = Date.now() - 5 * 60_000;
+    const logs = await db.collection('logs').orderBy('timestamp', 'desc').limit(300).get();
+    const recent = logs.docs.map((d) => d.data()).filter((x) => x.timestamp.toDate().getTime() > since);
+    const server = recent.filter((x) => x.analyzedBy === 'server');
+    console.log(`  logs in the last 5 min: ${server.length} from the server, ${recent.length - server.length} from browsers`);
+    if (server.length) console.log(`  newest server log: ${server[0].cameraName.slice(0, 28)} at ${server[0].timestamp.toDate().toLocaleTimeString()}`);
+    else if (flagged.size) console.log(paint('yellow', '  cameras are flagged but no server logs yet - give it a minute, then check the worker window'));
+  } catch (e) { console.log(`  ${FAIL}  could not read Firestore: ${String(e.message).slice(0, 80)}`); }
+  console.log('');
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- analysis-off
+async function analysisOff() {
+  const cfg = loadConfig();
+  const db = await adminDb(cfg);
+  const snap = await db.collection('cameras').where('serverAnalysis', '==', true).get();
+  console.log(`${snap.size} camera(s) are flagged for server analysis.`);
+  if (snap.size === 0) process.exit(0);
+  if (!flag('--yes')) { console.log('Nothing changed. Run again with --yes to switch them all off.'); process.exit(0); }
+  for (let i = 0; i < snap.docs.length; i += 400) {
+    const batch = db.batch();
+    snap.docs.slice(i, i + 400).forEach((d) => batch.update(d.ref, { serverAnalysis: false }));
+    await batch.commit();
+  }
+  console.log('Done: server analysis is off for all cameras. (Activate Guard turns it on again for the ones you pick.)');
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------- stop
+function stop() {
+  const ports = [...Array.from({ length: 10 }, (_, i) => APP_PORT + i), MEDIA_PORT];
+  const pids = new Set();
+  if (WIN) {
+    const out = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' }).stdout || '';
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^\s*TCP\s+\S+:(\d+)\s+\S+\s+LISTENING\s+(\d+)/i);
+      if (m && ports.includes(Number(m[1]))) pids.add(m[2]);
+    }
+  } else {
+    for (const p of ports) { const o = spawnSync('lsof', ['-ti', `tcp:${p}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout || ''; o.split(/\s+/).filter(Boolean).forEach((x) => pids.add(x)); }
+  }
+  if (!pids.size) { console.log('Nothing is listening on the demo ports (3000-3009, 8888).'); return; }
+  for (const pid of pids) { killTree(pid); console.log(`stopped process ${pid}`); }
+}
+
+// ---------------------------------------------------------------- main
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+switch (command) {
+  case 'check': process.exit(await check(loadConfig()) ? 1 : 0); break;
+  case 'up': await up(); break;
+  case 'status': await status(); break;
+  case 'analysis-off': await analysisOff(); break;
+  case 'stop': stop(); break;
+  default:
+    console.log(fs.readFileSync(fileURLToPath(import.meta.url), 'utf8').split('*/')[0].replace(/^#!.*\n/, '').replace(/^\/\*\*?|^ \* ?/gm, ''));
+}
