@@ -13,9 +13,10 @@ import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../typ
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
 
-// 10 tiles per page: every one of them can play live (a browser decodes about this many streams at once),
-// where a page of 24 left most tiles waiting for a live slot that never came.
-const GRID_PAGE_SIZE = 10;
+// 6 tiles per page: every one of them plays live. Only about six grid cameras stream cleanly (the others lose
+// packets at the grid itself, see src/lib/cameraHealth.ts), and the healthiest are listed first, so page 1 is
+// the six that work. A page of 24 left most tiles waiting for a live slot that never came.
+const GRID_PAGE_SIZE = 6;
 
 function formatLastAnalysisTime(lat: unknown): string {
   if (!lat) return '';

@@ -6,7 +6,7 @@ import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/str
 import { startWhep, captureWhepSnapshot } from '../lib/whepClient';
 import { captureHlsSnapshot } from '../lib/hlsSnapshot';
 import { getCachedSnapshot, setCachedSnapshot, hasCachedSnapshot } from '../lib/snapshotCache';
-import { useMediaConfig, mediaFailedCameras, gridCamId, mediaPlaylistUrl, mediaAuthHeader } from '../lib/mediaServer';
+import { useMediaConfig, mediaFailedCameras, gridCamId, mediaPlaylistUrl, mediaAuthHeader, noteMediaFailure, noteMediaPlaying } from '../lib/mediaServer';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -109,8 +109,13 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // The grid needs the account's email and password and the app no longer ships any default, so a remote
   // grid tile without them must not try to connect (every attempt would be refused and counted against
   // the grid's request limits). It says so instead.
-  const credsMissing = isRemote && streamType === 'hls' && (!streamAccessPassword || !streamAccessEmail);
-  const shouldConnect = shouldConnectProp && !credsMissing;
+  // A live tile that plays from the media server needs no grid login in the browser: the media server holds
+  // it. So those tiles wait for the media config (instead of failing) and then connect without credentials.
+  const credsEmpty = !streamAccessPassword || !streamAccessEmail;
+  const mediaWillServe = liveVideo && !!mediaCfg?.enabled && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
+  const waitingForMediaConfig = liveVideo && mediaCfg === null && credsEmpty;
+  const credsMissing = isRemote && streamType === 'hls' && credsEmpty && !mediaWillServe && !waitingForMediaConfig;
+  const shouldConnect = shouldConnectProp && !credsMissing && !(isRemote && streamType === 'hls' && waitingForMediaConfig);
   useEffect(() => {
     if (!credsMissing) return;
     setStatus('error');
@@ -584,6 +589,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
       }, 1500);
     };
     const handlePlaying = () => {
+      if (useMedia) noteMediaPlaying(camera.id);
       setStatus('live');
       setRemoteError(null);
       startFrameVerification();
@@ -614,7 +620,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // Above the manifest and fragment stage timeouts combined
     // (A media-server camera can need longer: some grid cameras only send a keyframe every 20-40 s.)
     const watchdog = setTimeout(() => {
-      if (useMedia) mediaFailedCameras.add(camera.id);
+      if (useMedia) noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail));
       scheduleReconnect('Timed out waiting for a real picture from this stream.');
     }, useMedia ? 90_000 : 60_000);
     const clearWatchdog = () => clearTimeout(watchdog);
@@ -675,10 +681,12 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
         // the first decoder error will bounce on those streams."
         if (data.fatal) {
           clearWatchdog();
-          // A failed media-server stream (down, wrong login, blocked) falls back to the app's own proxy.
+          // A failed media-server stream is retried (the media server pulls the camera again on the next
+          // request). Only after repeated failures, and only if this browser has a grid login for it, does the
+          // camera switch to the app's own proxy.
           if (useMedia) {
-            mediaFailedCameras.add(camera.id);
-            scheduleReconnect(`Media server unavailable (${data.details}); using the direct route.`);
+            const switched = noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail));
+            scheduleReconnect(`Media server stream failed (${data.details}); ${switched ? 'using the direct route' : 'retrying'}.`);
             return;
           }
           const isAuth = data.response?.code === 401 || data.response?.code === 403;

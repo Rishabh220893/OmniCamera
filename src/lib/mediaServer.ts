@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { auth } from './firebase';
+import { shardedMediaBase } from './mediaHost';
 
 /** What /api/media/config says about the media server (media-server/): where it is and how to log in. */
 export interface MediaConfig {
@@ -14,6 +15,27 @@ export interface MediaConfig {
 /** Cameras whose media-server stream failed this session; they use the app's own proxy instead. */
 export const mediaFailedCameras = new Set<string>();
 
+const mediaFailureCounts = new Map<string, number>();
+/** Consecutive media-server failures after which a camera gives up on it (only if the fallback route is usable). */
+export const MEDIA_FAILURES_BEFORE_FALLBACK = 6;
+
+/**
+ * A media-server stream failed. Streams drop for ordinary reasons (the grid resets a camera, a muxer restarts),
+ * and the media server pulls the camera again on the next request, so the tile should just retry. Only after
+ * several failures in a row, and only when the browser has its own grid login for the fallback route to use
+ * (without one that route fails at once), is the camera switched to the app's own proxy.
+ * Returns true when it has been switched.
+ */
+export function noteMediaFailure(cameraId: string, fallbackUsable: boolean): boolean {
+  const n = (mediaFailureCounts.get(cameraId) ?? 0) + 1;
+  mediaFailureCounts.set(cameraId, n);
+  if (n >= MEDIA_FAILURES_BEFORE_FALLBACK && fallbackUsable) { mediaFailedCameras.add(cameraId); return true; }
+  return false;
+}
+
+/** The media-server stream played: forget earlier failures. */
+export function noteMediaPlaying(cameraId: string): void { mediaFailureCounts.delete(cameraId); }
+
 /** "https://cctv.corp8.cloud/cam07/index.m3u8" -> "cam07" */
 export function gridCamId(streamUrl: string): string | null {
   return streamUrl.match(/\/(cam\d{1,3})\//i)?.[1]?.toLowerCase() ?? null;
@@ -23,7 +45,7 @@ export function mediaPlaylistUrl(cfg: MediaConfig, camId: string): string {
   // MediaMTX answers the first playlist request with a one-time redirect to "?cookieCheck=1", and a browser
   // drops the Authorization header on a cross-origin redirect, so the login would be lost. Asking for
   // "?cookieCheck=1" up front skips that redirect.
-  return `${(cfg.hlsUrl || '').replace(/\/+$/, '')}/${camId}/index.m3u8?cookieCheck=1`;
+  return `${shardedMediaBase(cfg.hlsUrl || '', camId)}/${camId}/index.m3u8?cookieCheck=1`;
 }
 
 export function mediaAuthHeader(cfg: MediaConfig): string {

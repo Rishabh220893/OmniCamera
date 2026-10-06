@@ -1,16 +1,21 @@
 /**
  * Demo-grid cameras from most to least reliable, so the first page of the feed shows the ones that actually
- * stream. Ranked from production logs and HARs: the first group connected and delivered clean frames within
- * about 5-15 s every time (and played from the media server); the middle groups were slower, intermittent or
- * not measured; the last group times out waiting for a keyframe or loses a large share of its packets at the
- * grid itself (cam07, 16, 25 and 29 log hundreds of lost RTP packets per second), so no client change fixes
- * them. Re-measure with `node scripts/check-grid-health.mjs` and paste its list here.
+ * stream. Measured through the media server (two localhost runs, many cameras pulled at once):
+ *  1. cam01 02 03 05 13 streamed the whole session with no packet loss (cam13: 758 lost) and no muxer errors;
+ *     cam14 streams but lost ~3.8k packets and crashed the muxer 4 times.
+ *  2. cam27 30 09 28 lost under ~2k packets in total (cam27 crashed the muxer twice); cam24 and cam15 were
+ *     barely measured. Usable, not proven.
+ *  3. cam19 20 21 11 04 10 23 08 lose tens of thousands of packets at the grid itself (cam08: 155k, cam23: 94k,
+ *     cam10: 74k), and most also crash the media server's HLS muxer ("too many reordered frames").
+ *  4. cam12 17 06 18 22 26 are H.265, which most browsers cannot decode from HLS (not seen in the latest run).
+ *  5. cam16 29 25 07 lose most of their packets, so no client change fixes them.
+ * Re-measure with `node scripts/check-media-health.mjs` (needs the local demo running) and paste its list here.
  */
 export const GRID_HEALTH_ORDER: readonly string[] = [
-  'cam01', 'cam02', 'cam03', 'cam13', 'cam14', 'cam15', 'cam05', 'cam12', 'cam20', 'cam19',
-  'cam04', 'cam23', 'cam17', 'cam06',
-  'cam08', 'cam10', 'cam27', 'cam30', 'cam18', 'cam22', 'cam26',
-  'cam09', 'cam11', 'cam21', 'cam24', 'cam28',
+  'cam01', 'cam02', 'cam03', 'cam05', 'cam13', 'cam14',
+  'cam27', 'cam30', 'cam09', 'cam28', 'cam24', 'cam15',
+  'cam19', 'cam20', 'cam21', 'cam11', 'cam04', 'cam10', 'cam23', 'cam08',
+  'cam12', 'cam17', 'cam06', 'cam18', 'cam22', 'cam26',
   'cam16', 'cam29', 'cam25', 'cam07',
 ];
 

@@ -46,7 +46,8 @@ trap 'kill $MEDIA_PID 2>/dev/null || true' EXIT INT TERM
 
 printf 'Waiting for the media server'
 for i in $(seq 1 30); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$MEDIA_PORT/cam01/index.m3u8" || true)
+  # ?cookieCheck=1 skips MediaMTX's first-visit redirect (302), so a running server answers 401 straight away.
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$MEDIA_PORT/cam01/index.m3u8?cookieCheck=1" || true)
   [ "$code" = "401" ] && break          # 401 = up and asking for the viewer password
   printf '.'; sleep 1
 done
