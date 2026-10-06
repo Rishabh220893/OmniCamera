@@ -12,3 +12,6 @@ npm-debug.log*
 # Files MediaMTX generates when run from this folder
 media-server/*.key
 media-server/*.crt
+
+# Local demo: the MediaMTX binary and its generated config (contains the grid login)
+media-server/bin/

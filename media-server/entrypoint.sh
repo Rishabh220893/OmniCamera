@@ -41,6 +41,14 @@ SOURCE_START_TIMEOUT="${SOURCE_START_TIMEOUT:-60s}"
 # keyframe interval: the timer also runs while a stream waits for its first keyframe, and a camera that
 # sends one only every 30 s would be torn down before it could ever start (seen in testing at 15 s).
 MEDIA_IDLE_CLOSE="${MEDIA_IDLE_CLOSE:-60s}"
+# MediaMTX keeps only the newest HLS_SEGMENT_COUNT segments. The default (7 x 1 s) is too short for a viewer whose
+# requests take 1-5 s through a hosting proxy: by the time it asks for a segment the window has moved on and the
+# server answers 404 (seen in a production HAR). A longer window costs memory and a few seconds of delay.
+HLS_SEGMENT_COUNT="${HLS_SEGMENT_COUNT:-30}"
+HLS_SEGMENT_DURATION="${HLS_SEGMENT_DURATION:-2s}"
+case "$HLS_SEGMENT_COUNT$HLS_SEGMENT_DURATION" in
+  *[!0-9sm]*|"") echo "HLS_SEGMENT_COUNT must be a number and HLS_SEGMENT_DURATION like 2s." >&2; exit 1 ;;
+esac
 SOURCE_CLOSE_AFTER="${SOURCE_CLOSE_AFTER:-5s}"
 MEDIAMTX_BIN="${MEDIAMTX_BIN:-/mediamtx}"
 CONFIG="${MEDIAMTX_CONFIG:-/tmp/mediamtx.yml}"
@@ -118,6 +126,8 @@ hlsAddress: :$MEDIA_HLS_PORT
 hlsVariant: $MEDIA_HLS_VARIANT
 # The HLS muxer has its own idle timer (default 60 s) that keeps a camera pulled.
 hlsMuxerCloseAfter: $MEDIA_IDLE_CLOSE
+hlsSegmentCount: $HLS_SEGMENT_COUNT
+hlsSegmentDuration: $HLS_SEGMENT_DURATION
 hlsAllowOrigins: $ORIGINS
 hlsTrustedProxies: $PROXIES
 webrtc: yes

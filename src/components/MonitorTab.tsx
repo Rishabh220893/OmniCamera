@@ -7,10 +7,15 @@ import {
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { hasCachedSnapshot } from '../lib/snapshotCache';
+import { sortByGridHealth } from '../lib/cameraHealth';
 import { useMediaConfig, mediaFailedCameras, gridCamId } from '../lib/mediaServer';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
+
+// 10 tiles per page: every one of them can play live (a browser decodes about this many streams at once),
+// where a page of 24 left most tiles waiting for a live slot that never came.
+const GRID_PAGE_SIZE = 10;
 
 function formatLastAnalysisTime(lat: unknown): string {
   if (!lat) return '';
@@ -89,7 +94,7 @@ function CameraTile({
   // With a media server (which serves any number of viewers from one pull per camera) the first N grid tiles
   // play live as well; the rest stay stills. N is capped by what a browser can decode at once.
   const media = useMediaConfig();
-  const mediaLive = !!media?.enabled && cameraIndex !== undefined && cameraIndex <= (media.maxLiveTiles ?? 12) && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
+  const mediaLive = !!media?.enabled && cameraIndex !== undefined && cameraIndex <= Math.max(media.maxLiveTiles ?? 12, GRID_PAGE_SIZE) && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
   const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis || mediaLive;
 
   const feed = (
@@ -446,8 +451,10 @@ export default function MonitorTab({
   const [gridFilter, setGridFilter] = useState('');
   const filteredCameras = useMemo(() => {
     const q = gridFilter.trim().toLowerCase();
-    if (!q) return cameras;
-    return cameras.filter(c => c.name.toLowerCase().includes(q) || c.location?.toString().toLowerCase().includes(q) || c.department?.toLowerCase().includes(q));
+    // Most reliable demo-grid cameras first, so page 1 is the one that actually plays.
+    const ordered = sortByGridHealth(cameras);
+    if (!q) return ordered;
+    return ordered.filter(c => c.name.toLowerCase().includes(q) || c.location?.toString().toLowerCase().includes(q) || c.department?.toLowerCase().includes(q));
   }, [cameras, gridFilter]);
   const latestLogByCamera = useMemo(() => {
     const map = new Map<string, LogEntry>();
@@ -457,7 +464,6 @@ export default function MonitorTab({
 
   // A registry that scales to tens of thousands of cameras can't have every
   // one of them mounted as a live React component at once either
-  const GRID_PAGE_SIZE = 24;
   const [gridPage, setGridPage] = useState(0);
   const totalGridPages = Math.max(1, Math.ceil(filteredCameras.length / GRID_PAGE_SIZE));
   const clampedGridPage = Math.min(gridPage, totalGridPages - 1);

@@ -1,0 +1,9 @@
+# Copy this file to "demo.local" (it is git-ignored) and fill in the two grid values.
+# Then run:  bash scripts/local-demo.sh
+GRID_EMAIL=
+GRID_PASSWORD=
+
+# Optional. Defaults shown.
+# MEDIA_VIEWER_PASSWORD=localdemo2026   # letters, digits and ! $ ( ) * + . ; < = > [ ] ^ _ , @ # & - only
+# MEDIA_MAX_LIVE_TILES=10
+# GEMINI_API_KEY=                        # only needed for AI analysis
