@@ -11,7 +11,10 @@ import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, i
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 import { createAnprClient, AnprClient } from './server/anprClient';
 import { mergePlates } from './server/plateMerge';
-import { writeSightings } from './server/sightingStore';
+import { createMotionGate } from './server/frameGate';
+import { createLocalBackend, JobBackend } from './server/jobBackend';
+import { createBullBackend } from './server/bullBackend';
+import { createFirestoreEventStore, createPostgresEventStore, createTeeEventStore, EventStore, FirestoreLogMode, PostgresEventStore } from './server/eventStore';
 import { createFirestoreLeases } from './server/leaseStore';
 import { trimLiveManifest } from './server/hlsManifest';
 import { randomUUID } from 'crypto';
@@ -1324,6 +1327,7 @@ Analyze this context to answer user queries:
   // and GEMINI_API_KEY. Cameras are picked up when their registry record has
   // `serverAnalysis: true`.
   let analysisWorker: AnalysisWorker | null = null;
+  let pgEvents: PostgresEventStore | null = null;
   if (process.env.SERVER_ANALYSIS === 'true') {
     if (!registryDb || !process.env.GEMINI_API_KEY) {
       console.warn('[ANALYSIS] SERVER_ANALYSIS=true but FIREBASE_SERVICE_ACCOUNT and/or GEMINI_API_KEY is missing — worker not started.');
@@ -1339,9 +1343,47 @@ Analyze this context to answer user queries:
       // Several instances can share the work: set ANALYSIS_DISTRIBUTED=true and each camera is
       // claimed through a Firestore lease before it is analysed (see server/leaseStore.ts).
       const instanceId = randomUUID();
+
+      // Roles: one process can do everything (default), or the work can be split across processes with a
+      // shared Redis queue: ANALYSIS_ROLE=scheduler on one instance, ANALYSIS_ROLE=worker on as many as needed.
+      let role = (process.env.ANALYSIS_ROLE || 'all') as 'all' | 'scheduler' | 'worker';
+      if (!['all', 'scheduler', 'worker'].includes(role)) { console.warn(`[ANALYSIS] Unknown ANALYSIS_ROLE "${role}" — using "all".`); role = 'all'; }
+      const concurrency = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY) || 4);
+      let backend: JobBackend;
+      if (process.env.REDIS_URL) {
+        backend = await createBullBackend({ redisUrl: process.env.REDIS_URL, concurrency, produce: role !== 'worker', consume: role !== 'scheduler' });
+      } else {
+        if (role !== 'all') { console.warn(`[ANALYSIS] ANALYSIS_ROLE=${role} needs REDIS_URL to share a queue between processes — running as "all".`); role = 'all'; }
+        backend = createLocalBackend({ concurrency });
+      }
+
+      // Events (logs, plate sightings): Postgres as the record when DATABASE_URL + EVENT_STORE=postgres,
+      // with Firestore kept as a bounded live feed for the current UI (FIRESTORE_LOG_MODE: all|notable|none).
+      let eventStore: EventStore;
+      if (process.env.EVENT_STORE === 'postgres') {
+        if (!process.env.DATABASE_URL) throw new Error('EVENT_STORE=postgres needs DATABASE_URL.');
+        const { Pool } = await import('pg');
+        const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: Math.max(2, concurrency), ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+        pgEvents = createPostgresEventStore(pool);
+        await pgEvents.ensureSchema();
+        const mode = (['all', 'notable', 'none'].includes(process.env.FIRESTORE_LOG_MODE || '') ? process.env.FIRESTORE_LOG_MODE : 'notable') as FirestoreLogMode;
+        eventStore = createTeeEventStore(pgEvents, [createFirestoreEventStore(db, mode)], (what, err) => console.warn(`[EVENTS] Mirror write failed (${what}):`, err));
+      } else {
+        eventStore = createFirestoreEventStore(db, 'all');
+      }
+      console.log(`[ANALYSIS] Event store: ${eventStore.kind}.`);
+
+      // Skip the model call for scenes that haven't changed (ANALYSIS_GATE=off to analyse every frame).
+      const gate = process.env.ANALYSIS_GATE === 'off' ? undefined : createMotionGate({
+        ...(Number(process.env.ANALYSIS_GATE_CHANGED_FRACTION) > 0 ? { changedFraction: Number(process.env.ANALYSIS_GATE_CHANGED_FRACTION) } : {}),
+        ...(Number(process.env.ANALYSIS_GATE_MAX_SKIP_S) > 0 ? { maxSkipMs: Number(process.env.ANALYSIS_GATE_MAX_SKIP_S) * 1000 } : {}),
+      });
+
       const leases = process.env.ANALYSIS_DISTRIBUTED === 'true' ? createFirestoreLeases(db, instanceId) : null;
       analysisWorker = createAnalysisWorker({
         instanceId,
+        backend,
+        gate,
         claim: leases ? leases.claim : undefined,
         release: leases ? leases.release : undefined,
         now: () => Date.now(),
@@ -1377,8 +1419,8 @@ Analyze this context to answer user queries:
         },
         grabFrame: (camera) => grabFrame({ url: camera.remoteStreamUrl, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` }),
         analyze: ({ imageBase64, camera, knownFaces, watchlist }) => analyzeFrame({ imageBase64, knownFaces, watchlist, camera }),
-        writeLog: async (doc) => { await db.collection('logs').add(doc); },
-        writeSightings: (userId, sightings) => writeSightings(db, userId, sightings),
+        writeLog: (doc) => eventStore.writeLog(doc),
+        writeSightings: (userId, sightings) => eventStore.writeSightings(userId, sightings),
         updateCamera: async (cameraId, patch) => { await db.collection('cameras').doc(cameraId).update(patch); },
         sendWebhook: async (url, payload) => {
           const res = await fetch(url, {
@@ -1388,7 +1430,8 @@ Analyze this context to answer user queries:
           if (!res.ok) throw new Error(`Webhook responded ${res.status}`);
         },
       }, {
-        concurrency: Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY) || 4),
+        concurrency,
+        role,
         ...(Number(process.env.ANALYSIS_LEASE_MS) > 0 ? { leaseMs: Number(process.env.ANALYSIS_LEASE_MS) } : {}),
       });
     }
@@ -1419,6 +1462,42 @@ Analyze this context to answer user queries:
     });
   });
 
+  // History from the Postgres event store (only when EVENT_STORE=postgres). The caller is identified by their
+  // Firebase ID token and can only read their own events.
+  async function eventsUser(req: express.Request, res: express.Response): Promise<string | null> {
+    if (!pgEvents) { res.status(501).json({ error: 'The Postgres event store is not enabled (EVENT_STORE=postgres).' }); return null; }
+    const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+    if (!idToken) { res.status(401).json({ error: 'Sign-in required.' }); return null; }
+    try { return (await getAuth().verifyIdToken(idToken)).uid; }
+    catch { res.status(401).json({ error: 'Sign-in could not be verified.' }); return null; }
+  }
+  const asDate = (v: unknown) => { const d = typeof v === 'string' ? new Date(v) : null; return d && !Number.isNaN(d.getTime()) ? d : undefined; };
+
+  app.get('/api/events/logs', async (req, res) => {
+    const userId = await eventsUser(req, res);
+    if (!userId || !pgEvents) return;
+    try {
+      const rows = await pgEvents.queryLogs({
+        userId,
+        cameraId: typeof req.query.cameraId === 'string' ? req.query.cameraId : undefined,
+        from: asDate(req.query.from), to: asDate(req.query.to), before: asDate(req.query.before),
+        onlyNotable: req.query.notable === 'true',
+        limit: Number(req.query.limit) || 100,
+      });
+      res.json({ logs: rows });
+    } catch (err) { console.error('[EVENTS] log query failed:', err); res.status(500).json({ error: 'Could not read events.' }); }
+  });
+
+  app.get('/api/events/plates/:plate', async (req, res) => {
+    const userId = await eventsUser(req, res);
+    if (!userId || !pgEvents) return;
+    try {
+      const plate = String(req.params.plate || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (!plate) { res.status(400).json({ error: 'Plate required.' }); return; }
+      res.json({ sightings: await pgEvents.querySightings(userId, plate, Number(req.query.limit) || 200) });
+    } catch (err) { console.error('[EVENTS] sighting query failed:', err); res.status(500).json({ error: 'Could not read events.' }); }
+  });
+
   app.get('/api/analysis/config', async (_req, res) => {
     // ffmpeg is what captures frames server-side; without it the worker and snapshot route cannot work.
     res.status(200).json({ enabled: analysisWorker !== null, anpr: anprClient !== null, ffmpeg: (await checkFfmpeg()).available });
@@ -1426,7 +1505,7 @@ Analyze this context to answer user queries:
 
   app.get('/api/analysis/status', async (req, res) => {
     if (!requireRegistryAuth(req, res)) return;
-    const workerStatus = analysisWorker ? analysisWorker.status() : { running: false, queue: { queued: 0, active: 0, concurrency: 0 }, cameras: [] };
+    const workerStatus = analysisWorker ? { ...analysisWorker.status(), eventStore: pgEvents ? 'postgres' : 'firestore' } : { running: false, queue: { queued: 0, active: 0, concurrency: 0 }, cameras: [] };
     let anpr: { configured: boolean; healthy?: boolean; device?: string; error?: string } = { configured: anprClient !== null };
     if (anprClient) {
       try { const health = await anprClient.health(); await anprClient.probe(); anpr = { configured: true, healthy: true, device: health.device }; }

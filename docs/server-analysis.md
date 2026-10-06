@@ -39,3 +39,5 @@ Cost and limits: each run adds two small Firestore transactions (claim and relea
 - Camera URLs that point at loopback, link-local or private-network addresses are ignored (the server is making these requests). The check is hostname-only and doesn't defend against DNS rebinding.
 - Google Sheets export is still browser-driven; server-produced logs are not appended to the sheet.
 - Analysis is still one Gemini call per frame; plate-reading accuracy is unchanged.
+
+For the frame gate, a Redis-backed scheduler/worker split, and moving events to Postgres, see `docs/scale-out.md`.

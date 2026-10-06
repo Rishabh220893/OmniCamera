@@ -14,6 +14,7 @@ import { buildSightings, PlateSighting } from './lib/plateTracking';
 import { recordSightings } from './lib/plateStore';
 import { DEMO_GRID_CAMERAS } from './data/demoGridCameras';
 import { fetchSentinelCatalogue } from './lib/sentinelCatalogue';
+import { canAnalyzeOnServer, planGuardSync, toggleGuardSelection } from './lib/guardSync';
 import { chunk, describeSummary, ImportSummary, parseLatLng, planBulkImport, summarizePlan } from './lib/bulkImport';
 
 import OnboardingScreen from './components/OnboardingScreen';
@@ -220,6 +221,10 @@ export default function App() {
   const mediaRefs = useRef<Map<string, CameraMediaRefs>>(new Map());
   const inFlightAnalysisRef = useRef<Set<string>>(new Set());
   const lastAnalysisAttemptRef = useRef<Map<string, number>>(new Map());
+  // Server hand-over bookkeeping for the guard (see the effect further down).
+  const serverGuardIdsRef = useRef<Set<string>>(new Set());
+  const serverGuardFailedRef = useRef<Set<string>>(new Set());
+  const guardWasOnRef = useRef(false);
   const camerasRef = useRef<CameraConfig[]>(cameras);
   useEffect(() => { camerasRef.current = cameras; }, [cameras]);
 
@@ -229,12 +234,10 @@ export default function App() {
   // ---------- Multi-camera analysis selection ----------
   const [extraAnalysisCameraIds, setExtraAnalysisCameraIds] = useState<Set<string>>(new Set());
   const toggleAnalysisCamera = useCallback((id: string) => {
-    setExtraAnalysisCameraIds(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
+    const next = toggleGuardSelection(guardScope, extraAnalysisCameraIds, id);
+    if (next.scope !== guardScope) setGuardScope(next.scope);
+    setExtraAnalysisCameraIds(next.selected);
+  }, [guardScope, extraAnalysisCameraIds]);
   const analysisCameraIds = useMemo(() => {
     if (guardScope === 'all') {
       return new Set(cameras.map(c => c.id));
@@ -917,6 +920,9 @@ export default function App() {
         const camera = camerasRef.current.find(c => c.id === id);
         if (!camera) continue;
         if (camera.serverAnalysis) continue; // the server worker owns this camera's schedule
+        // Cameras the guard is handing to the server are skipped from the first tick: the flag only lands a moment
+        // later, and analysing here in the meantime produced one duplicate log per camera at activation.
+        if (serverAnalysisAvailable && user && user.uid !== 'demo-guest' && canAnalyzeOnServer(camera) && !serverGuardFailedRef.current.has(id)) continue;
         const last = lastAnalysisAttemptRef.current.get(id) || 0;
         const intervalMs = Math.max(5, camera.interval) * 1000;
         if (now - last >= intervalMs) {
@@ -928,7 +934,7 @@ export default function App() {
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [isCapturing, analysisCameraIds, captureAndAnalyzeCamera]);
+  }, [isCapturing, analysisCameraIds, captureAndAnalyzeCamera, serverAnalysisAvailable, user]);
 
   const exportData = () => {
     const csvHeader = 'Timestamp,Camera,Summary,People,Vehicles,Other,IsUnusual,Plates,Alerts\n';
@@ -1130,6 +1136,43 @@ export default function App() {
       setDbError(error instanceof Error ? error.message : String(error));
     }
   };
+
+  // "Activate Guard" also hands the targeted cameras to the server worker (when it is running), so the
+  // analysis keeps going without this tab and results land in Firestore. The browser loop skips any camera
+  // flagged serverAnalysis, so nothing is analysed twice; if the write fails the flag is reverted and the
+  // browser keeps analysing as before. "Pause Guard" (or deselecting a camera) clears the flag again.
+  useEffect(() => {
+    if (!serverAnalysisAvailable || !user || user.uid === 'demo-guest') return;
+    const { enable: toEnable, disable: toDisable } = planGuardSync({
+      isCapturing, targetIds: analysisCameraIds, cameras, guardFlaggedIds: serverGuardIdsRef.current,
+      failedIds: serverGuardFailedRef.current, wasCapturing: guardWasOnRef.current,
+    });
+    if (!isCapturing) serverGuardFailedRef.current.clear();
+    guardWasOnRef.current = isCapturing;
+    if (toEnable.length === 0 && toDisable.length === 0) return;
+
+    const setLocal = (ids: string[], value: boolean) => setCameras(prev => prev.map(c => (ids.includes(c.id) ? { ...c, serverAnalysis: value } : c)));
+    const write = async (ids: string[], value: boolean) => {
+      if (ids.length === 0) return;
+      setLocal(ids, value);
+      try {
+        for (const group of chunk(ids, 400)) {
+          const batch = writeBatch(db);
+          group.forEach(id => batch.update(doc(db, 'cameras', id), { serverAnalysis: value, updatedAt: serverTimestamp() }));
+          await batch.commit();
+        }
+        ids.forEach(id => { if (value) serverGuardIdsRef.current.add(id); else serverGuardIdsRef.current.delete(id); });
+      } catch (error) {
+        console.error('Could not update server analysis for the guard:', error);
+        setLocal(ids, !value); // fall back to the previous behaviour for these cameras
+        // Do not retry in a loop: a failed enable waits for the next Activate, a failed release is reported once.
+        ids.forEach(id => { if (value) serverGuardFailedRef.current.add(id); else serverGuardIdsRef.current.delete(id); });
+        setDbError(error instanceof Error ? error.message : String(error));
+      }
+    };
+    void write(toEnable, true);
+    void write(toDisable, false);
+  }, [isCapturing, analysisCameraIds, cameras, serverAnalysisAvailable, user]);
 
   const exportRegistryCsv = () => {
     const rows = cameras.map(c => ({

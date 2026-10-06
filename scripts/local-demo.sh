@@ -9,9 +9,13 @@ set -eu
 cd "$(dirname "$0")/.."
 
 ENV_FILE="${ENV_FILE:-demo.local}"
-[ -f "$ENV_FILE" ] || { echo "Missing $ENV_FILE. Copy demo.local.example to $ENV_FILE and fill in GRID_EMAIL and GRID_PASSWORD." >&2; exit 1; }
-# Strip Windows line endings so values do not end in a carriage return.
-set -a; . <(tr -d '\r' < "$ENV_FILE"); set +a
+# GRID_EMAIL / GRID_PASSWORD can also come from the environment (scripts/demo.mjs passes them), so the file is optional then.
+if [ -f "$ENV_FILE" ]; then
+  # Strip Windows line endings so values do not end in a carriage return.
+  set -a; . <(tr -d '\r' < "$ENV_FILE"); set +a
+elif [ -z "${GRID_EMAIL:-}" ]; then
+  echo "Missing $ENV_FILE. Copy demo.local.example to $ENV_FILE and fill in GRID_EMAIL and GRID_PASSWORD." >&2; exit 1
+fi
 : "${GRID_EMAIL:?Set GRID_EMAIL in $ENV_FILE}"
 : "${GRID_PASSWORD:?Set GRID_PASSWORD in $ENV_FILE}"
 
@@ -54,6 +58,13 @@ done
 echo
 [ "${code:-}" = "401" ] || { echo "Media server did not start. See $BIN_DIR/mediamtx.log" >&2; tail -20 "$BIN_DIR/mediamtx.log" >&2; exit 1; }
 echo "Media server is up on http://localhost:$MEDIA_PORT"
+
+# MEDIA_ONLY=1: stop here and keep the media server running (scripts/demo.mjs starts the app processes itself).
+if [ "${MEDIA_ONLY:-0}" = "1" ]; then
+  echo "MEDIA_ONLY: media server left running (Ctrl+C stops it)."
+  wait "$MEDIA_PID"
+  exit 0
+fi
 
 # 3. The app, pointed at the local media server. Guests are allowed because this is localhost only.
 export PORT="$APP_PORT" STREAM_EMAIL="$GRID_EMAIL" STREAM_PASSWORD="$GRID_PASSWORD"
