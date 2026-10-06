@@ -853,11 +853,14 @@ export default function App() {
       const alerts: string[] = [...(data.alerts || [])];
       if (isWatchlistMatch) alerts.unshift(`Watchlist match: ${watchlistMatches.join(', ')}`);
 
+      // "Unknown Person" only means something against a set of known faces. Without any registered, every
+      // passer-by on a street camera is unknown, which flagged every busy scene as an anomaly.
+      const unknownPersonFlag = knownFaces.length > 0 && !!data.people_identified?.includes('Unknown Person') && camera.sensitivity > 3;
       const newEntry: LogEntry = {
         id: Math.random().toString(36).substr(2, 9), cameraId: camera.id, cameraName: camera.name, timestamp: new Date(),
         summary: summaryWithExtra, counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment,
-        isUnusual: isWatchlistMatch || data.isUnusual || (data.people_identified?.includes('Unknown Person') && camera.sensitivity > 3),
-        unusualReason: data.isUnusualReason || (data.people_identified?.includes('Unknown Person') ? 'Unknown identity detected near camera' : undefined),
+        isUnusual: isWatchlistMatch || !!data.isUnusual || unknownPersonFlag,
+        unusualReason: data.isUnusualReason || (unknownPersonFlag ? 'Unknown identity detected near camera' : undefined),
         alerts, detectedPlates, isWatchlistMatch
       };
 
