@@ -168,7 +168,7 @@ export function buildSample(args: {
 
 /** Maps ffprobe/ffmpeg's error text for a failed connect to a named stage. */
 export function classifyConnectError(text: string): { stage: FailureStage; detail: string } {
-  const t = text.replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
+  const t = text.replace(/\r/g, '').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
   const detail = t.trim().split('\n').slice(-2).join(' | ').slice(0, 220);
   if (/401|403|Unauthorized|Forbidden|authorization/i.test(t)) return { stage: 'bad_credentials', detail };
   if (/Connection refused|timed out|No route|Network is unreachable|Name or service not known|Temporary failure in name resolution|Connection reset/i.test(t)) return { stage: 'unreachable', detail };

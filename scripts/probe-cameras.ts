@@ -33,12 +33,13 @@ const argv = process.argv.slice(2);
 const opt = (n: string, d: string) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const flag = (n: string) => argv.includes(n);
 
+// Same precedence as scripts/probe-grid.mjs: demo.local, then scale.local, both overriding the shell environment.
 const env: Record<string, string | undefined> = { ...process.env };
 for (const f of ['demo.local', 'scale.local']) {
   if (!existsSync(f)) continue;
   for (const line of readFileSync(f, 'utf8').replace(/\r/g, '').split('\n')) {
     const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (m && env[m[1]] === undefined) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
+    if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
   }
 }
 const HOST = opt('--host', env.GRID_HOST || '103.250.160.189');
@@ -47,12 +48,15 @@ const email = env.GRID_EMAIL || env.STREAM_EMAIL;
 const pass = env.GRID_PASSWORD || env.STREAM_PASSWORD;
 if (!email || !pass) { console.error('No credentials found (GRID_EMAIL + GRID_PASSWORD in the environment, demo.local or scale.local).'); process.exit(2); }
 
+const mask = (e: string) => (e.length > 4 ? `${e.slice(0, 2)}***${e.slice(-6)}` : '***');
+console.log(`Credentials: ${mask(email)} (password ${pass.length} chars)`);
+
 const sampleSec = Math.max(3, Number(opt('--sample', '30')));
 const parallel = Math.max(1, Number(opt('--parallel', '2')));
 const transport = flag('--udp') ? 'udp' : 'tcp';
 const ids = (opt('--cams', '') || Array.from({ length: 30 }, (_, i) => `cam${String(i + 1).padStart(2, '0')}`).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
 const enc = (v: string) => encodeURIComponent(v).replace(/@/g, '%40');
-const redact = (s: string) => s.split(pass).join('***').split(enc(pass)).join('***').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
+const redact = (s: string) => s.replace(/\r/g, '').split(pass).join('***').split(enc(pass)).join('***').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
 const url = (id: string) => `rtsp://${enc(email)}:${enc(pass)}@${HOST}:8554/stream/${id}`;
 
 interface Run { code: number | null; stdout: string; stderr: string; ms: number; timedOut: boolean }
@@ -130,14 +134,15 @@ async function probe(id: string): Promise<ProbeReport> {
 }
 
 const reports: ProbeReport[] = new Array(ids.length);
-let next = 0;
+let next = 0, rejected = 0;
 console.log(`Probing ${ids.length} cameras on ${HOST} (site ${SITE}, ${transport}, ${sampleSec}s sample, ${parallel} at a time) - ${new Date().toISOString()}\n`);
 console.log('camera  result        codec  size       fps  first   kf max  flags');
 await Promise.all(Array.from({ length: parallel }, async () => {
-  while (next < ids.length) {
+  while (next < ids.length && rejected < 3) {
     const i = next++;
     const r = await probe(ids[i]);
     reports[i] = r;
+    if (r.failure === 'bad_credentials') rejected++;
     const d = r.describe, s = r.sample;
     console.log([
       r.cameraId.padEnd(7), (r.failure ?? 'ok').padEnd(13), (d?.codec ?? '-').padEnd(6),
@@ -147,6 +152,9 @@ await Promise.all(Array.from({ length: parallel }, async () => {
     ].join(' '));
   }
 }));
+
+if (rejected >= 3) console.error('\nThe source rejected the credentials 3 times (401), so the run stopped early. Check GRID_EMAIL / GRID_PASSWORD in demo.local AND scale.local (scale.local wins), and that no GRID_* variables are set in the shell.');
+for (let i = reports.length - 1; i >= 0; i--) if (!reports[i]) reports.splice(i, 1);
 
 mkdirSync('.demo-logs', { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
