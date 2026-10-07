@@ -1,0 +1,192 @@
+# Plan: a camera profile that picks each camera's best playback path
+
+Status: **plan only, nothing built yet** (written 2026-10-08; the five open decisions were answered the same day, see
+"Decisions" below). Today every special case is hand-kept and keyed on a grid
+camera id: `MEDIA_TRANSCODE_IDS` in `scripts/demo.mjs`, `GRID_HEALTH_ORDER` in `src/lib/cameraHealth.ts`, notes in
+`docs/media-server.md`. A real deployment has cameras with other names, codecs and faults, so this plan replaces those
+lists with something every new camera goes through.
+
+## Core idea
+
+1. **A probe at onboarding** measures what the camera actually does.
+2. **A profile** records the result.
+3. **A decision table** maps the profile to one playback recipe.
+4. **MediaMTX config is generated** from the profiles.
+
+Every new camera follows the same template, whatever it is called. Nothing is keyed on `cam06`.
+
+## 0. What every camera looks like (given)
+
+Every camera is published as a **live RTP/RTSP stream**. One second of video takes one second to arrive, frames carry
+monotonic presentation timestamps (PTS), and there is no seeking, no byte-range fetching and no way to run ahead of real
+time. Each endpoint is treated like a physical camera on an operational network. Three endpoints per camera:
+
+| Protocol | Endpoint | Intended for |
+|---|---|---|
+| RTSP | `rtsp://<host>:8554/stream/<id>` | AI inference (OpenCV, GStreamer, FFmpeg, DeepStream) |
+| WebRTC (WHEP) | `http://<host>:8889/stream/<id>/whep` | Low-latency browser preview |
+| HLS | `http://<host>/live/stream/<id>/index.m3u8` | Dashboards, mobile, restricted networks |
+
+Consequences for the design:
+
+- **A probe takes as long as it samples.** A 30 s sample costs 30 s of wall time per camera; it cannot be sped up. Deep
+  probes are therefore budgeted and queued (section 9).
+- **Probe every endpoint, use each for what it is for.** RTSP is the ingest and analysis path (the media server and the
+  server-side capture pull it); WHEP and HLS are measured as browser-facing candidates and as fallbacks.
+- **Monotonic PTS is a given,** so timestamp problems are treated as a camera or network fault to record, not something
+  to assume away.
+- **Out of scope for now:** ONVIF discovery, NVR/VMS vendor URL templates, and cameras that are not RTSP/WHEP/HLS endpoints
+  of this shape. The schema leaves room for them.
+
+## 1. What the profile records
+
+Profiles live in **Postgres** (see Decisions): a `camera_profiles` row per camera (current profile, chosen recipe, reason,
+override) and a `probe_runs` table for history (one row per probe with its raw measurements and report).
+
+| Group | Fields |
+|---|---|
+| Access | Protocols that answer (RTSP, WHEP, HLS, ONVIF, snapshot URL), auth type, transport that works (TCP or UDP), name and location if available |
+| Encoding | Codec, profile, B-frames and reorder depth, resolution, fps, bitrate, audio |
+| Behaviour | Time to first frame, keyframe interval, packet loss, corrupt-frame errors, whether the stream drops or ends early |
+| Per path | Time to a working HLS playlist, muxer errors, ffmpeg exit codes |
+| Meta | When it was probed, probe version, confidence (how many repeats agreed) |
+
+## 2. The onboarding probe, cheapest step first
+
+Each stage has a timeout and a named failure result.
+
+1. **Reachability:** DNS, TCP and auth. A failure here is "unreachable" or "bad credentials", never "no video".
+2. **Describe:** `ffprobe` for codec, resolution, fps and B-frame hints (a few seconds).
+3. **Sample, 30-60 s over TCP:** keyframe interval, packet loss, time to first frame, corrupt-frame errors, timestamp problems.
+4. **Try the candidate paths for real:** run each viable recipe through the actual media server; measure time to a playlist and any muxer errors.
+5. **Decide**, store the profile, and keep the probe report as proof.
+
+## 3. Problems already seen, as classes
+
+| Class | Seen on | Detected by |
+|---|---|---|
+| H.265 | cam06, 12, 17, 22, 26 | Codec in step 2 |
+| B-frames break the HLS muxer ("too many reordered frames") | cam09, 13, 14, 24, 27, 28 | Muxer error in step 4 |
+| Sparse keyframes (HLS segments grow to 59 s) | cam30 | Keyframe interval in step 3 |
+| Very high resolution | cam26 (1440p) | Step 2 |
+| Heavy packet loss | cam06 and others | Step 3 |
+| Connected but no frame | cam07, 08, 10, 22 | Step 3 times out |
+| Stream closes early | cam18 | Step 3 |
+| Slow first frame | cam11, 15 | Step 3 |
+| Fine alone, fails under load | cam25 | Step 3 repeated |
+| Bad credentials, unreachable | not seen yet | Step 1 |
+
+## 4. Recipes and the decision table
+
+| Recipe | Chosen when |
+|---|---|
+| **A. Pass-through HLS** | H.264, no B-frames, keyframe every 4 s or less |
+| **B. H.264 re-encode** | H.264 with B-frames, or keyframes sparser than about 4-5 s |
+| **C. H.265 to H.264** | H.265 or another codec the browser path cannot use |
+| **D. Downscale re-encode** | Above 1080p (cut the cost before it hits the transcode budget) |
+| **E. Direct WebRTC (WHEP)** | Only for the focused camera, if WHEP works and the codec fits |
+| **F. Snapshot only** | Video is unusable, or no transcode capacity is left |
+| **G. Unsupported, with a reason** | Unreachable, no frames, or the stream keeps closing |
+
+Rules are ordered so each camera lands on the cheapest recipe that works. The existing tile policy stays: grid tiles are
+stills, live video is for the focused camera, analysis targets and the visible page.
+
+**Start-up time threshold: 30 seconds** to the first picture. A camera whose chosen recipe is measured above that gets
+snapshots in the grid and goes live only when focused; a camera under 10 s is tagged "fast" and preferred for the visible
+page. (On 2026-10-07 only about 9 of 29 grid cameras were under 10 s before any re-encode.)
+
+## 5. Capacity
+
+- **Target hardware: Intel PCs like the demo PC (Quick Sync).** Recipes B, C and D use `hevc_qsv` / `h264_qsv`. Still
+  detect the available encoder at startup (Quick Sync, NVENC, AMF or none) so a machine without one degrades cleanly
+  instead of failing; NVENC and software encoders are not built in this phase.
+- **Cost per recipe:** pass-through is free, a re-encode takes a transcode slot. Measured on the demo PC (Celeron N4020):
+  about six concurrent transcodes worked, seven made one fail until its restart. The slot count is a per-machine setting,
+  default 6 here, and should be re-measured on any other PC.
+- **Admission control:** when slots run out, lower-priority cameras fall back to snapshot (F) rather than failing silently.
+- **No encoder available:** H.265 and B-frame cameras go to F. Never run software transcoding on weak hardware.
+
+## 6. Generating the media server config
+
+- MediaMTX paths are built from profiles; `media-server/entrypoint.sh` reads them instead of `MEDIA_TRANSCODE_IDS`.
+- Changes apply through MediaMTX's API without a full restart.
+- Credentials: **one secret reference per site, with an optional per-camera override.** Secrets stay in server settings
+  (environment or a secret store) and are referenced by name from the camera or site record; they are never stored in the
+  profile or the camera document. The global `GRID_*` login becomes the secret of the "grid" site.
+- `GRID_HEALTH_ORDER` becomes a health score computed from the profile.
+
+## 7. Keeping it right after onboarding
+
+- **Re-probe on a schedule** (lightly), and after repeated failures.
+- **Self-heal:** classify a runtime failure from MediaMTX events (a DTS error, an ffmpeg exit code, a timeout) and move the
+  camera to the next recipe, with hysteresis so it does not flip back and forth.
+- **Manual override** per camera. Every change records its reason and a timestamp.
+- **History is kept**, so any failure in a demo can be explained with timestamped proof (as `scripts/probe-grid.mjs` does today).
+
+## 8. Testing "all permutations"
+
+The full cross product is far too large, so:
+
+1. **Dimensions, covered pairwise:** codec (H.264, H.264 with B-frames, H.265, MJPEG, AV1, unknown), transport (RTSP TCP or
+   UDP, HLS, WHEP, HTTP MJPEG), keyframe interval (under 2 s to over 15 s), resolution (720p to 4K), fps (under 5 to 30),
+   packet loss (0 to over 5%), time to first frame, auth type, reachability. Every interaction that matters is tested at
+   least once.
+2. **A synthetic camera lab:** ffmpeg generates test RTSP streams for each type with injected faults (B-frames, long GOP,
+   H.265, high resolution, packet loss, dropped connections, wrong credentials). The probe and decision engine run against
+   it in automated tests, with no real cameras needed.
+3. **The real grid as ground truth:** the decision engine must reproduce what we already know: cam06 -> C, cam28 -> B,
+   cam30 -> B, cam07/08/10/18/22 -> G.
+
+## 9. Scale
+
+At 80,000 cameras a 30-60 s probe for each is not possible (the streams are real time, so it cannot be sped up), and it
+would use up each account's watch time on the grid. So:
+
+- Run a quick describe on every camera at onboarding.
+- Run the deep probe only on cameras that get watched or analysed, queued with a rate limit and serial per source.
+- Repeat measurements twice and keep the worse one; load changes results (cam25 failed 4-at-a-time but took 3.2 s alone).
+
+## 10. Order of work
+
+| Step | Work |
+|---|---|
+| 1 | Profile schema, plus a probe command running steps 1-3 on all 30 grid cameras, checked against the ground truth |
+| 2 | Decision engine and the synthetic lab with its tests |
+| 3 | Config generator replacing `MEDIA_TRANSCODE_IDS`, with hot reload |
+| 4 | Onboarding step in the Registry UI: results, recommended path, override |
+| 5 | Re-probe and self-healing |
+| 6 | Load test on the target machine, and docs |
+
+## Decisions (confirmed 2026-10-08)
+
+| # | Question | Decision | Effect on the plan |
+|---|---|---|---|
+| 1 | Where do profiles live? | **Postgres** | `camera_profiles` (current profile, recipe, reason, override) and `probe_runs` (history and reports). The demo runner and the scale-out path already use Postgres. Cameras themselves stay in Firestore and reference the profile by camera id. |
+| 2 | Production hardware | **Intel PCs like the demo PC** | Quick Sync only (`hevc_qsv`, `h264_qsv`); about 6 concurrent transcodes per machine; no NVENC or software transcoding in this phase; snapshot-only when no slot is free. |
+| 3 | What the cameras are | **Live RTP/RTSP streams on three endpoints** (RTSP, WHEP, HLS), real time, monotonic PTS, no seeking (section 0) | The probe measures all three endpoints; RTSP is the ingest/analysis path. ONVIF and NVR/VMS are out of scope for now. |
+| 4 | Credentials | **Per-site secret with optional per-camera override** | Secrets are referenced by name, never stored in the profile or camera record (section 6). |
+| 5 | Time to first picture | **Under 30 seconds** | Cameras measured above 30 s are snapshot-only until focused; under 10 s is tagged "fast" (section 4). |
+
+## Open points for step 1
+
+- Postgres schema details (column types, how a probe run references a site) and a migration approach.
+- Which secret store holds the per-site secrets in a real deployment (environment variables are enough for the demo).
+- Whether the HLS endpoint `http://<host>/live/stream/<id>/index.m3u8` is reachable without the Cloudflare front door that
+  throttled the earlier `cctv.corp8.cloud` path (the probe will measure it per camera and record the answer).
+
+## What is reused
+
+- `scripts/probe-grid.mjs`: base of the probe command.
+- `scripts/check-media-health.mjs`: step 4 of the probe.
+- The Quick Sync re-encode in `media-server/entrypoint.sh`: recipes B and C.
+- The ranking in `src/lib/cameraHealth.ts`: becomes the computed score.
+
+## Evidence this plan rests on (2026-10-08, demo PC: Celeron N4020, Intel UHD 600)
+
+- MediaMTX never produced an HLS playlist for the grid's H.265 cameras; re-encoding with Quick Sync fixed cam06, 12, 17, 26
+  (cam22 sends no decodable frames).
+- cam09, 13, 14, 24, 27, 28 killed MediaMTX's HLS muxer ("too many reordered frames"); cam30 sends a keyframe about once a
+  minute. Re-encoding with a forced keyframe every 3 s and no B-frames fixed them.
+- The live-tile cap compared a tile's position in the whole list instead of the tiles on screen, so grid page 2 could not
+  be fully live. Fixed in `src/components/MonitorTab.tsx`.
+- Probe results: `.demo-logs/probe-*.csv` and `.json`.
