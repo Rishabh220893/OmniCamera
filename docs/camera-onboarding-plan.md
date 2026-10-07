@@ -167,6 +167,13 @@ would use up each account's watch time on the grid. So:
 | 4 | Credentials | **Per-site secret with optional per-camera override** | Secrets are referenced by name, never stored in the profile or camera record (section 6). |
 | 5 | Time to first picture | **Under 30 seconds** | Cameras measured above 30 s are snapshot-only until focused; under 10 s is tagged "fast" (section 4). |
 
+## Step 1 status
+
+Built: `server/cameraProfile.ts` (profile types, parsing, fault flags, Postgres schema and store), `server/gridGroundTruth.ts`
+(what is already known, used only to check a run) and `scripts/probe-cameras.ts` (stages 1-3, all 30 grid cameras, optional
+`--db`). The unit tests cover parsing and flags; **the run against the real grid is still to do** (it needs the grid
+credentials and takes about 30 s per camera). Run: `node --import tsx scripts/probe-cameras.ts`.
+
 ## Open points for step 1
 
 - Postgres schema details (column types, how a probe run references a site) and a migration approach.
