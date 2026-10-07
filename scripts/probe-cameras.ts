@@ -172,18 +172,20 @@ if (flag('--db')) {
 }
 
 // Check against what is already known (grid only).
-let mismatches = 0;
+let mismatches = 0, unchecked = 0;
 if (SITE === 'grid') {
   console.log('\n--- Against what is already known ---');
   for (const r of reports) {
     const exp = GRID_GROUND_TRUTH[r.cameraId];
     if (!exp) continue;
+    if (r.failure && r.failure !== exp.failure) { unchecked++; console.log(`NOT CHECKED ${r.cameraId}: probe failed (${r.failure}), so there is nothing to compare`); continue; }
     const problems: string[] = [];
     if (exp.failure && r.failure !== exp.failure) problems.push(`expected failure ${exp.failure}, got ${r.failure ?? 'none'}`);
     for (const f of exp.flags ?? []) if (!r.flags.includes(f) && !(r.describe?.codec && f === 'h265' && r.describe.codec === 'hevc')) problems.push(`expected ${f}, not seen`);
     if (problems.length) { mismatches++; console.log(`MISMATCH ${r.cameraId}: ${problems.join('; ')}`); }
   }
   const checked = reports.filter((r) => GRID_GROUND_TRUTH[r.cameraId]).length;
+  if (unchecked) console.log(`${unchecked} could not be checked because the probe itself failed.`);
   console.log(mismatches ? `${mismatches} of ${checked} known cameras differ.` : `All ${checked} known cameras match.`);
 }
-process.exit(mismatches ? 1 : 0);
+process.exit(mismatches || unchecked ? 1 : 0);
