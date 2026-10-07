@@ -68,7 +68,7 @@ fi
 
 # 3. The app, pointed at the local media server. Guests are allowed because this is localhost only.
 export PORT="$APP_PORT" STREAM_EMAIL="$GRID_EMAIL" STREAM_PASSWORD="$GRID_PASSWORD"
-export MEDIA_SERVER_URL="http://localhost:$MEDIA_PORT" MEDIA_ALLOW_GUESTS=true MEDIA_MAX_LIVE_TILES="${MEDIA_MAX_LIVE_TILES:-10}"
+export MEDIA_SERVER_URL="http://localhost:$MEDIA_PORT" MEDIA_ALLOW_GUESTS=true MEDIA_MAX_LIVE_TILES="${MEDIA_MAX_LIVE_TILES:-6}"
 export NODE_ENV=production
 if [ "${SKIP_BUILD:-0}" != "1" ] || [ ! -f dist/server.cjs ]; then npm run build; fi
 echo "Open http://localhost:$APP_PORT  (Ctrl+C here stops everything)"

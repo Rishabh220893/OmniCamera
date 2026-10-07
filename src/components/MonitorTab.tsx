@@ -42,6 +42,8 @@ function getProtocolBadge(camera: CameraConfig): { label: string; color: string 
 interface CameraTileProps {
   camera: CameraConfig;
   cameraIndex?: number;
+  /** 1-based position among the tiles currently on screen (0 = not on screen); decides which grid tiles play live. */
+  liveSlot?: number;
   layout: 'grid' | 'focus';
   isActive: boolean;
   isSelectedForAnalysis: boolean;
@@ -68,7 +70,7 @@ interface CameraTileProps {
 // the `layout` prop, rather than being two separate elements in the grid
 // and focus render branches.
 function CameraTile({
-  camera, cameraIndex, layout, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
+  camera, cameraIndex, liveSlot, layout, isActive, isSelectedForAnalysis, isCapturing, isAnalyzing, latestLog,
   mediaRefs, onCameraError, onFallbackToSimulated, streamAccessPassword, streamAccessEmail, onSelect, onToggleAnalysis,
   onStatusChange, cameraError, isFullscreen, onToggleFullscreen, onToggleCameraFacing, hidden, className
 }: CameraTileProps) {
@@ -93,9 +95,11 @@ function CameraTile({
   // other grid tile shows a periodically refreshed still: a browser (and the grid, which limits how much
   // each account can watch at once) cannot sustain dozens of live streams.
   // With a media server (which serves any number of viewers from one pull per camera) the first N grid tiles
-  // play live as well; the rest stay stills. N is capped by what a browser can decode at once.
+  // play live as well; the rest stay stills. N is capped by what a browser can decode at once, and counts the tiles
+  // on screen (`liveSlot`: 1 = first visible tile), not a tile's position in the whole list: counting the whole list
+  // left page 2 of the grid with tiles that could never go live.
   const media = useMediaConfig();
-  const mediaLive = !!media?.enabled && cameraIndex !== undefined && cameraIndex <= Math.max(media.maxLiveTiles ?? 12, GRID_PAGE_SIZE) && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
+  const mediaLive = !!media?.enabled && liveSlot !== undefined && liveSlot > 0 && liveSlot <= (media.maxLiveTiles ?? 12) && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
   const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis || mediaLive;
 
   const feed = (
@@ -589,6 +593,7 @@ export default function MonitorTab({
                 key={cam.id}
                 camera={cam}
                 cameraIndex={idx + 1}
+                liveSlot={(viewMode === 'matrix' ? matrixCameras : viewMode === 'grid' ? pagedCameras : []).findIndex(c => c.id === cam.id) + 1}
                 layout={viewMode === 'focus' ? 'focus' : (isPrimaryInMatrix ? 'focus' : 'grid')}
                 className={cn(
                   viewMode === 'matrix' && isPrimaryInMatrix && 'lg:col-span-2 lg:row-span-2 aspect-video min-h-[360px] !relative'

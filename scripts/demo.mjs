@@ -323,9 +323,12 @@ async function up() {
   // 1. media server (MediaMTX), via the existing script in its media-only mode
   if (!flag('--no-media')) {
     const bash = findBash();
-    // H.265 grid cameras only play after a Quick Sync re-encode to H.264 (cam22 sends no usable frames, so it is left out).
-    // Set MEDIA_TRANSCODE_IDS= (empty) in scale.local on a PC without Intel Quick Sync to switch it off.
-    const transcode = 'MEDIA_TRANSCODE_IDS' in base ? base.MEDIA_TRANSCODE_IDS : 'cam06,cam12,cam17,cam26';
+    // Grid cameras MediaMTX cannot package play only after a Quick Sync re-encode to H.264: the H.265 ones, and
+    // cam09 13 14 24 27 28 (H.264 with B-frames: MediaMTX's HLS muxer dies with "too many reordered frames") and cam30
+    // (a keyframe only about once a minute, so HLS segments grow to 59 s) are re-encoded too; seen in the browser on 2026-10-08.
+    // cam22 sends no usable frames, so it is left out. Set MEDIA_TRANSCODE_IDS= (empty) in scale.local on a PC
+    // without Intel Quick Sync to switch it off.
+    const transcode = 'MEDIA_TRANSCODE_IDS' in base ? base.MEDIA_TRANSCODE_IDS : 'cam06,cam12,cam17,cam26,cam09:h264,cam13:h264,cam14:h264,cam24:h264,cam27:h264,cam28:h264,cam30:h264';
     launch('media', 'blue', bash, ['scripts/local-demo.sh'], { ...base, MEDIA_ONLY: '1', PORT: String(APP_PORT), MEDIA_HLS_PORT: String(MEDIA_PORT), MEDIA_TRANSCODE_IDS: transcode }, { hide: /^\s*$/ });
     const ok = await waitFor('media server', async () => (await fetch(`http://127.0.0.1:${MEDIA_PORT}/cam01/index.m3u8?cookieCheck=1`, { signal: AbortSignal.timeout(4000) })).status === 401, 60_000);
     if (!ok) { shutdown(); return; }
@@ -358,7 +361,7 @@ async function up() {
 
   // 2. scheduler (also serves the web app), 3. workers
   const schedEnv = { ...base, PORT: String(APP_PORT), ...(single ? {} : { ANALYSIS_ROLE: 'scheduler' }),
-    ...(flag('--no-media') ? {} : { MEDIA_SERVER_URL: `http://localhost:${MEDIA_PORT}`, MEDIA_ALLOW_GUESTS: 'true', MEDIA_MAX_LIVE_TILES: base.MEDIA_MAX_LIVE_TILES || '10' }) };
+    ...(flag('--no-media') ? {} : { MEDIA_SERVER_URL: `http://localhost:${MEDIA_PORT}`, MEDIA_ALLOW_GUESTS: 'true', MEDIA_MAX_LIVE_TILES: base.MEDIA_MAX_LIVE_TILES || '6' }) };
   launch(single ? 'app' : 'scheduler', 'green', process.execPath, entry, schedEnv);
   if (!single) for (let i = 0; i < WORKERS; i++) {
     launch(`worker${i + 1}`, 'magenta', process.execPath, entry, { ...base, PORT: String(APP_PORT + 1 + i), ANALYSIS_ROLE: 'worker' });

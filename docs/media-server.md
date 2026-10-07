@@ -92,7 +92,7 @@ them to H.264 with ffmpeg and Intel Quick Sync, only while somebody watches:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MEDIA_TRANSCODE_IDS` | empty (off) | Cameras to re-encode, e.g. `cam06,cam12,cam17,cam26`. `scripts/demo.mjs` sets this list by default; put `MEDIA_TRANSCODE_IDS=` (empty) in `scale.local` on a PC without Quick Sync. |
+| `MEDIA_TRANSCODE_IDS` | empty (off) | Cameras to re-encode, e.g. `cam06,cam12,cam09:h264`. A bare id is an H.265 camera; `:h264` marks an H.264 camera whose B-frames kill MediaMTX's HLS muxer ("unable to extract DTS: too many reordered frames", seen on cam09, 14, 24, 28). `scripts/demo.mjs` sets the list for all of these by default; put `MEDIA_TRANSCODE_IDS=` (empty) in `scale.local` on a PC without Quick Sync. |
 | `MEDIA_TRANSCODE_BITRATE` | 2500k | Output bitrate |
 | `MEDIA_TRANSCODE_RTSP_PORT` | 18554 | Private RTSP port (127.0.0.1 only) ffmpeg publishes to |
 | `MEDIA_FFMPEG` | ffmpeg | ffmpeg to run (needs `hevc_qsv` and `h264_qsv`) |
@@ -100,7 +100,7 @@ them to H.264 with ffmpeg and Intel Quick Sync, only while somebody watches:
 Measured on the demo PC (Celeron N4020, UHD Graphics 600), through HLS: cam06 1080p playlist in 27 s, cam12 720p in 15 s,
 cam17 1080p in 16-47 s (its very first request can 404 once; a player retries), cam26 1440p in 22-36 s. CPU use is
 negligible (about 1 s of CPU per 20 s of video). **cam22 sends no decodable frames, so it is left out.** There is no limit on how many
-transcodes run at once: keep `MEDIA_MAX_LIVE_TILES` low. A Docker host without Quick Sync needs a different encoder (not built).
+transcodes run at once: the demo runner sets `MEDIA_MAX_LIVE_TILES=6` (one grid page; about six transcodes at once was fine on the Celeron N4020 demo PC, seven made one fail until its automatic restart). A Docker host without Quick Sync needs a different encoder (not built).
 Do not add `-use_wallclock_as_timestamps` to the ffmpeg command: on cam06 it makes h264_qsv refuse to start.
 
 ## What was and was not tested

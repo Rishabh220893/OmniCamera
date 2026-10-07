@@ -105,7 +105,7 @@ Logs of each process are written to `.demo-logs/` (`scheduler.log`, `worker1.log
 | Logs tab shows only a few entries | You started without `--all-logs` |
 | `check` says port 8000 rejects the key | An ANPR service started elsewhere is running. Put its key in `scale.local` as `ANPR_API_KEY=...`, or `node scripts/demo.mjs stop --anpr` |
 | `ANPR: NOT healthy` on the banner | `.demo-logs/anpr.log`; plates fall back to Gemini meanwhile |
-| Tiles slow or blank | Grid or media server load; reduce `MEDIA_MAX_LIVE_TILES` (default 10) in `scale.local` |
+| Tiles slow or blank | Grid or media server load; reduce `MEDIA_MAX_LIVE_TILES` (default 6) in `scale.local` |
 
 ## ANPR (licence plates)
 

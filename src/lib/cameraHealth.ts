@@ -13,6 +13,8 @@
  *     The local demo re-encodes cam06 12 17 26 to H.264 with Quick Sync (MEDIA_TRANSCODE_IDS, media-server/entrypoint.sh):
  *     playlist in 15-45 s. cam22 sends no decodable frames, so it stays unsupported.
  *  6. cam10 08 07 18: no frame in 60 s when pulled alone (cam18 closes the stream after ~9 s). Grid-side.
+ * cam09 14 24 28 are H.264 but carry B-frames: MediaMTX's HLS muxer died on each ("too many reordered frames",
+ * 2026-10-08, cam28 never loaded in the browser), so the demo re-encodes them too (MEDIA_TRANSCODE_IDS, ':h264').
  * Pulling several cameras at once slows the grid further (cam25 failed at 4 in parallel, took 3.2 s alone).
  * Re-measure with the two scripts above and update this list.
  */

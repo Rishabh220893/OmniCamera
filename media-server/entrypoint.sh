@@ -59,8 +59,20 @@ MEDIA_TRANSCODE_BITRATE="${MEDIA_TRANSCODE_BITRATE:-2500k}"
 MEDIA_TRANSCODE_RTSP_PORT="${MEDIA_TRANSCODE_RTSP_PORT:-18554}"
 MEDIA_FFMPEG="${MEDIA_FFMPEG:-ffmpeg}"
 case "$MEDIA_TRANSCODE_IDS" in
-  *[!A-Za-z0-9_,-]*) echo "MEDIA_TRANSCODE_IDS must be comma-separated camera ids (letters, digits, - and _)." >&2; exit 1 ;;
+  *[!A-Za-z0-9_,:-]*) echo "MEDIA_TRANSCODE_IDS must be comma-separated camera ids, each optionally with its input codec (cam06 or cam28:h264)." >&2; exit 1 ;;
 esac
+# Input codec of one transcoded camera: "cam06" = H.265 (the default), "cam28:h264" = an H.264 stream MediaMTX cannot
+# package ("unable to extract DTS: too many reordered frames", B-frames); re-encoding it without B-frames fixes it.
+# Prints the codec and succeeds if the camera is in the list, fails if it is not.
+transcode_codec() {
+  for t in $(printf '%s' "$MEDIA_TRANSCODE_IDS" | tr ',' ' '); do
+    if [ "${t%%:*}" = "$1" ]; then
+      c="${t#*:}"; [ "$c" = "$t" ] && c=hevc
+      printf '%s' "$c"; return 0
+    fi
+  done
+  return 1
+}
 case "$MEDIA_TRANSCODE_BITRATE$MEDIA_TRANSCODE_RTSP_PORT" in
   *[!0-9km]*|"") echo "MEDIA_TRANSCODE_BITRATE must look like 2500k and MEDIA_TRANSCODE_RTSP_PORT must be a number." >&2; exit 1 ;;
 esac
@@ -120,7 +132,10 @@ RTSP_YAML="rtsp: no"
 PUBLISH_PERM=""
 TRANSCODE_PATHS=""
 if [ -n "$MEDIA_TRANSCODE_IDS" ]; then
-  for t in $(printf '%s' "$MEDIA_TRANSCODE_IDS" | tr ',' ' '); do TRANSCODE_PATHS="$TRANSCODE_PATHS$t|"; done
+  for t in $(printf '%s' "$MEDIA_TRANSCODE_IDS" | tr ',' ' '); do
+    case "${t#*:}" in hevc|h264|"$t") ;; *) echo "MEDIA_TRANSCODE_IDS: input codec of '$t' must be hevc or h264." >&2; exit 1 ;; esac
+    TRANSCODE_PATHS="$TRANSCODE_PATHS${t%%:*}|"
+  done
   TRANSCODE_PATHS="${TRANSCODE_PATHS%|}"
   RTSP_YAML="rtsp: yes
 rtspAddress: 127.0.0.1:$MEDIA_TRANSCODE_RTSP_PORT
@@ -128,7 +143,6 @@ rtspTransports: [tcp]"
   PUBLISH_PERM="      - action: publish
         path: '~^($TRANSCODE_PATHS)\$'"
 fi
-is_transcoded() { case ",$MEDIA_TRANSCODE_IDS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 {
   cat <<YAML
@@ -174,16 +188,17 @@ YAML
     case "$id" in
       *[!A-Za-z0-9_-]*|"") echo "Invalid camera id '$id': use letters, digits, - and _ only." >&2; exit 1 ;;
     esac
-    if is_transcoded "$id"; then
-      # ffmpeg pulls the H.265 camera, re-encodes it to H.264 on the GPU and publishes it as this very path.
+    if CODEC=$(transcode_codec "$id"); then
+      # ffmpeg pulls the camera, re-encodes it to H.264 (no B-frames) on the GPU and publishes it as this very path.
       # -g 30 forces a keyframe about every 3 s so HLS can start quickly. Do NOT add -use_wallclock_as_timestamps:
       # on cam06 it makes ffmpeg see 90000 fps and h264_qsv then refuses to open ("Function not implemented").
-      FF="$MEDIA_FFMPEG -hide_banner -loglevel warning -hwaccel qsv -c:v hevc_qsv -rtsp_transport tcp -i rtsp://$USER_ENC:$PASS_ENC@$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/$id -an -c:v h264_qsv -b:v $MEDIA_TRANSCODE_BITRATE -g 30 -bf 0 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$MEDIA_TRANSCODE_RTSP_PORT/$id"
+      FF="$MEDIA_FFMPEG -hide_banner -loglevel warning -hwaccel qsv -c:v ${CODEC}_qsv -rtsp_transport tcp -i rtsp://$USER_ENC:$PASS_ENC@$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/$id -an -c:v h264_qsv -b:v $MEDIA_TRANSCODE_BITRATE -g 30 -bf 0 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$MEDIA_TRANSCODE_RTSP_PORT/$id"
       cat <<YAML
   $id:
     runOnDemand: $(yq "$FF")
     runOnDemandStartTimeout: $SOURCE_START_TIMEOUT
     runOnDemandCloseAfter: $SOURCE_CLOSE_AFTER
+    runOnDemandRestart: yes
 YAML
     else
       cat <<YAML
@@ -200,5 +215,5 @@ YAML
 chmod 600 "$CONFIG"
 
 echo "[media-server] $(printf '%s' "$CAMERA_IDS" | tr ',' '\n' | grep -c .) cameras from rtsp://$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/<id>; HLS on :$MEDIA_HLS_PORT, WebRTC on :$MEDIA_WEBRTC_PORT"
-if [ -n "$MEDIA_TRANSCODE_IDS" ]; then echo "[media-server] H.265 -> H.264 transcoding (Quick Sync) for: $MEDIA_TRANSCODE_IDS"; fi
+if [ -n "$MEDIA_TRANSCODE_IDS" ]; then echo "[media-server] re-encoding to H.264 (Quick Sync) for: $MEDIA_TRANSCODE_IDS"; fi
 exec "$MEDIAMTX_BIN" "$CONFIG"

@@ -105,3 +105,12 @@ test('entrypoint: transcode settings are validated', { skip: !HAS_SH && 'sh not 
   assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: 'cam06', MEDIA_TRANSCODE_BITRATE: '2500k; rm' }).status, 0);
   assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: 'cam06', MEDIA_FFMPEG: 'ffmpeg -x' }).status, 0);
 });
+
+test('entrypoint: a transcoded camera can name its input codec (cam28:h264), H.265 stays the default', { skip: !HAS_SH && 'sh not available' }, () => {
+  const r = run({ ...base, CAMERA_IDS: 'cam06,cam28', MEDIA_TRANSCODE_IDS: 'cam06,cam28:h264' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.yml, /action: publish\s+path: '~\^\(cam06\|cam28\)\$'/);
+  assert.match(r.yml, /cam06:\s+runOnDemand: 'ffmpeg .*-c:v hevc_qsv /);
+  assert.match(r.yml, /cam28:\s+runOnDemand: 'ffmpeg .*-c:v h264_qsv -rtsp_transport/);
+  assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: 'cam28:vp9' }).status, 0);
+});
