@@ -50,6 +50,23 @@ case "$HLS_SEGMENT_COUNT$HLS_SEGMENT_DURATION" in
   *[!0-9sm]*|"") echo "HLS_SEGMENT_COUNT must be a number and HLS_SEGMENT_DURATION like 2s." >&2; exit 1 ;;
 esac
 SOURCE_CLOSE_AFTER="${SOURCE_CLOSE_AFTER:-5s}"
+# H.265 cameras: MediaMTX receives them but its HLS output never starts for the grid's H.265 streams (tested on
+# cam06 and cam26: no playlist in 60 s), so the browser gets nothing. Cameras listed here are instead re-encoded to
+# H.264 by ffmpeg, only while somebody watches. Needs ffmpeg with Intel Quick Sync (h264_qsv, hevc_qsv); empty = off.
+# ffmpeg publishes back over a private RTSP port that only listens on this machine.
+MEDIA_TRANSCODE_IDS="${MEDIA_TRANSCODE_IDS:-}"
+MEDIA_TRANSCODE_BITRATE="${MEDIA_TRANSCODE_BITRATE:-2500k}"
+MEDIA_TRANSCODE_RTSP_PORT="${MEDIA_TRANSCODE_RTSP_PORT:-18554}"
+MEDIA_FFMPEG="${MEDIA_FFMPEG:-ffmpeg}"
+case "$MEDIA_TRANSCODE_IDS" in
+  *[!A-Za-z0-9_,-]*) echo "MEDIA_TRANSCODE_IDS must be comma-separated camera ids (letters, digits, - and _)." >&2; exit 1 ;;
+esac
+case "$MEDIA_TRANSCODE_BITRATE$MEDIA_TRANSCODE_RTSP_PORT" in
+  *[!0-9km]*|"") echo "MEDIA_TRANSCODE_BITRATE must look like 2500k and MEDIA_TRANSCODE_RTSP_PORT must be a number." >&2; exit 1 ;;
+esac
+case "$MEDIA_FFMPEG" in
+  *[!A-Za-z0-9_./:\\-]*) echo "MEDIA_FFMPEG must be a plain path or command name." >&2; exit 1 ;;
+esac
 MEDIAMTX_BIN="${MEDIAMTX_BIN:-/mediamtx}"
 CONFIG="${MEDIAMTX_CONFIG:-/tmp/mediamtx.yml}"
 
@@ -98,6 +115,21 @@ PROXIES="[${PROXIES%, }]"
 HOSTS="[]"
 if [ -n "$MEDIA_PUBLIC_HOST" ]; then HOSTS="[$(yq "$MEDIA_PUBLIC_HOST")]"; fi
 
+# Private RTSP listener (127.0.0.1 only) so ffmpeg can publish the re-encoded H.264 of the cameras above.
+RTSP_YAML="rtsp: no"
+PUBLISH_PERM=""
+TRANSCODE_PATHS=""
+if [ -n "$MEDIA_TRANSCODE_IDS" ]; then
+  for t in $(printf '%s' "$MEDIA_TRANSCODE_IDS" | tr ',' ' '); do TRANSCODE_PATHS="$TRANSCODE_PATHS$t|"; done
+  TRANSCODE_PATHS="${TRANSCODE_PATHS%|}"
+  RTSP_YAML="rtsp: yes
+rtspAddress: 127.0.0.1:$MEDIA_TRANSCODE_RTSP_PORT
+rtspTransports: [tcp]"
+  PUBLISH_PERM="      - action: publish
+        path: '~^($TRANSCODE_PATHS)\$'"
+fi
+is_transcoded() { case ",$MEDIA_TRANSCODE_IDS," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
 {
   cat <<YAML
 logLevel: info
@@ -113,10 +145,11 @@ authInternalUsers:
     permissions:
       - action: api
       - action: metrics
+${PUBLISH_PERM}
 # Local-only, used by the health check.
 api: yes
 apiAddress: 127.0.0.1:$MEDIA_API_PORT
-rtsp: no
+$RTSP_YAML
 rtmp: no
 srt: no
 moq: no
@@ -141,7 +174,19 @@ YAML
     case "$id" in
       *[!A-Za-z0-9_-]*|"") echo "Invalid camera id '$id': use letters, digits, - and _ only." >&2; exit 1 ;;
     esac
-    cat <<YAML
+    if is_transcoded "$id"; then
+      # ffmpeg pulls the H.265 camera, re-encodes it to H.264 on the GPU and publishes it as this very path.
+      # -g 30 forces a keyframe about every 3 s so HLS can start quickly. Do NOT add -use_wallclock_as_timestamps:
+      # on cam06 it makes ffmpeg see 90000 fps and h264_qsv then refuses to open ("Function not implemented").
+      FF="$MEDIA_FFMPEG -hide_banner -loglevel warning -hwaccel qsv -c:v hevc_qsv -rtsp_transport tcp -i rtsp://$USER_ENC:$PASS_ENC@$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/$id -an -c:v h264_qsv -b:v $MEDIA_TRANSCODE_BITRATE -g 30 -bf 0 -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$MEDIA_TRANSCODE_RTSP_PORT/$id"
+      cat <<YAML
+  $id:
+    runOnDemand: $(yq "$FF")
+    runOnDemandStartTimeout: $SOURCE_START_TIMEOUT
+    runOnDemandCloseAfter: $SOURCE_CLOSE_AFTER
+YAML
+    else
+      cat <<YAML
   $id:
     source: rtsp://$USER_ENC:$PASS_ENC@$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/$id
     rtspTransport: tcp
@@ -149,9 +194,11 @@ YAML
     sourceOnDemandStartTimeout: $SOURCE_START_TIMEOUT
     sourceOnDemandCloseAfter: $SOURCE_CLOSE_AFTER
 YAML
+    fi
   done
 } > "$CONFIG"
 chmod 600 "$CONFIG"
 
 echo "[media-server] $(printf '%s' "$CAMERA_IDS" | tr ',' '\n' | grep -c .) cameras from rtsp://$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/<id>; HLS on :$MEDIA_HLS_PORT, WebRTC on :$MEDIA_WEBRTC_PORT"
+if [ -n "$MEDIA_TRANSCODE_IDS" ]; then echo "[media-server] H.265 -> H.264 transcoding (Quick Sync) for: $MEDIA_TRANSCODE_IDS"; fi
 exec "$MEDIAMTX_BIN" "$CONFIG"

@@ -84,6 +84,25 @@ If the media server is down, a tile falls back to the app's own route for that c
 | `SOURCE_START_TIMEOUT` | 60s | How long to wait for a camera to start |
 | `MEDIA_HLS_VARIANT` | fmp4 | Standard HLS: about 1 request/s per camera, smooth over a slow or distant link, a few seconds of delay. `lowLatency` cuts the delay but fetches tiny parts several times a second; with a simulated 300 ms network delay it stalled (14 buffering events in 45 s, none for `fmp4`). `mpegts` is the most compatible. |
 
+## H.265 cameras (cam06, 12, 17, 22, 26)
+
+Five grid cameras send H.265. WebRTC cannot carry it, and MediaMTX never produced an HLS playlist for them (tested on
+cam06 and cam26: nothing after 60 s, even though Chrome itself can decode HEVC). So the media server can re-encode
+them to H.264 with ffmpeg and Intel Quick Sync, only while somebody watches:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MEDIA_TRANSCODE_IDS` | empty (off) | Cameras to re-encode, e.g. `cam06,cam12,cam17,cam26`. `scripts/demo.mjs` sets this list by default; put `MEDIA_TRANSCODE_IDS=` (empty) in `scale.local` on a PC without Quick Sync. |
+| `MEDIA_TRANSCODE_BITRATE` | 2500k | Output bitrate |
+| `MEDIA_TRANSCODE_RTSP_PORT` | 18554 | Private RTSP port (127.0.0.1 only) ffmpeg publishes to |
+| `MEDIA_FFMPEG` | ffmpeg | ffmpeg to run (needs `hevc_qsv` and `h264_qsv`) |
+
+Measured on the demo PC (Celeron N4020, UHD Graphics 600), through HLS: cam06 1080p playlist in 27 s, cam12 720p in 15 s,
+cam17 1080p in 16-47 s (its very first request can 404 once; a player retries), cam26 1440p in 22-36 s. CPU use is
+negligible (about 1 s of CPU per 20 s of video). **cam22 sends no decodable frames, so it is left out.** There is no limit on how many
+transcodes run at once: keep `MEDIA_MAX_LIVE_TILES` low. A Docker host without Quick Sync needs a different encoder (not built).
+Do not add `-use_wallclock_as_timestamps` to the ffmpeg command: on cam06 it makes h264_qsv refuse to start.
+
 ## What was and was not tested
 
 Tested with the real MediaMTX v1.21.1 (built from source), a stand-in RTSP grid with a login, and a real browser:

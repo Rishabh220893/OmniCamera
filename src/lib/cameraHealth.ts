@@ -9,7 +9,9 @@
  *  2. cam30 27 14 24 09 13: H.264, first frame in 12-25 s, low packet loss (cam14 crashed the muxer 4 times).
  *  3. cam23 25: first frame fast (3-8 s) but lost 94k / most packets in the earlier media-server runs.
  *  4. cam20 21 29 19 04 16 15 11: H.264 but slow (13-40 s) and/or lossy (tens of thousands of packets).
- *  5. cam06 26 12 17 22: H.265. Chrome's WebRTC offer has no HEVC, so these only play via the media server's HLS.
+ *  5. cam06 26 12 17 22: H.265. WebRTC has no HEVC, and MediaMTX's HLS never starts for them (no playlist in 60 s).
+ *     The local demo re-encodes cam06 12 17 26 to H.264 with Quick Sync (MEDIA_TRANSCODE_IDS, media-server/entrypoint.sh):
+ *     playlist in 15-45 s. cam22 sends no decodable frames, so it stays unsupported.
  *  6. cam10 08 07 18: no frame in 60 s when pulled alone (cam18 closes the stream after ~9 s). Grid-side.
  * Pulling several cameras at once slows the grid further (cam25 failed at 4 in parallel, took 3.2 s alone).
  * Re-measure with the two scripts above and update this list.

@@ -323,7 +323,10 @@ async function up() {
   // 1. media server (MediaMTX), via the existing script in its media-only mode
   if (!flag('--no-media')) {
     const bash = findBash();
-    launch('media', 'blue', bash, ['scripts/local-demo.sh'], { ...base, MEDIA_ONLY: '1', PORT: String(APP_PORT), MEDIA_HLS_PORT: String(MEDIA_PORT) }, { hide: /^\s*$/ });
+    // H.265 grid cameras only play after a Quick Sync re-encode to H.264 (cam22 sends no usable frames, so it is left out).
+    // Set MEDIA_TRANSCODE_IDS= (empty) in scale.local on a PC without Intel Quick Sync to switch it off.
+    const transcode = 'MEDIA_TRANSCODE_IDS' in base ? base.MEDIA_TRANSCODE_IDS : 'cam06,cam12,cam17,cam26';
+    launch('media', 'blue', bash, ['scripts/local-demo.sh'], { ...base, MEDIA_ONLY: '1', PORT: String(APP_PORT), MEDIA_HLS_PORT: String(MEDIA_PORT), MEDIA_TRANSCODE_IDS: transcode }, { hide: /^\s*$/ });
     const ok = await waitFor('media server', async () => (await fetch(`http://127.0.0.1:${MEDIA_PORT}/cam01/index.m3u8?cookieCheck=1`, { signal: AbortSignal.timeout(4000) })).status === 401, 60_000);
     if (!ok) { shutdown(); return; }
     console.log(`${PASS}  media server up on :${MEDIA_PORT}`);

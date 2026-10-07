@@ -81,3 +81,27 @@ test('entrypoint: HLS trusts proxies by default so sessions keep one client IP b
   assert.match(custom.yml, /hlsTrustedProxies: \['10\.0\.0\.0\/8'\]/);
   assert.notEqual(run({ ...base, MEDIA_TRUSTED_PROXIES: "1.1.1.1'; evil: 1" }).status, 0);
 });
+
+test('entrypoint: transcoding is off by default and leaves the RTSP listener closed', { skip: !HAS_SH && 'sh not available' }, () => {
+  const r = run({ ...base, CAMERA_IDS: 'cam06' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.yml, /^rtsp: no$/m);
+  assert.doesNotMatch(r.yml, /runOnDemand|action: publish/);
+});
+
+test('entrypoint: listed cameras are re-encoded to H.264 by ffmpeg, the others are still pulled directly', { skip: !HAS_SH && 'sh not available' }, () => {
+  const r = run({ ...base, CAMERA_IDS: 'cam01,cam06', MEDIA_TRANSCODE_IDS: 'cam06' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.yml, /^rtsp: yes$/m);
+  assert.match(r.yml, /rtspAddress: 127\.0\.0\.1:18554/); // private: never reachable from other machines
+  assert.match(r.yml, /action: publish\s+path: '~\^\(cam06\)\$'/); // only that path may be published, and only from localhost
+  assert.match(r.yml, /cam06:\s+runOnDemand: 'ffmpeg .*hevc_qsv .*@103\.250\.160\.189:8554\/stream\/cam06 .*h264_qsv .*rtsp:\/\/127\.0\.0\.1:18554\/cam06'/);
+  assert.match(r.yml, /cam01:\s+source: rtsp:\/\//);
+  assert.doesNotMatch(r.yml, /use_wallclock_as_timestamps/); // breaks h264_qsv on cam06
+});
+
+test('entrypoint: transcode settings are validated', { skip: !HAS_SH && 'sh not available' }, () => {
+  assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: "cam06'; evil" }).status, 0);
+  assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: 'cam06', MEDIA_TRANSCODE_BITRATE: '2500k; rm' }).status, 0);
+  assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: 'cam06', MEDIA_FFMPEG: 'ffmpeg -x' }).status, 0);
+});
