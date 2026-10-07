@@ -304,6 +304,10 @@ async function waitFor(what, fn, timeoutMs) {
 // ---------------------------------------------------------------- up
 async function up() {
   const cfg = loadConfig();
+  // Always replace a previous run: stop whatever still holds the demo ports (pass --keep to skip).
+  if (!flag('--keep') && stop({ quiet: true })) {
+    for (let i = 0; i < 20 && !(await portFree(MEDIA_PORT) && await portFree(APP_PORT)); i++) await new Promise((r) => setTimeout(r, 500));
+  }
   if (await check(cfg)) process.exit(1);
 
   const dev = flag('--dev');
@@ -448,7 +452,7 @@ async function analysisOff() {
 }
 
 // ---------------------------------------------------------------- stop
-function stop() {
+function stop({ quiet = false } = {}) {
   const ports = [...Array.from({ length: 10 }, (_, i) => APP_PORT + i), MEDIA_PORT, ...(flag('--anpr') ? [ANPR_PORT] : [])];
   const pids = new Set();
   if (WIN) {
@@ -460,8 +464,9 @@ function stop() {
   } else {
     for (const p of ports) { const o = spawnSync('lsof', ['-ti', `tcp:${p}`, '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout || ''; o.split(/\s+/).filter(Boolean).forEach((x) => pids.add(x)); }
   }
-  if (!pids.size) { console.log('Nothing is listening on the demo ports (3000-3009, 8888).'); return; }
-  for (const pid of pids) { killTree(pid); console.log(`stopped process ${pid}`); }
+  if (!pids.size) { if (!quiet) console.log('Nothing is listening on the demo ports (3000-3009, 8888).'); return 0; }
+  for (const pid of pids) { killTree(pid); console.log(`stopped process ${pid}${quiet ? ' (previous run)' : ''}`); }
+  return pids.size;
 }
 
 // ---------------------------------------------------------------- anpr-setup / anpr-test

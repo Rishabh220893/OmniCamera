@@ -12,7 +12,7 @@ test('health order lists each of the 30 grid cameras exactly once', () => {
 
 test('sortByGridHealth puts the reliable cameras first and the lossy ones last', () => {
   const shuffled = ['cam07', 'cam16', 'cam01', 'cam25', 'cam13', 'cam29', 'cam02'].map(cam);
-  assert.deepEqual(sortByGridHealth(shuffled).map((c) => c.id), ['cam01', 'cam02', 'cam13', 'cam16', 'cam29', 'cam25', 'cam07']);
+  assert.deepEqual(sortByGridHealth(shuffled).map((c) => c.id), ['cam02', 'cam01', 'cam13', 'cam25', 'cam29', 'cam16', 'cam07']);
 });
 
 test('sortByGridHealth keeps non-grid cameras in front, in their own order, and unknown grid ids after known ones', () => {

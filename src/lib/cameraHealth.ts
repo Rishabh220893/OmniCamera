@@ -1,22 +1,26 @@
 /**
  * Demo-grid cameras from most to least reliable, so the first page of the feed shows the ones that actually
- * stream. Measured through the media server (two localhost runs, many cameras pulled at once):
- *  1. cam01 02 03 05 13 streamed the whole session with no packet loss (cam13: 758 lost) and no muxer errors;
- *     cam14 streams but lost ~3.8k packets and crashed the muxer 4 times.
- *  2. cam27 30 09 28 lost under ~2k packets in total (cam27 crashed the muxer twice); cam24 and cam15 were
- *     barely measured. Usable, not proven.
- *  3. cam19 20 21 11 04 10 23 08 lose tens of thousands of packets at the grid itself (cam08: 155k, cam23: 94k,
- *     cam10: 74k), and most also crash the media server's HLS muxer ("too many reordered frames").
- *  4. cam12 17 06 18 22 26 are H.265, which most browsers cannot decode from HLS (not seen in the latest run).
- *  5. cam16 29 25 07 lose most of their packets, so no client change fixes them.
- * Re-measure with `node scripts/check-media-health.mjs` (needs the local demo running) and paste its list here.
+ * stream. Two kinds of evidence:
+ *  - time to first frame straight from the grid over RTSP (`node scripts/probe-grid.mjs`, 2026-10-07; saved in
+ *    .demo-logs/probe-*), and
+ *  - packet loss / muxer crashes through the media server (`node scripts/check-media-health.mjs`, earlier runs).
+ * Tiers:
+ *  1. cam03 02 28 05 01: H.264, first frame in 3-6 s, little or no packet loss.
+ *  2. cam30 27 14 24 09 13: H.264, first frame in 12-25 s, low packet loss (cam14 crashed the muxer 4 times).
+ *  3. cam23 25: first frame fast (3-8 s) but lost 94k / most packets in the earlier media-server runs.
+ *  4. cam20 21 29 19 04 16 15 11: H.264 but slow (13-40 s) and/or lossy (tens of thousands of packets).
+ *  5. cam06 26 12 17 22: H.265. Chrome's WebRTC offer has no HEVC, so these only play via the media server's HLS.
+ *  6. cam10 08 07 18: no frame in 60 s when pulled alone (cam18 closes the stream after ~9 s). Grid-side.
+ * Pulling several cameras at once slows the grid further (cam25 failed at 4 in parallel, took 3.2 s alone).
+ * Re-measure with the two scripts above and update this list.
  */
 export const GRID_HEALTH_ORDER: readonly string[] = [
-  'cam01', 'cam02', 'cam03', 'cam05', 'cam13', 'cam14',
-  'cam27', 'cam30', 'cam09', 'cam28', 'cam24', 'cam15',
-  'cam19', 'cam20', 'cam21', 'cam11', 'cam04', 'cam10', 'cam23', 'cam08',
-  'cam12', 'cam17', 'cam06', 'cam18', 'cam22', 'cam26',
-  'cam16', 'cam29', 'cam25', 'cam07',
+  'cam03', 'cam02', 'cam28', 'cam05', 'cam01',
+  'cam30', 'cam27', 'cam14', 'cam24', 'cam09', 'cam13',
+  'cam23', 'cam25',
+  'cam20', 'cam21', 'cam29', 'cam19', 'cam04', 'cam16', 'cam15', 'cam11',
+  'cam06', 'cam26', 'cam12', 'cam17', 'cam22',
+  'cam10', 'cam08', 'cam07', 'cam18',
 ];
 
 const camIdOf = (streamUrl: string): string | null => streamUrl.match(/\/(cam\d{1,3})\//i)?.[1]?.toLowerCase() ?? null;
