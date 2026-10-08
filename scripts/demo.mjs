@@ -328,8 +328,14 @@ async function up() {
     // (a keyframe only about once a minute, so HLS segments grow to 59 s) are re-encoded too; seen in the browser on 2026-10-08.
     // cam22 sends no usable frames, so it is left out. Set MEDIA_TRANSCODE_IDS= (empty) in scale.local on a PC
     // without Intel Quick Sync to switch it off.
-    const transcode = 'MEDIA_TRANSCODE_IDS' in base ? base.MEDIA_TRANSCODE_IDS : 'cam06,cam12,cam17,cam26,cam09:h264,cam13:h264,cam14:h264,cam24:h264,cam27:h264,cam28:h264,cam30:h264';
-    launch('media', 'blue', bash, ['scripts/local-demo.sh'], { ...base, MEDIA_ONLY: '1', PORT: String(APP_PORT), MEDIA_HLS_PORT: String(MEDIA_PORT), MEDIA_TRANSCODE_IDS: transcode }, { hide: /^\s*$/ });
+    // Better than any hard-coded list: when `node --import tsx scripts/media-config.ts write` has produced a paths file from the
+    // camera profiles, the media server starts from that (each camera gets the recipe its probe measured). MEDIA_TRANSCODE_IDS in
+    // scale.local, set on purpose, still wins. The list below is the fallback until a probe has been run.
+    const generated = path.join(ROOT, 'media-server', 'bin', 'paths.generated.yml');
+    const useGenerated = fs.existsSync(generated) && !('MEDIA_TRANSCODE_IDS' in base);
+    const transcode = useGenerated ? '' : 'MEDIA_TRANSCODE_IDS' in base ? base.MEDIA_TRANSCODE_IDS : 'cam06,cam12,cam17,cam26,cam09:h264,cam13:h264,cam14:h264,cam24:h264,cam27:h264,cam28:h264,cam30:h264';
+    console.log(`${INFO}  media paths: ${useGenerated ? `generated from camera profiles (${path.relative(ROOT, generated)})` : transcode ? 'the built-in re-encode list (run scripts/media-config.ts write to generate one from the profiles)' : 'no re-encoding'}`);
+    launch('media', 'blue', bash, ['scripts/local-demo.sh'], { ...base, MEDIA_ONLY: '1', PORT: String(APP_PORT), MEDIA_HLS_PORT: String(MEDIA_PORT), MEDIA_TRANSCODE_IDS: transcode, MEDIA_PATHS_FILE: useGenerated ? generated : '' }, { hide: /^\s*$/ });
     const ok = await waitFor('media server', async () => (await fetch(`http://127.0.0.1:${MEDIA_PORT}/cam01/index.m3u8?cookieCheck=1`, { signal: AbortSignal.timeout(4000) })).status === 401, 60_000);
     if (!ok) { shutdown(); return; }
     console.log(`${PASS}  media server up on :${MEDIA_PORT}`);

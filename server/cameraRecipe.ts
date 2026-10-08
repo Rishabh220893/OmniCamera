@@ -27,8 +27,8 @@ export interface EncodeSpec {
   /** Keep the source codec for decoding (hardware decode for H.265). */
   inputCodec: string;
   bframes: 0;
-  /** A keyframe at least this often, so HLS segments stay short whatever the camera sends. */
-  keyframeEverySec: number;
+  /** A keyframe at least every this many frames (ffmpeg -g), so HLS segments stay short whatever the camera sends. 30 is what worked on the demo PC. */
+  gopFrames: number;
   /** Downscale to at most this height; null leaves the size alone. */
   maxHeight: number | null;
 }
@@ -55,6 +55,8 @@ export interface DecideOptions {
   encoder?: EncoderKind;
   /** How many probes in a row saw the stream close early; two or more make it unsupported. */
   closedEarlyRuns?: number;
+  /** A manual override: use this recipe whatever the measurements say. The reason keeps what the table would have chosen. */
+  force?: Recipe;
 }
 
 const sec = (ms: number | null | undefined) => (ms == null ? null : ms / 1000);
@@ -80,6 +82,26 @@ export function healthScore(r: ProbeReport): number {
 }
 
 export function decide(r: ProbeReport, opts: DecideOptions = {}): Decision {
+  const natural = decideFromMeasurements(r, opts);
+  return opts.force && opts.force !== natural.recipe ? forced(r, natural, opts.force) : natural;
+}
+
+const LIVE: Recipe[] = ['A', 'B', 'C', 'D'];
+
+function forced(r: ProbeReport, natural: Decision, recipe: Recipe): Decision {
+  const reason = `Manual override to ${recipe} (the measurements chose ${natural.recipe}: ${natural.reason})`;
+  if (!LIVE.includes(recipe)) return { ...natural, recipe, reason, transcode: false, encode: null, gridLive: false, focusRecipe: null };
+  const reencode = recipe !== 'A';
+  const ttff = r.sample?.timeToFirstFrameMs;
+  return {
+    ...natural, recipe, reason, transcode: reencode,
+    encode: reencode ? { inputCodec: r.describe?.codec ?? 'h264', bframes: 0, gopFrames: 30, maxHeight: recipe === 'D' ? THRESHOLDS.highResHeight : null } : null,
+    gridLive: ttff == null || ttff <= THRESHOLDS.maxStartMs,
+    focusRecipe: null,
+  };
+}
+
+function decideFromMeasurements(r: ProbeReport, opts: DecideOptions): Decision {
   const encoder = opts.encoder ?? 'qsv';
   const flags = new Set(r.flags);
   const health = healthScore(r);
@@ -117,7 +139,7 @@ export function decide(r: ProbeReport, opts: DecideOptions = {}): Decision {
     if (gapProblem) causes.push(`keyframes up to ${Math.round(Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec))}s apart`);
     if (damaged) causes.push(`damaged video (${s.corruptErrors} decoder errors in ${s.frames} frames)`);
     recipe = tall ? 'D' : codecChange ? 'C' : 'B';
-    reason = `${causes.join(', ')}${tall ? `, ${d.width}x${d.height}` : ''}: re-encoded to H.264 with a keyframe every 3s and no B-frames${tall ? `, scaled down to ${THRESHOLDS.highResHeight}p` : ''}`;
+    reason = `${causes.join(', ')}${tall ? `, ${d.width}x${d.height}` : ''}: re-encoded to H.264 with no B-frames and a keyframe at least every 30 frames${tall ? `, scaled down to ${THRESHOLDS.highResHeight}p` : ''}`;
   }
 
   if (needsReencode && encoder === 'none') {
@@ -128,7 +150,7 @@ export function decide(r: ProbeReport, opts: DecideOptions = {}): Decision {
   return {
     recipe, reason,
     transcode: needsReencode,
-    encode: needsReencode ? { inputCodec: d.codec ?? 'h264', bframes: 0, keyframeEverySec: 3, maxHeight: recipe === 'D' ? THRESHOLDS.highResHeight : null } : null,
+    encode: needsReencode ? { inputCodec: d.codec ?? 'h264', bframes: 0, gopFrames: 30, maxHeight: recipe === 'D' ? THRESHOLDS.highResHeight : null } : null,
     gridLive: s.timeToFirstFrameMs == null || s.timeToFirstFrameMs <= THRESHOLDS.maxStartMs,
     speed, focusRecipe: webrtcOk ? 'E' : null, health,
   };

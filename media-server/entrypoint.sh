@@ -58,6 +58,15 @@ MEDIA_TRANSCODE_IDS="${MEDIA_TRANSCODE_IDS:-}"
 MEDIA_TRANSCODE_BITRATE="${MEDIA_TRANSCODE_BITRATE:-2500k}"
 MEDIA_TRANSCODE_RTSP_PORT="${MEDIA_TRANSCODE_RTSP_PORT:-18554}"
 MEDIA_FFMPEG="${MEDIA_FFMPEG:-ffmpeg}"
+# MEDIA_PATHS_FILE: the `paths:` entries generated from the camera profiles (scripts/media-config.ts write). When it is set it
+# replaces the per-camera loop and MEDIA_TRANSCODE_IDS below: the file already says which cameras are pulled and which are re-encoded.
+MEDIA_PATHS_FILE="${MEDIA_PATHS_FILE:-}"
+if [ -n "$MEDIA_PATHS_FILE" ] && [ -n "${MEDIA_TRANSCODE_IDS:-}" ]; then
+  echo "Set MEDIA_PATHS_FILE or MEDIA_TRANSCODE_IDS, not both: the generated paths file already decides what is re-encoded." >&2; exit 1
+fi
+if [ -n "$MEDIA_PATHS_FILE" ] && [ ! -f "$MEDIA_PATHS_FILE" ]; then
+  echo "MEDIA_PATHS_FILE '$MEDIA_PATHS_FILE' does not exist. Create it with: node --import tsx scripts/media-config.ts write" >&2; exit 1
+fi
 case "$MEDIA_TRANSCODE_IDS" in
   *[!A-Za-z0-9_,:-]*) echo "MEDIA_TRANSCODE_IDS must be comma-separated camera ids, each optionally with its input codec (cam06 or cam28:h264)." >&2; exit 1 ;;
 esac
@@ -144,6 +153,15 @@ rtspTransports: [tcp]"
         path: '~^($TRANSCODE_PATHS)\$'"
 fi
 
+# With a generated paths file the private RTSP listener is always on (re-encoded cameras can be added while the server runs, so the
+# set of paths that publish is not known here). It listens on 127.0.0.1 only and only this machine's ffmpeg may publish to it.
+if [ -n "$MEDIA_PATHS_FILE" ]; then
+  RTSP_YAML="rtsp: yes
+rtspAddress: 127.0.0.1:$MEDIA_TRANSCODE_RTSP_PORT
+rtspTransports: [tcp]"
+  PUBLISH_PERM="      - action: publish"
+fi
+
 {
   cat <<YAML
 logLevel: info
@@ -184,6 +202,10 @@ webrtcAllowOrigins: $ORIGINS
 webrtcAdditionalHosts: $HOSTS
 paths:
 YAML
+  if [ -n "$MEDIA_PATHS_FILE" ]; then
+    cat "$MEDIA_PATHS_FILE"
+    CAMERA_IDS=""
+  fi
   for id in $(printf '%s' "$CAMERA_IDS" | tr ',' ' '); do
     case "$id" in
       *[!A-Za-z0-9_-]*|"") echo "Invalid camera id '$id': use letters, digits, - and _ only." >&2; exit 1 ;;
@@ -214,6 +236,10 @@ YAML
 } > "$CONFIG"
 chmod 600 "$CONFIG"
 
+if [ -n "$MEDIA_PATHS_FILE" ]; then
+  echo "[media-server] $(grep -c '^  [A-Za-z0-9_-]*:$' "$MEDIA_PATHS_FILE" || true) paths from $MEDIA_PATHS_FILE; HLS on :$MEDIA_HLS_PORT, WebRTC on :$MEDIA_WEBRTC_PORT"
+else
 echo "[media-server] $(printf '%s' "$CAMERA_IDS" | tr ',' '\n' | grep -c .) cameras from rtsp://$GRID_RTSP_HOST:$GRID_RTSP_PORT/$GRID_RTSP_PATH/<id>; HLS on :$MEDIA_HLS_PORT, WebRTC on :$MEDIA_WEBRTC_PORT"
 if [ -n "$MEDIA_TRANSCODE_IDS" ]; then echo "[media-server] re-encoding to H.264 (Quick Sync) for: $MEDIA_TRANSCODE_IDS"; fi
+fi
 exec "$MEDIAMTX_BIN" "$CONFIG"

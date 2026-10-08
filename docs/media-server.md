@@ -93,6 +93,7 @@ them to H.264 with ffmpeg and Intel Quick Sync, only while somebody watches:
 | Variable | Default | Meaning |
 |---|---|---|
 | `MEDIA_TRANSCODE_IDS` | empty (off) | Cameras to re-encode, e.g. `cam06,cam12,cam09:h264`. A bare id is an H.265 camera; `:h264` marks an H.264 camera whose B-frames kill MediaMTX's HLS muxer ("unable to extract DTS: too many reordered frames", seen on cam09, 14, 24, 28). `scripts/demo.mjs` sets the list for all of these by default; put `MEDIA_TRANSCODE_IDS=` (empty) in `scale.local` on a PC without Quick Sync. |
+| `MEDIA_PATHS_FILE` | empty | A file of `paths:` entries generated from the camera profiles (see below). When set it replaces the camera list and `MEDIA_TRANSCODE_IDS` (setting both is refused). The private RTSP listener for re-encoded cameras is then always on, 127.0.0.1 only. |
 | `MEDIA_TRANSCODE_BITRATE` | 2500k | Output bitrate |
 | `MEDIA_TRANSCODE_RTSP_PORT` | 18554 | Private RTSP port (127.0.0.1 only) ffmpeg publishes to |
 | `MEDIA_FFMPEG` | ffmpeg | ffmpeg to run (needs `hevc_qsv` and `h264_qsv`) |
@@ -118,3 +119,38 @@ Tested with the real MediaMTX v1.21.1 (built from source), a stand-in RTSP grid 
 - The grid still limits how much one account may watch, and every camera being watched is pulled continuously. Many viewers cost no extra watch time; many *cameras* do.
 - The viewer password reaches the browser of every signed-in user, so treat it as shared. Rotate it if someone leaves.
 - Bandwidth out of the media server is roughly (cameras shown) x (stream bitrate) per viewer. On a cloud host that is the main cost.
+
+
+## Paths generated from camera profiles
+
+`MEDIA_TRANSCODE_IDS` is a hand-kept list keyed on camera ids. The replacement works from what the onboarding probe measured
+(`docs/camera-onboarding-plan.md`): each camera's profile gives a recipe, and the recipe gives its MediaMTX path.
+
+| Recipe | Path |
+|---|---|
+| A (clean H.264) | a plain on-demand RTSP pull |
+| B, C, D (B-frames, long keyframe gap, damaged video, H.265, other codecs, over 1080p) | an on-demand ffmpeg re-encode with Quick Sync, same command as above |
+| F, G (no usable video) | no path: a request fails at once instead of waiting a minute |
+
+```
+node --import tsx scripts/probe-cameras.ts                      measure the cameras (or --db to keep the profiles in Postgres)
+node --import tsx scripts/media-config.ts plan                  what each camera gets, and how many re-encodes there are
+node --import tsx scripts/media-config.ts write                 write media-server/bin/paths.generated.yml (it holds the camera login, mode 600)
+node --import tsx scripts/media-config.ts apply --dry-run       what a running server would change
+node --import tsx scripts/media-config.ts apply                 change the running server, no restart
+```
+
+- `scripts/demo.mjs up` starts the media server from the generated file when it exists (a `MEDIA_TRANSCODE_IDS=` line in
+  `scale.local`, set on purpose, still wins). Otherwise it uses its built-in list.
+- **`apply` talks to MediaMTX's control API** (127.0.0.1 only). It adds new cameras, replaces ones whose recipe changed (their viewers
+  reconnect) and removes ones that no longer have video. Cameras that did not change are not touched: a viewer on one kept receiving
+  a segment every 2 s while others were added and removed. Applying twice changes nothing.
+- API changes live only in the running server, so run `write` as well; a restart then comes back the same.
+- **The login**: one per site from `GRID_EMAIL` / `GRID_PASSWORD` (or `STREAM_*` for the grid), with an optional login for one camera
+  in `GRID_CAM07_EMAIL` / `GRID_CAM07_PASSWORD`. Nothing is stored in a profile.
+- **A manual override** (`recipe_override` and `override_reason` in the `camera_profiles` table, used with `--db`) forces a recipe for one camera;
+  the reason shown by `plan` keeps what the measurements had chosen.
+- **Recipe D does not scale yet.** `scale_qsv` failed on the demo PC and nothing else has been validated, so D re-encodes at the source size
+  unless `MEDIA_SCALE_FILTER` is set (for example `vpp_qsv=w=1920:h=1080`) after trying it on the target PC.
+- **Not enforced here: the number of re-encodes running at once.** They run only while watched, and about 6 fit on the demo PC (7 made one
+  fail). The app's live-tile cap (`MEDIA_MAX_LIVE_TILES`, default 6) is what keeps it under that; the media server does not refuse a seventh.

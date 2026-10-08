@@ -243,6 +243,22 @@ recipe and how many can be live with N slots (`--slots`).
   5. Fewer than 3 decoded frames in a sample is not a live stream (random bytes decode as one frame of text).
 - **Not yet decided by evidence:** the 5 s keyframe limit and the weights in the health score.
 
+## Step 3 status
+
+Built: `server/mediaPaths.ts` (recipe to MediaMTX path, YAML, and the comparison with a running server), `server/mediaApply.ts` (changes a
+running MediaMTX through its control API), `server/mediaPlan.ts`, `server/siteSecrets.ts` (the per-site login with per-camera override),
+`scripts/media-config.ts` (`plan`, `write`, `apply`), profile storage for decisions and overrides, and `MEDIA_PATHS_FILE` in
+`media-server/entrypoint.sh`. `scripts/demo.mjs up` uses the generated file when it exists. How to use it: `docs/media-server.md`.
+
+- **Same output as today's entrypoint.** A test runs the shell entrypoint and the generator on the same cameras and compares the YAML.
+- **Tested against a real MediaMTX 1.21.1** (`MEDIAMTX_BIN=... node --import tsx --test tests/mediaApply.test.ts`; skipped otherwise). That
+  found a bug a fake server could not: MediaMTX reports an idle path's source as `publisher`, which made every re-encode path look changed.
+- **Hot reload checked end to end** with a fake grid and a viewer: while cam01 was removed and cam04 added, the viewer of cam02 kept
+  getting a segment every 2 s with no error, and cam02's muxer was never recreated.
+- **Not covered:** a re-encode actually running (this machine has no Quick Sync); the number of re-encodes at once is not enforced by the
+  media server (the app's live-tile cap does it; a gate that refuses the seventh belongs with step 5); recipe D does not scale until a filter
+  is validated on the target PC (`MEDIA_SCALE_FILTER`).
+
 ## Open points for step 1
 
 - Postgres schema details (column types, how a probe run references a site) and a migration approach.

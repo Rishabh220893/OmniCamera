@@ -34,7 +34,7 @@ test('B: B-frames or sparse keyframes in H.264 need a re-encode with short GOP a
     const d = decide(r);
     assert.equal(d.recipe, 'B', d.reason);
     assert.equal(d.transcode, true);
-    assert.deepEqual(d.encode, { inputCodec: 'h264', bframes: 0, keyframeEverySec: 3, maxHeight: null });
+    assert.deepEqual(d.encode, { inputCodec: 'h264', bframes: 0, gopFrames: 30, maxHeight: null });
     assert.equal(d.focusRecipe, null, 'WebRTC needs neither B-frames nor a long wait for a keyframe');
   }
 });
@@ -88,6 +88,24 @@ test('a stream that closes early is snapshot-only once, unsupported when it repe
   assert.equal(decide(r).recipe, 'F');
   assert.match(decide(r).reason, /closed after 8s/);
   assert.equal(decide(r, { closedEarlyRuns: 2 }).recipe, 'G');
+});
+
+test('manual override: any recipe can be forced, and the reason keeps what the measurements chose', () => {
+  const clean = report();
+  const toB = decide(clean, { force: 'B' });
+  assert.equal(toB.recipe, 'B');
+  assert.equal(toB.transcode, true);
+  assert.deepEqual(toB.encode, { inputCodec: 'h264', bframes: 0, gopFrames: 30, maxHeight: null });
+  assert.match(toB.reason, /Manual override to B \(the measurements chose A: /);
+  const toD = decide(report({ width: 2560, height: 1440 }), { force: 'D' });
+  assert.equal(toD.encode?.maxHeight, 1080);
+  const toF = decide(report({ codec: 'hevc' }), { force: 'F' });
+  assert.equal(toF.recipe, 'F');
+  assert.equal(toF.encode, null);
+  assert.equal(decide(clean, { force: 'A' }).reason, decide(clean).reason, 'forcing the recipe the table chose changes nothing');
+  const fromG = decide(failure('no_frame'), { force: 'C' });
+  assert.equal(fromG.recipe, 'C', 'an override can bring a failed camera back, e.g. after the grid is fixed');
+  assert.equal(fromG.encode?.inputCodec, 'h264');
 });
 
 test('F: a camera that needs a re-encode on a machine with no hardware encoder is snapshot-only, never software', () => {

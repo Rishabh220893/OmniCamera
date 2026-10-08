@@ -326,12 +326,24 @@ CREATE TABLE IF NOT EXISTS camera_profiles (
   recipe_reason   TEXT,
   recipe_override TEXT,
   override_reason TEXT,
+  decision        JSONB,
   PRIMARY KEY (site, camera_id)
 );
+ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS decision JSONB;
 `;
+
+export interface ProfileRow { report: ProbeReport; override: string | null; overrideReason: string | null }
+
+export const RECIPES = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 
 export interface ProfileStore {
   ensureSchema(): Promise<void>;
+  /** The current profile of every camera on a site, with any manual override. */
+  listProfiles(site: string): Promise<ProfileRow[]>;
+  /** Records what the decision table chose (the probe columns are left alone). */
+  saveDecision(site: string, cameraId: string, decision: { recipe: string; reason: string } & Record<string, unknown>): Promise<void>;
+  /** Forces a recipe for one camera, or clears it with null. Every change needs a reason. */
+  setOverride(site: string, cameraId: string, recipe: string | null, reason: string | null): Promise<void>;
   /** Appends the run to history and refreshes the current profile. Recipe columns are left alone (step 2). */
   saveProbe(report: ProbeReport): Promise<void>;
   history(site: string, cameraId: string, limit?: number): Promise<ProbeReport[]>;
@@ -355,6 +367,27 @@ export function createProfileStore(pg: PgLike): ProfileStore {
            time_to_first_frame_ms = EXCLUDED.time_to_first_frame_ms, flags = EXCLUDED.flags, profile = EXCLUDED.profile`,
         [r.site, r.cameraId, r.probedAt, r.probeVersion, r.failure, r.describe?.codec ?? null, r.describe?.width ?? null,
           r.describe?.height ?? null, r.describe?.fps ?? null, r.sample?.timeToFirstFrameMs ?? null, r.flags, JSON.stringify(r)],
+      );
+    },
+
+    async listProfiles(site) {
+      const res = await pg.query(`SELECT profile, recipe_override, override_reason FROM camera_profiles WHERE site = $1 ORDER BY camera_id`, [site]);
+      return res.rows.map((row) => ({ report: row.profile as ProbeReport, override: row.recipe_override ?? null, overrideReason: row.override_reason ?? null }));
+    },
+
+    async saveDecision(site, cameraId, decision) {
+      await pg.query(
+        `UPDATE camera_profiles SET recipe = $3, recipe_reason = $4, decision = $5 WHERE site = $1 AND camera_id = $2`,
+        [site, cameraId, decision.recipe, decision.reason, JSON.stringify(decision)],
+      );
+    },
+
+    async setOverride(site, cameraId, recipe, reason) {
+      if (recipe !== null && !(RECIPES as readonly string[]).includes(recipe)) throw new Error(`Unknown recipe '${recipe}'; use one of ${RECIPES.join(', ')}`);
+      if (recipe !== null && !reason?.trim()) throw new Error('An override needs a reason');
+      await pg.query(
+        `UPDATE camera_profiles SET recipe_override = $3, override_reason = $4 WHERE site = $1 AND camera_id = $2`,
+        [site, cameraId, recipe, recipe === null ? null : reason],
       );
     },
 
