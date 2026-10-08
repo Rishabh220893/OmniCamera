@@ -179,8 +179,8 @@ Result of the first full runs on the grid (2026-10-08, 28 of 30 cameras gave vid
 - H.265: cam06, 12, 17, 18, 22, 26 (cam18 was not on the earlier list). cam26 is 1440p.
 - B-frames (packets reordered by 0.4-8.5 s): cam07, 08, 09, 24, 25, 27, 28, 29, and by the decoder's hint cam10, 11.
   **cam13 and cam14 show none** in two runs, so the earlier note that they were B-frame cameras is not supported.
-- Keyframe gaps over 5 s: 19 cameras, up to about 30 s. **Only about five cameras would pass through unchanged**
-  (cam01, 02, 03, 14 and, marginally, 12 as H.265 would not). Plan for most of the grid needing a re-encode, which makes the
+- Keyframe gaps over 5 s: 19 cameras, up to about 30 s. **Only about four cameras would pass through unchanged**
+  (cam01 and cam03 cleanly; cam02 and cam14 with caveats: cam02 has timestamp problems, cam14 sits just under the 5 s limit). Plan for most of the grid needing a re-encode, which makes the
   6-transcode limit and admission control (section 5) the central constraint, not an edge case. The 5 s threshold itself
   should be tested: whether MediaMTX plays a 6-10 s gap fine is a stage 4 question.
 - Time to first frame: 12 cameras are over 15 s, cam07 and cam11 over 30 s. Delivery is not stable: cam10 and cam11 gave
