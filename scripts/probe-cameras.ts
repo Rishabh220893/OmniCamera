@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import {
-  PROBE_VERSION, THRESHOLDS, buildSample, classifyConnectError, deriveFlags, parseFfprobeStreams,
+  PROBE_VERSION, THRESHOLDS, buildSample, buildSampleArgs, classifyConnectError, parseFfmpegInput, deriveFlags, parseFfprobeStreams,
   createProfileStore, type DescribeResult, type FailureStage, type ProbeReport,
 } from '../server/cameraProfile';
 import { GRID_GROUND_TRUTH } from '../server/gridGroundTruth';
@@ -61,7 +61,7 @@ const url = (id: string) => `rtsp://${enc(email)}:${enc(pass)}@${HOST}:8554/stre
 
 interface Run { code: number | null; stdout: string; stderr: string; ms: number; timedOut: boolean }
 
-function run(cmd: string, args: string[], timeoutMs: number, onStdout?: (chunk: string, elapsedMs: number) => void): Promise<Run> {
+function run(cmd: string, args: string[], timeoutMs: number, onStderr?: (chunk: string, elapsedMs: number) => void): Promise<Run> {
   return new Promise((resolve) => {
     const t0 = Date.now();
     const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -71,8 +71,8 @@ function run(cmd: string, args: string[], timeoutMs: number, onStdout?: (chunk: 
       resolve({ code, stdout, stderr, ms: Date.now() - t0, timedOut });
     };
     const timer = setTimeout(() => { timedOut = true; p.kill('SIGKILL'); }, timeoutMs);
-    p.stdout.on('data', (d) => { stdout += d; onStdout?.(String(d), Date.now() - t0); });
-    p.stderr.on('data', (d) => { stderr += d; });
+    p.stdout.on('data', (d) => { stdout += d; });
+    p.stderr.on('data', (d) => { stderr += d; onStderr?.(String(d), Date.now() - t0); });
     p.on('close', finish);
     p.on('error', (e: NodeJS.ErrnoException) => { stderr += e.code === 'ENOENT' ? `${cmd} not found on PATH` : String(e); finish(null); });
   });
@@ -108,26 +108,32 @@ async function probe(id: string): Promise<ProbeReport> {
   if (!tcp.ok) { fail('unreachable', `RTSP port 8554: ${tcp.error}`); return report; }
   report.reachable = true;
 
-  // Stage 2: describe
+  // Stage 2: describe. A timeout or error here is not fatal: a camera with sparse keyframes can take longer than
+  // ffprobe waits, so stage 3 gets to decide, and ffmpeg's own description of the input fills the gap.
   const d = await run('ffprobe', ['-v', 'error', '-rtsp_transport', transport, '-show_streams', '-of', 'json', url(id)], 20_000);
-  const describe: DescribeResult | null = d.timedOut ? null : parseFfprobeStreams(d.stdout);
-  if (!describe) {
-    const c = d.timedOut ? { stage: 'no_describe' as const, detail: 'ffprobe timed out after 20s' } : classifyConnectError(d.stderr);
-    fail(c.stage, c.detail);
+  report.describe = d.timedOut ? null : parseFfprobeStreams(d.stdout);
+  const describeFailure = report.describe ? null
+    : d.timedOut ? { stage: 'no_describe' as const, detail: 'ffprobe timed out after 20s' } : classifyConnectError(d.stderr);
+  if (describeFailure && (describeFailure.stage === 'bad_credentials' || describeFailure.stage === 'unreachable')) {
+    fail(describeFailure.stage, describeFailure.detail);
     return report;
   }
-  report.describe = describe;
 
-  // Stage 3: sample. -progress flushes per frame, so the first stdout line is the first decoded frame.
-  let firstFrameMs: number | null = null;
-  const s = await run('ffmpeg', [
-    '-hide_banner', '-nostdin', '-loglevel', 'info', '-rtsp_transport', transport, '-i', url(id),
-    '-t', String(sampleSec), '-an', '-vf', 'showinfo', '-progress', 'pipe:1', '-nostats', '-f', 'null', '-',
-  ], (sampleSec + THRESHOLDS.maxStartMs / 1000 + 10) * 1000, (chunk, ms) => { if (firstFrameMs === null && /frame=[1-9]/.test(chunk)) firstFrameMs = ms; });
-  report.sample = buildSample({ requestedSec: sampleSec, elapsedSec: s.ms / 1000, timeToFirstFrameMs: firstFrameMs, stderr: s.stderr });
+  // Stage 3: sample. -progress goes to stderr, so a "frame=N" line there is the first decoded frame; stdout carries packet timestamps.
+  let firstFrameMs: number | null = null, seenFrame = false;
+  const s = await run('ffmpeg', buildSampleArgs(url(id), transport, sampleSec), (sampleSec + THRESHOLDS.maxStartMs / 1000 + 10) * 1000, (chunk, ms) => {
+    if (!seenFrame && /(^|\n)frame=\s*[1-9]/.test(chunk)) { seenFrame = true; firstFrameMs = ms; }
+  });
+  report.sample = buildSample({ requestedSec: sampleSec, elapsedSec: s.ms / 1000, timeToFirstFrameMs: firstFrameMs, stderr: s.stderr, packets: s.stdout });
+  if (!report.describe) {
+    report.describe = parseFfmpegInput(s.stderr);
+    if (describeFailure && report.sample.frames > 0) report.notes = [`ffprobe could not describe the stream (${redact(describeFailure.detail)}); ffmpeg's description was used`];
+  }
   if (report.sample.frames === 0) {
     const c = classifyConnectError(s.stderr);
-    fail(c.stage === 'bad_credentials' || c.stage === 'unreachable' ? c.stage : 'no_frame', s.timedOut ? `no frame within ${Math.round(s.ms / 1000)}s` : c.detail);
+    if (c.stage === 'bad_credentials' || c.stage === 'unreachable') fail(c.stage, c.detail);
+    else if (describeFailure) fail('no_describe', describeFailure.detail);
+    else fail('no_frame', s.timedOut ? `no frame within ${Math.round(s.ms / 1000)}s` : c.detail);
   }
   report.flags = deriveFlags(report.describe, report.sample);
   return report;
@@ -148,7 +154,7 @@ await Promise.all(Array.from({ length: parallel }, async () => {
       r.cameraId.padEnd(7), (r.failure ?? 'ok').padEnd(13), (d?.codec ?? '-').padEnd(6),
       (d?.width ? `${d.width}x${d.height}` : '-').padEnd(10), String(d?.fps ?? '-').padEnd(4),
       (s?.timeToFirstFrameMs != null ? (s.timeToFirstFrameMs / 1000).toFixed(1) + 's' : '-').padEnd(7),
-      (s?.keyframeIntervalSec ? s.keyframeIntervalSec.max.toFixed(1) + 's' : '-').padEnd(8), r.flags.join(',') || (r.failureDetail ?? ''),
+      (s ? Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec).toFixed(1) + 's' : '-').padEnd(8), r.flags.join(',') || (r.failureDetail ?? ''),
     ].join(' '));
   }
 }));

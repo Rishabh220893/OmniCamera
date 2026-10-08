@@ -54,6 +54,17 @@ export interface SampleMeasurement {
   /** Gaps between keyframes, in stream time. */
   keyframeIntervalSec: { min: number; median: number; max: number } | null;
   bFrames: number;
+  /** Packet level (from the copy output): how many packets carry a presentation time later than their decode time. */
+  reorderedPackets: number;
+  /** Largest pts - dts, in seconds: how far the camera reorders frames. */
+  maxReorderSec: number;
+  keyframeCount: number;
+  /** Stream time from the first decoded frame to the last. */
+  spanSec: number;
+  /** Stream time from the last keyframe to the last frame; a lower bound on the gap that follows it. */
+  sinceLastKeyframeSec: number;
+  /** A few distinct problem lines from the log (credentials removed), so a flag can be explained. */
+  problemSamples: string[];
   missedPackets: number;
   corruptErrors: number;
   timestampErrors: number;
@@ -73,6 +84,8 @@ export interface ProbeReport {
   sample: SampleMeasurement | null;
   whep: { ok: boolean; status: number; ms: number; error?: string } | null;
   flags: FaultFlag[];
+  /** Things worth knowing that are not faults, e.g. that ffprobe timed out and ffmpeg's own description was used. */
+  notes?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -122,16 +135,77 @@ export function parseShowInfo(stderr: string): ShowInfoFrame[] {
   return out;
 }
 
-/** Counts of the problem lines ffmpeg logs while decoding a live stream. */
-export function countLogProblems(stderr: string): { missedPackets: number; corruptErrors: number; timestampErrors: number } {
+const TIMESTAMP_RE = /non[- ]monotonic|Non-monotonous|Invalid DTS|Invalid PTS|DTS .* < .*PTS|too many reordered frames/i;
+const CORRUPT_RE = /error while decoding|corrupt|concealing|Invalid data|no frame!|Missing reference|Could not find ref|decode_slice_header error/i;
+
+/** Counts of the problem lines ffmpeg logs while decoding a live stream, plus a few distinct examples. */
+export function countLogProblems(stderr: string): { missedPackets: number; corruptErrors: number; timestampErrors: number; samples: string[] } {
   let missedPackets = 0, corruptErrors = 0, timestampErrors = 0;
-  for (const line of stderr.split('\n')) {
+  const samples: string[] = [];
+  const note = (line: string) => {
+    const clean = line.replace(/\[[^\]]*@ 0x[0-9a-f]+\]\s*/gi, '').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@').replace(/\d+/g, 'N').trim().slice(0, 100);
+    if (clean && samples.length < 4 && !samples.includes(clean)) samples.push(clean);
+  };
+  for (const line of stderr.replace(/\r/g, '').split('\n')) {
     const missed = line.match(/RTP: missed (\d+) packets?/i);
     if (missed) { missedPackets += Number(missed[1]); continue; }
-    if (/non[- ]monotonic|Non-monotonous|Invalid DTS|Invalid PTS|DTS .* < .*PTS|too many reordered frames/i.test(line)) timestampErrors++;
-    else if (/error while decoding|corrupt|concealing|Invalid data|no frame!|Missing reference|Could not find ref|decode_slice_header error/i.test(line)) corruptErrors++;
+    if (TIMESTAMP_RE.test(line)) { timestampErrors++; note(line); }
+    else if (CORRUPT_RE.test(line)) { corruptErrors++; note(line); }
   }
-  return { missedPackets, corruptErrors, timestampErrors };
+  return { missedPackets, corruptErrors, timestampErrors, samples };
+}
+
+export interface PacketStats { packets: number; reorderedPackets: number; maxReorderSec: number; dtsBackwards: number }
+
+/** Reads `-f framecrc` output: `stream, dts, pts, duration, size, crc` per packet, with `#tb 0: n/d` giving the time base. */
+export function parseFramecrc(text: string): PacketStats {
+  let tb = 1 / 90000;
+  const rows: Array<{ dts: number; pts: number; dur: number }> = [];
+  for (const line of text.replace(/\r/g, '').split('\n')) {
+    const t = line.match(/^#tb\s+0:\s*(\d+)\/(\d+)/);
+    if (t && Number(t[2]) > 0) { tb = Number(t[1]) / Number(t[2]); continue; }
+    if (line.startsWith('#')) continue;
+    const c = line.split(',').map((x) => x.trim());
+    if (c.length < 5 || c[0] !== '0') continue;
+    const dts = Number(c[1]), pts = Number(c[2]), dur = Number(c[3]);
+    if (Number.isFinite(dts) && Number.isFinite(pts)) rows.push({ dts, pts, dur: Number.isFinite(dur) ? dur : 0 });
+  }
+  if (rows.length === 0) return { packets: 0, reorderedPackets: 0, maxReorderSec: 0, dtsBackwards: 0 };
+  const durs = rows.map((r) => r.dur).filter((d) => d > 0);
+  // Without durations fall back to the median step between decode times.
+  const step = durs.length ? median(durs) : median(rows.slice(1).map((r, i) => r.dts - rows[i].dts).filter((d) => d > 0).concat([1]));
+  const tolerance = step * 0.5;
+  let reorderedPackets = 0, maxLag = 0, dtsBackwards = 0;
+  rows.forEach((r, i) => {
+    const lag = r.pts - r.dts;
+    if (lag > tolerance) reorderedPackets++;
+    if (lag > maxLag) maxLag = lag;
+    if (i > 0 && r.dts < rows[i - 1].dts) dtsBackwards++;
+  });
+  return { packets: rows.length, reorderedPackets, maxReorderSec: Math.round(maxLag * tb * 1000) / 1000, dtsBackwards };
+}
+
+/** The input description ffmpeg prints, used when ffprobe could not describe the stream in time. */
+export function parseFfmpegInput(stderr: string): DescribeResult | null {
+  const m = stderr.match(/Stream #\d+:\d+[^\n]*?: Video: (\w+)(?: \(([^)]*)\))?[^\n]*?[ ,](\d{2,5})x(\d{2,5})[^\n]*/);
+  if (!m) return null;
+  const line = m[0];
+  const fps = line.match(/([\d.]+) fps/);
+  const kbps = line.match(/(\d+) kb\/s/);
+  return {
+    codec: m[1], profile: m[2] ?? null, width: Number(m[3]), height: Number(m[4]),
+    fps: fps ? Number(fps[1]) : null, bitrate: kbps ? Number(kbps[1]) * 1000 : null,
+    hasBFramesHint: false, hasAudio: /Stream #\d+:\d+[^\n]*Audio:/.test(stderr),
+  };
+}
+
+/** The ffmpeg arguments for the stage 3 sample: decode for measurements, and copy packets to stdout for timestamps. */
+export function buildSampleArgs(url: string, transport: 'tcp' | 'udp', sampleSec: number): string[] {
+  return [
+    '-hide_banner', '-nostdin', '-loglevel', 'info', '-rtsp_transport', transport, '-t', String(sampleSec), '-i', url,
+    '-map', '0:v:0', '-an', '-vf', 'showinfo', '-progress', 'pipe:2', '-nostats', '-f', 'null', '-',
+    '-map', '0:v:0', '-an', '-c', 'copy', '-f', 'framecrc', 'pipe:1',
+  ];
 }
 
 const median = (a: number[]): number => { const s = a.slice().sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
@@ -145,13 +219,14 @@ export function keyframeIntervals(frames: ShowInfoFrame[]): SampleMeasurement['k
 }
 
 export function buildSample(args: {
-  requestedSec: number; elapsedSec: number; timeToFirstFrameMs: number | null; stderr: string;
+  requestedSec: number; elapsedSec: number; timeToFirstFrameMs: number | null; stderr: string; packets?: string;
 }): SampleMeasurement {
   const frames = parseShowInfo(args.stderr);
   const problems = countLogProblems(args.stderr);
-  // Frames come out in presentation order, so a backwards step here means the camera's timestamps jumped.
-  let backwards = 0;
-  for (let i = 1; i < frames.length; i++) if (frames[i].ptsTime < frames[i - 1].ptsTime) backwards++;
+  const pk = parseFramecrc(args.packets ?? '');
+  const keys = frames.filter((f) => f.key).map((f) => f.ptsTime);
+  const times = frames.map((f) => f.ptsTime);
+  const first = times.length ? Math.min(...times) : 0, last = times.length ? Math.max(...times) : 0;
   return {
     requestedSec: args.requestedSec,
     elapsedSec: Math.round(args.elapsedSec * 10) / 10,
@@ -159,9 +234,16 @@ export function buildSample(args: {
     timeToFirstFrameMs: args.timeToFirstFrameMs,
     keyframeIntervalSec: keyframeIntervals(frames),
     bFrames: frames.filter((f) => f.type === 'B').length,
+    reorderedPackets: pk.reorderedPackets,
+    maxReorderSec: pk.maxReorderSec,
+    keyframeCount: keys.length,
+    spanSec: Math.round((last - first) * 100) / 100,
+    sinceLastKeyframeSec: keys.length ? Math.round((last - Math.max(...keys)) * 100) / 100 : 0,
+    problemSamples: problems.samples,
     missedPackets: problems.missedPackets,
     corruptErrors: problems.corruptErrors,
-    timestampErrors: problems.timestampErrors + backwards,
+    // Packet decode times going backwards is a camera fault; decoded frames are always in order, so they say nothing.
+    timestampErrors: problems.timestampErrors + pk.dtsBackwards,
     exitedEarly: frames.length > 0 && args.elapsedSec < args.requestedSec * THRESHOLDS.earlyCloseFraction,
   };
 }
@@ -170,7 +252,7 @@ export function buildSample(args: {
 export function classifyConnectError(text: string): { stage: FailureStage; detail: string } {
   const t = text.replace(/\r/g, '').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
   const detail = t.trim().split('\n').slice(-2).join(' | ').slice(0, 220);
-  if (/401|403|Unauthorized|Forbidden|authorization/i.test(t)) return { stage: 'bad_credentials', detail };
+  if (/Unauthorized|Forbidden|authorization failed/i.test(t)) return { stage: 'bad_credentials', detail };
   if (/Connection refused|timed out|No route|Network is unreachable|Name or service not known|Temporary failure in name resolution|Connection reset/i.test(t)) return { stage: 'unreachable', detail };
   return { stage: 'no_describe', detail };
 }
@@ -186,10 +268,12 @@ export function deriveFlags(d: DescribeResult | null, s: SampleMeasurement | nul
     if (d.codec === 'hevc') flags.push('h265');
     else if (d.codec !== 'h264') flags.push('other_codec');
   }
-  if (d?.codec === 'h264' && (d.hasBFramesHint || (s?.bFrames ?? 0) > 0)) flags.push('bframes');
+  if (d?.codec === 'h264' && (d.hasBFramesHint || (s?.bFrames ?? 0) > 0 || (s?.reorderedPackets ?? 0) > 0)) flags.push('bframes');
   if ((d?.height ?? 0) > THRESHOLDS.highResHeight) flags.push('high_resolution');
   if (s) {
-    if ((s.keyframeIntervalSec?.max ?? 0) > THRESHOLDS.sparseKeyframeSec) flags.push('sparse_keyframes');
+    // The gap after the last keyframe is cut off by the end of the sample, but it is still at least that long.
+    const longestGap = Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec);
+    if (s.frames > 0 && longestGap > THRESHOLDS.sparseKeyframeSec) flags.push('sparse_keyframes');
     const lossBase = s.missedPackets + s.frames;
     if (lossBase > 0 && s.missedPackets / lossBase > THRESHOLDS.lossRatio) flags.push('packet_loss');
     if (s.corruptErrors > 0) flags.push('corrupt_frames');
