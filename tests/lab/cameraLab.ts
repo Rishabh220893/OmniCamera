@@ -56,7 +56,7 @@ export const CASES: LabCase[] = [
   { name: 'tall_h265', what: '1440p H.265', needs: 'libx265', ext: 'ts', args: (o) => [...src('2560x1440', 15, 14), ...x265([...gop(30)]), '-y', o], expect: { recipe: 'D', flags: ['h265', 'high_resolution'] } },
   { name: 'ends_early', what: 'the stream ends after 3 s of an 8 s sample', ext: 'ts', args: (o) => [...src('640x360', 25, 3), ...x264([...gop(50), '-bf', '0']), '-y', o], expect: { recipe: 'F', flags: ['closed_early'] } },
   {
-    name: 'damaged', what: 'clean H.264 with bytes flipped in the stream', ext: 'ts',
+    name: 'damaged', what: 'H.264 with bytes flipped in the stream (loss upstream)', ext: 'ts',
     build: async (o, dir) => {
       const clean = path.join(dir, 'damaged.clean.ts');
       await runCommand('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...src('640x360', 25, 14), ...x264([...gop(50), '-bf', '0']), '-y', clean], 60_000);
@@ -65,7 +65,7 @@ export const CASES: LabCase[] = [
       for (let p = 188 * 20; p + 188 < buf.length; p += 188 * 40) buf[p + 40 + (p % 100)] ^= 0xff;
       writeFileSync(o, buf);
     },
-    expect: { recipe: 'A', flags: ['corrupt_frames'] },
+    expect: { recipe: 'B', flags: ['corrupt_frames'] },
   },
   { name: 'audio_only', what: 'a source with no video at all', ext: 'ts', args: (o) => ['-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '14', '-c:a', 'aac', '-y', o], expect: { recipe: 'G', failure: true } },
   { name: 'garbage', what: 'bytes that are not a stream', ext: 'bin', build: async (o) => { writeFileSync(o, randomBytes(200_000)); }, expect: { recipe: 'G', failure: true } },

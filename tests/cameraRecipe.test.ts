@@ -39,9 +39,17 @@ test('B: B-frames or sparse keyframes in H.264 need a re-encode with short GOP a
   }
 });
 
-test('the keyframe limit is the plan\'s 5 s: 4.9 passes, 6 does not', () => {
-  assert.equal(decide(report({}, { keyframeIntervalSec: { min: 4, median: 4.9, max: 4.9 } })).recipe, 'A');
-  assert.equal(decide(report({}, { keyframeIntervalSec: { min: 4, median: 5, max: 6 } })).recipe, 'B');
+test('the keyframe limit is 7 s: 6 s passes (cam05 played), 8 s does not', () => {
+  assert.equal(decide(report({}, { keyframeIntervalSec: { min: 4, median: 5, max: 6 } })).recipe, 'A');
+  assert.equal(decide(report({}, { keyframeIntervalSec: { min: 4, median: 7, max: 8 } })).recipe, 'B');
+});
+
+test('damaged video needs the re-encode even when the codec, B-frames and keyframes are fine', () => {
+  const d = decide(report({}, { frames: 300, corruptErrors: 75 }));
+  assert.equal(d.recipe, 'B');
+  assert.match(d.reason, /damaged video \(75 decoder errors in 300 frames\)/);
+  assert.equal(d.focusRecipe, null);
+  assert.equal(decide(report({}, { frames: 300, corruptErrors: 9 })).recipe, 'A', 'a few start-up errors are not damage');
 });
 
 test('C: H.265 and other codecs are re-encoded to H.264, keeping the source codec for decoding', () => {
@@ -163,7 +171,9 @@ test('the grid as measured: slow cameras get snapshots in the grid', () => {
 test('the grid as measured: only a handful of cameras pass through, so the transcode slots are the constraint', () => {
   const count = (r: string) => Object.values(recipes).filter((d) => d.recipe === r).length;
   assert.deepEqual(['A', 'B', 'C', 'D', 'G'].map(count), [4, 19, 4, 1, 2]);
-  assert.deepEqual(Object.keys(recipes).filter((id) => recipes[id].recipe === 'A'), ['cam01', 'cam02', 'cam03', 'cam14']);
+  assert.deepEqual(Object.keys(recipes).filter((id) => recipes[id].recipe === 'A'), ['cam01', 'cam02', 'cam03', 'cam05']);
+  // Measured through MediaMTX without a re-encode on 2026-10-08: cam01 and cam05 played; cam13, 14, 15, 20, 23 crashed the HLS muxer.
+  for (const id of ['cam13', 'cam14', 'cam15', 'cam20', 'cam23']) assert.equal(recipes[id].recipe, 'B', id);
   const wantsSlot = Object.values(recipes).filter((d) => d.transcode).length;
   assert.equal(wantsSlot, 24);
   // With every camera asking at once and 6 slots, 18 fall back to snapshots, each with its reason.

@@ -2,13 +2,16 @@
  * The decision table of docs/camera-onboarding-plan.md section 4: a probe report in, one playback recipe out.
  * Pure functions, no I/O, nothing keyed on a camera id. Each camera lands on the cheapest recipe that works.
  *
- *   A pass-through HLS      H.264, no B-frames, keyframes close enough together
- *   B H.264 re-encode       H.264 with B-frames, or keyframes too far apart
+ *   A pass-through HLS      clean H.264: no B-frames, keyframes close enough together, little decoder damage
+ *   B H.264 re-encode       H.264 with B-frames, keyframes too far apart, or damaged video (see below)
  *   C H.265 -> H.264        H.265 or any other codec the browser path cannot use
  *   D downscale re-encode   a re-encode (B or C) of a stream above 1080p, so the cost is cut before the transcode budget
  *   E direct WebRTC         a focus-time option (`focusRecipe`), not a grid recipe
  *   F snapshot only         video is unusable here: no capacity, no encoder, or the stream closed early
  *   G unsupported           unreachable, login rejected, or no frames; always with the reason
+ *
+ * Damaged video (decoder errors from loss upstream of us) needs the re-encode too: on 2026-10-08, five damaged but otherwise
+ * ordinary H.264 cameras crashed MediaMTX's HLS muxer in pass-through, while the clean ones played.
  *
  * A clean stream above 1080p stays on A: it plays without a re-encode, which is cheaper than D.
  * Re-encodes use the Intel Quick Sync encoder (decision 2); with no hardware encoder they become F, never software.
@@ -102,15 +105,17 @@ export function decide(r: ProbeReport, opts: DecideOptions = {}): Decision {
   // What the browser path needs from this stream.
   const codecChange = d.codec !== 'h264';
   const gapProblem = flags.has('sparse_keyframes');
-  const needsReencode = codecChange || flags.has('bframes') || gapProblem;
+  const damaged = flags.has('corrupt_frames');
+  const needsReencode = codecChange || flags.has('bframes') || gapProblem || damaged;
   const tall = (d.height ?? 0) > THRESHOLDS.highResHeight;
 
-  let recipe: Recipe = 'A', reason = 'H.264 with no B-frames and keyframes close enough together; plays as it is';
+  let recipe: Recipe = 'A', reason = 'Clean H.264 with no B-frames and keyframes close enough together; plays as it is';
   if (needsReencode) {
     const causes: string[] = [];
     if (codecChange) causes.push(`${(d.codec ?? 'unknown codec').replace('hevc', 'H.265')}`);
     if (flags.has('bframes')) causes.push(s.maxReorderSec > 0 ? `B-frames (reordering up to ${s.maxReorderSec}s)` : 'B-frames');
     if (gapProblem) causes.push(`keyframes up to ${Math.round(Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec))}s apart`);
+    if (damaged) causes.push(`damaged video (${s.corruptErrors} decoder errors in ${s.frames} frames)`);
     recipe = tall ? 'D' : codecChange ? 'C' : 'B';
     reason = `${causes.join(', ')}${tall ? `, ${d.width}x${d.height}` : ''}: re-encoded to H.264 with a keyframe every 3s and no B-frames${tall ? `, scaled down to ${THRESHOLDS.highResHeight}p` : ''}`;
   }
@@ -119,7 +124,7 @@ export function decide(r: ProbeReport, opts: DecideOptions = {}): Decision {
     return { ...base, recipe: 'F', reason: `Needs a re-encode (${reason.split(':')[0]}) but this machine has no hardware encoder; software encoding is not used`, wanted: recipe };
   }
 
-  const webrtcOk = !!r.whep?.ok && d.codec === 'h264' && !flags.has('bframes') && !gapProblem;
+  const webrtcOk = !!r.whep?.ok && d.codec === 'h264' && !flags.has('bframes') && !gapProblem && !damaged;
   return {
     recipe, reason,
     transcode: needsReencode,

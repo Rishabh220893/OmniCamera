@@ -13,8 +13,11 @@ export const PROBE_VERSION = 1;
 
 /** Thresholds, in one place so the plan's numbers are easy to find and change. */
 export const THRESHOLDS = {
-  /** Keyframes further apart than this make HLS segments grow (plan: "4-5 s"). */
-  sparseKeyframeSec: 5,
+  /**
+   * Keyframes further apart than this are "sparse". Through MediaMTX pass-through a clean stream with a 6.0 s gap played
+   * (cam05: first segment after 7.8 s, no errors); nothing cleaner was available above that, so 7 s is a cautious limit.
+   */
+  sparseKeyframeSec: 7,
   /** Above this height (px) a camera is "very high resolution". */
   highResHeight: 1080,
   /** Time to first frame at or under this is "fast"; over `slowFirstFrameMs` is "slow". */

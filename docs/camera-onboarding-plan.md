@@ -80,8 +80,8 @@ Each stage has a timeout and a named failure result.
 
 | Recipe | Chosen when |
 |---|---|
-| **A. Pass-through HLS** | H.264, no B-frames, keyframe every 4 s or less |
-| **B. H.264 re-encode** | H.264 with B-frames, or keyframes sparser than about 4-5 s |
+| **A. Pass-through HLS** | Clean H.264: no B-frames, keyframe gap up to about 7 s, little decoder damage |
+| **B. H.264 re-encode** | H.264 with B-frames, keyframes sparser than about 7 s, or damaged video |
 | **C. H.265 to H.264** | H.265 or another codec the browser path cannot use |
 | **D. Downscale re-encode** | Above 1080p (cut the cost before it hits the transcode budget) |
 | **E. Direct WebRTC (WHEP)** | Only for the focused camera, if WHEP works and the codec fits |
@@ -189,6 +189,31 @@ Result of the first full runs on the grid (2026-10-08, 28 of 30 cameras gave vid
   picture seen on cam06. It is flagged but does not change the recipe.
 - A burst of 401s mid-run, with the same login accepted before and after, is the grid limiting the account, not bad
   credentials. Probe 2 cameras at a time, with nothing else using the account.
+
+## Pass-through test through MediaMTX (2026-10-08)
+
+Eight cameras were run through the local MediaMTX with no re-encoding (`scripts/check-media-health.mjs`, 60 s each):
+
+| Camera | Keyframe gap | Decoder errors /100 frames | Result through MediaMTX |
+|---|---|---|---|
+| cam01 | 2.0 s | 0 | played: 26 segments, first after 5.2 s, no loss |
+| cam05 | 6.0 s | 3 | played: 24 segments, first after 7.8 s, no errors |
+| cam14 | 4.9 s | 25 | muxer crash, 3 segments, 1304 RTP packets lost |
+| cam13 | 9.5 s | 21 | muxer crash, 3 segments, 2568 lost |
+| cam15 | 6.9 s | 18 | muxer crash, no playlist |
+| cam20 | 8.4 s | 90 | muxer crash, no playlist, 1550 lost |
+| cam23 | 8.4 s | 111 | muxer crash, no playlist, 2053 lost |
+| cam04 | 26 s | 40 | no playlist, 5887 lost |
+
+What it shows (a correlation across 8 cameras, not a proof of cause):
+
+- **The keyframe gap alone is not the problem.** cam05 played at 6.0 s. The limit is now 7 s; nothing clean above 6.0 s was available to test.
+- **Damaged video is.** Every camera with more than about 15 decoder errors per 100 frames crashed MediaMTX's HLS muxer or got no playlist;
+  the two with 0-3 played. The grid drops RTP packets before they reach us (MediaMTX counted 1300-5900 lost over TCP, which ffmpeg does not
+  report), and MediaMTX's H.264 handling does not survive the gaps. The probe's decoder-error rate is the proxy for it.
+- **This probably explains cam13 and cam14.** The probe finds no B-frames and no reordering on either, so the earlier "B-frame cameras"
+  label was likely a misdiagnosis: they are damaged-video cameras, and the re-encode fixed them because it rebuilds the stream.
+- So `damaged` joins recipe B, and the clean-and-pass-through set on the grid is cam01, 02, 03 and 05.
 
 ## Step 2 status
 
