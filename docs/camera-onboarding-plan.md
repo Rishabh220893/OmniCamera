@@ -211,7 +211,10 @@ What it shows (a correlation across 8 cameras, not a proof of cause):
 - **Damaged video is.** Every camera with more than about 15 decoder errors per 100 frames crashed MediaMTX's HLS muxer or got no playlist;
   the two with 0-3 played. The grid drops RTP packets before they reach us (MediaMTX counted 1300-5900 lost over TCP, which ffmpeg does not
   report), and MediaMTX's H.264 handling does not survive the gaps. The probe's decoder-error rate is the proxy for it.
-- **This probably explains cam13 and cam14.** The probe finds no B-frames and no reordering on either, so the earlier "B-frame cameras"
+- **Confirmed for cam14 from the MediaMTX log:** the stream started cleanly (02:13:50), RTP packet loss began at 02:14:06 (about 1,000
+  packets over ten seconds), and at 02:14:11 the muxer died with `unable to extract DTS: too many reordered frames (11)`. That message is a
+  symptom of the loss, not evidence of B-frames. The same pattern is inferred, not yet read from the log, for cam13, 15, 20 and 23.
+- **This explains cam13 and cam14.** The probe finds no B-frames and no reordering on either, so the earlier "B-frame cameras"
   label was likely a misdiagnosis: they are damaged-video cameras, and the re-encode fixed them because it rebuilds the stream.
 - So `damaged` joins recipe B, and the clean-and-pass-through set on the grid is cam01, 02, 03 and 05.
 
