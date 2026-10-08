@@ -62,6 +62,8 @@ test('flags each fault class from the plan', () => {
   assert.ok(deriveFlags(d(), sample({ frames: 100, corruptErrors: 20 })).includes('corrupt_frames'));
   assert.ok(!deriveFlags(d(), sample({ frames: 100, corruptErrors: 3 })).includes('corrupt_frames'), 'a few startup errors are not damage');
   assert.ok(!deriveFlags(d(), sample({ frames: 750, corruptErrors: 40 })).includes('corrupt_frames'), 'rare errors in a long clean run are not damage');
+  assert.ok(deriveFlags(d(), sample({ timestampErrors: 80 })).includes('timestamp_problems'));
+  assert.ok(!deriveFlags(d(), sample({ timestampErrors: 2 })).includes('timestamp_problems'), 'start-up jitter is not a fault');
   assert.ok(deriveFlags(d(), sample({ timeToFirstFrameMs: 14_000 })).includes('slow_first_frame'));
   assert.ok(deriveFlags(d(), sample({ exitedEarly: true })).includes('closed_early'));
 });

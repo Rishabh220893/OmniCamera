@@ -170,9 +170,25 @@ would use up each account's watch time on the grid. So:
 ## Step 1 status
 
 Built: `server/cameraProfile.ts` (profile types, parsing, fault flags, Postgres schema and store), `server/gridGroundTruth.ts`
-(what is already known, used only to check a run) and `scripts/probe-cameras.ts` (stages 1-3, all 30 grid cameras, optional
-`--db`). The unit tests cover parsing and flags; **the run against the real grid is still to do** (it needs the grid
-credentials and takes about 30 s per camera). Run: `node --import tsx scripts/probe-cameras.ts`.
+(what is already known, used only to check a run), `scripts/probe-cameras.ts` (stages 1-3, `--db` to save to Postgres) and
+`scripts/probe-report.ts` (merges saved runs into one table and re-applies the current flag rules).
+Run: `node --import tsx scripts/probe-cameras.ts`, then `node --import tsx scripts/probe-report.ts --all`.
+
+Result of the first full runs on the grid (2026-10-08, 28 of 30 cameras gave video):
+
+- H.265: cam06, 12, 17, 18, 22, 26 (cam18 was not on the earlier list). cam26 is 1440p.
+- B-frames (packets reordered by 0.4-8.5 s): cam07, 08, 09, 24, 25, 27, 28, 29, and by the decoder's hint cam10, 11.
+  **cam13 and cam14 show none** in two runs, so the earlier note that they were B-frame cameras is not supported.
+- Keyframe gaps over 5 s: 19 cameras, up to about 30 s. **Only about five cameras would pass through unchanged**
+  (cam01, 02, 03, 14 and, marginally, 12 as H.265 would not). Plan for most of the grid needing a re-encode, which makes the
+  6-transcode limit and admission control (section 5) the central constraint, not an edge case. The 5 s threshold itself
+  should be tested: whether MediaMTX plays a 6-10 s gap fine is a stage 4 question.
+- Time to first frame: 12 cameras are over 15 s, cam07 and cam11 over 30 s. Delivery is not stable: cam10 and cam11 gave
+  video in one run and none in the next, so a profile needs repeated probes (section 9).
+- Decoder damage is common (more than 10 error lines per 100 frames on 25 cameras), which probably explains the smeared
+  picture seen on cam06. It is flagged but does not change the recipe.
+- A burst of 401s mid-run, with the same login accepted before and after, is the grid limiting the account, not bad
+  credentials. Probe 2 cameras at a time, with nothing else using the account.
 
 ## Open points for step 1
 

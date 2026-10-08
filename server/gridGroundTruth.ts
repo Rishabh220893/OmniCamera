@@ -14,7 +14,10 @@ const cams = (ids: number[], e: Expectation): Record<string, Expectation> =>
 
 export const GRID_GROUND_TRUTH: Record<string, Expectation> = {
   ...cams([6, 12, 17], { flags: ['h265'] }),
-  ...cams([9, 13, 14, 24, 27, 28], { flags: ['bframes'] }),
+  ...cams([9, 24, 27, 28], { flags: ['bframes'] }),
+  // cam13 and cam14 were listed here after MediaMTX's "too many reordered frames" on 2026-10-07, but two probe runs show
+  // no B-frames and no packet reordering on either (reorder 0.00 s). The MediaMTX error needs another explanation,
+  // so it is not asserted here. Check media-server/bin/mediamtx.log for what it said about them.
   ...cams([30], { flags: ['sparse_keyframes'] }),
   ...cams([26], { flags: ['h265', 'high_resolution'] }),
   cam22: { flags: ['h265'] },
