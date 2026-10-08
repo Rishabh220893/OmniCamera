@@ -190,6 +190,31 @@ Result of the first full runs on the grid (2026-10-08, 28 of 30 cameras gave vid
 - A burst of 401s mid-run, with the same login accepted before and after, is the grid limiting the account, not bad
   credentials. Probe 2 cameras at a time, with nothing else using the account.
 
+## Step 2 status
+
+Built: `server/cameraRecipe.ts` (the decision table, a provisional 0-100 health score, and slot admission control),
+`server/cameraProbe.ts` (stages 2-3 of the probe, shared by the real probe and the lab), and the synthetic camera lab
+(`tests/lab/cameraLab.ts`, run with `node --import tsx scripts/camera-lab.ts`). `probe-report.ts` now shows each camera's
+recipe and how many can be live with N slots (`--slots`).
+
+- **Lab:** ffmpeg makes 15 streams, each with one fault (B-frames, 12 s keyframe gap, a stream joined mid-GOP, H.265,
+  MJPEG, AV1, 1440p clean / with B-frames / H.265, 5 fps, ends early, damaged bytes, audio only, random bytes). Each is read in real
+  time through the same probe code and must end on the right recipe. All 15 do. It takes about 35 s;
+  `SKIP_CAMERA_LAB=1 npm test` leaves it out. A file cannot imitate packet loss, dropped connections, wrong credentials or
+  an unreachable host; those are covered by unit tests on the parsers and the decision table.
+- **Replay of the real grid** (`tests/fixtures/grid-2026-10-08.ts`): cam06 -> C, cam28 -> B, cam30 -> B, cam26 -> D, cam22 -> G.
+  Result: 4 cameras A, 19 B, 4 C, 1 D, 2 G. 24 need a transcode slot, so with 6 slots 18 cameras show snapshots until a slot is free.
+- **Choices I made that you may want to change:**
+  1. A *clean* stream above 1080p stays on A (it plays without a re-encode, which is cheaper than D). D is chosen when a
+     stream above 1080p needs a re-encode anyway (B or C), to cut its cost.
+  2. A stream that closes early once is F (snapshots until a second probe); closing early in two probes in a row is G.
+  3. E (direct WebRTC) is a focus-time option on a camera (`focusRecipe`), not a grid recipe: offered when WHEP answers and the
+     stream is H.264 with no B-frames and no long keyframe gap.
+  4. "Over 30 s to the first picture" means snapshots in the grid (`gridLive: false`), measured on the source stream before any
+     re-encode. The re-encoded path is measured in stage 4, which is not built yet.
+  5. Fewer than 3 decoded frames in a sample is not a live stream (random bytes decode as one frame of text).
+- **Not yet decided by evidence:** the 5 s keyframe limit and the weights in the health score.
+
 ## Open points for step 1
 
 - Postgres schema details (column types, how a probe run references a site) and a migration approach.

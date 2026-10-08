@@ -20,13 +20,10 @@
  * Credentials: GRID_EMAIL / GRID_PASSWORD (or STREAM_EMAIL / STREAM_PASSWORD) from the environment, demo.local or scale.local.
  * Every RTSP pull counts against the account's watch time: a full run is ~30 s per camera.
  */
-import { spawn } from 'node:child_process';
 import net from 'node:net';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import {
-  PROBE_VERSION, THRESHOLDS, buildSample, buildSampleArgs, classifyConnectError, parseFfmpegInput, deriveFlags, parseFfprobeStreams,
-  createProfileStore, type DescribeResult, type FailureStage, type ProbeReport,
-} from '../server/cameraProfile';
+import { PROBE_VERSION, deriveFlags, createProfileStore, type FailureStage, type ProbeReport } from '../server/cameraProfile';
+import { probeSource } from '../server/cameraProbe';
 import { GRID_GROUND_TRUTH } from '../server/gridGroundTruth';
 
 const argv = process.argv.slice(2);
@@ -59,25 +56,6 @@ const enc = (v: string) => encodeURIComponent(v).replace(/@/g, '%40');
 const redact = (s: string) => s.replace(/\r/g, '').split(pass).join('***').split(enc(pass)).join('***').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
 const url = (id: string) => `rtsp://${enc(email)}:${enc(pass)}@${HOST}:8554/stream/${id}`;
 
-interface Run { code: number | null; stdout: string; stderr: string; ms: number; timedOut: boolean }
-
-function run(cmd: string, args: string[], timeoutMs: number, onStderr?: (chunk: string, elapsedMs: number) => void): Promise<Run> {
-  return new Promise((resolve) => {
-    const t0 = Date.now();
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '', timedOut = false, done = false;
-    const finish = (code: number | null) => {
-      if (done) return; done = true; clearTimeout(timer);
-      resolve({ code, stdout, stderr, ms: Date.now() - t0, timedOut });
-    };
-    const timer = setTimeout(() => { timedOut = true; p.kill('SIGKILL'); }, timeoutMs);
-    p.stdout.on('data', (d) => { stdout += d; });
-    p.stderr.on('data', (d) => { stderr += d; onStderr?.(String(d), Date.now() - t0); });
-    p.on('close', finish);
-    p.on('error', (e: NodeJS.ErrnoException) => { stderr += e.code === 'ENOENT' ? `${cmd} not found on PATH` : String(e); finish(null); });
-  });
-}
-
 function tcpReachable(port: number, ms = 5000): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     const s = net.connect({ host: HOST, port, timeout: ms });
@@ -108,33 +86,12 @@ async function probe(id: string): Promise<ProbeReport> {
   if (!tcp.ok) { fail('unreachable', `RTSP port 8554: ${tcp.error}`); return report; }
   report.reachable = true;
 
-  // Stage 2: describe. A timeout or error here is not fatal: a camera with sparse keyframes can take longer than
-  // ffprobe waits, so stage 3 gets to decide, and ffmpeg's own description of the input fills the gap.
-  const d = await run('ffprobe', ['-v', 'error', '-rtsp_transport', transport, '-show_streams', '-of', 'json', url(id)], 20_000);
-  report.describe = d.timedOut ? null : parseFfprobeStreams(d.stdout);
-  const describeFailure = report.describe ? null
-    : d.timedOut ? { stage: 'no_describe' as const, detail: 'ffprobe timed out after 20s' } : classifyConnectError(d.stderr);
-  if (describeFailure && (describeFailure.stage === 'bad_credentials' || describeFailure.stage === 'unreachable')) {
-    fail(describeFailure.stage, describeFailure.detail);
-    return report;
-  }
-
-  // Stage 3: sample. -progress goes to stderr, so a "frame=N" line there is the first decoded frame; stdout carries packet timestamps.
-  let firstFrameMs: number | null = null, seenFrame = false;
-  const s = await run('ffmpeg', buildSampleArgs(url(id), transport, sampleSec), (sampleSec + THRESHOLDS.maxStartMs / 1000 + 10) * 1000, (chunk, ms) => {
-    if (!seenFrame && /(^|\n)frame=\s*[1-9]/.test(chunk)) { seenFrame = true; firstFrameMs = ms; }
-  });
-  report.sample = buildSample({ requestedSec: sampleSec, elapsedSec: s.ms / 1000, timeToFirstFrameMs: firstFrameMs, stderr: s.stderr, packets: s.stdout });
-  if (!report.describe) {
-    report.describe = parseFfmpegInput(s.stderr);
-    if (describeFailure && report.sample.frames > 0) report.notes = [`ffprobe could not describe the stream (${redact(describeFailure.detail)}); ffmpeg's description was used`];
-  }
-  if (report.sample.frames === 0) {
-    const c = classifyConnectError(s.stderr);
-    if (c.stage === 'bad_credentials' || c.stage === 'unreachable') fail(c.stage, c.detail);
-    else if (describeFailure && !report.describe) fail('no_describe', describeFailure.detail);
-    else fail('no_frame', s.timedOut ? `no frame within ${Math.round(s.ms / 1000)}s` : c.detail);
-  }
+  // Stages 2 and 3: describe and sample (server/cameraProbe.ts)
+  const r = await probeSource({ url: url(id), rtsp: true, transport, sampleSec, redact });
+  report.describe = r.describe;
+  report.sample = r.sample.elapsedSec > 0 ? r.sample : null; // null when the describe stage already failed the camera
+  if (r.notes.length) report.notes = r.notes;
+  if (r.failure) fail(r.failure.stage, r.failure.detail);
   report.flags = deriveFlags(report.describe, report.sample);
   return report;
 }

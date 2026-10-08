@@ -27,6 +27,8 @@ export const THRESHOLDS = {
   corruptMinErrors: 5,
   /** One or two odd timestamps at start-up are normal; a camera needs this many to count as having timestamp problems. */
   timestampMinErrors: 5,
+  /** Fewer decoded frames than this in a sample is not a live video stream (random bytes can decode as one text frame). */
+  minFrames: 3,
   /** missed / (missed + decoded) above this is "heavy packet loss". */
   lossRatio: 0.02,
   /** A sample that ends before this fraction of the requested time, after frames arrived, "closed early". */
@@ -205,9 +207,9 @@ export function parseFfmpegInput(stderr: string): DescribeResult | null {
 }
 
 /** The ffmpeg arguments for the stage 3 sample: decode for measurements, and copy packets to stdout for timestamps. */
-export function buildSampleArgs(url: string, transport: 'tcp' | 'udp', sampleSec: number): string[] {
+export function buildSampleArgs(url: string, transport: 'tcp' | 'udp', sampleSec: number, rtsp = true, realtime = false): string[] {
   return [
-    '-hide_banner', '-nostdin', '-loglevel', 'info', '-rtsp_transport', transport, '-t', String(sampleSec), '-i', url,
+    '-hide_banner', '-nostdin', '-loglevel', 'info', ...(rtsp ? ['-rtsp_transport', transport] : []), ...(realtime ? ['-re'] : []), '-t', String(sampleSec), '-i', url,
     '-map', '0:v:0', '-an', '-vf', 'showinfo', '-progress', 'pipe:2', '-nostats', '-f', 'null', '-',
     '-map', '0:v:0', '-an', '-c', 'copy', '-f', 'framecrc', 'pipe:1',
   ];
