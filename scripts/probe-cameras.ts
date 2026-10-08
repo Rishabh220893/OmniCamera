@@ -132,7 +132,7 @@ async function probe(id: string): Promise<ProbeReport> {
   if (report.sample.frames === 0) {
     const c = classifyConnectError(s.stderr);
     if (c.stage === 'bad_credentials' || c.stage === 'unreachable') fail(c.stage, c.detail);
-    else if (describeFailure) fail('no_describe', describeFailure.detail);
+    else if (describeFailure && !report.describe) fail('no_describe', describeFailure.detail);
     else fail('no_frame', s.timedOut ? `no frame within ${Math.round(s.ms / 1000)}s` : c.detail);
   }
   report.flags = deriveFlags(report.describe, report.sample);
@@ -140,26 +140,42 @@ async function probe(id: string): Promise<ProbeReport> {
 }
 
 const reports: ProbeReport[] = new Array(ids.length);
-let next = 0, rejected = 0;
+let next = 0, rejected = 0, succeeded = 0, pauseUntil = 0;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 console.log(`Probing ${ids.length} cameras on ${HOST} (site ${SITE}, ${transport}, ${sampleSec}s sample, ${parallel} at a time) - ${new Date().toISOString()}\n`);
 console.log('camera  result        codec  size       fps  first   kf max  flags');
 await Promise.all(Array.from({ length: parallel }, async () => {
   while (next < ids.length && rejected < 3) {
     const i = next++;
-    const r = await probe(ids[i]);
+    while (Date.now() < pauseUntil) await sleep(1000);
+    let r = await probe(ids[i]);
+    // The same login worked minutes ago, so a 401 now is the grid limiting sessions or rate, not a wrong password.
+    if (r.failure === 'bad_credentials' && succeeded > 0) {
+      console.log(`${ids[i]}: 401 after ${succeeded} good probes - the grid may be limiting this account; pausing 60s and retrying once`);
+      pauseUntil = Math.max(pauseUntil, Date.now() + 60_000);
+      await sleep(60_000);
+      r = await probe(ids[i]);
+      r.notes = [...(r.notes ?? []), 'first attempt was rejected with 401 although earlier cameras in this run were accepted'];
+    }
     reports[i] = r;
-    if (r.failure === 'bad_credentials') rejected++;
+    if (r.failure === 'bad_credentials') rejected++; else if (!r.failure) succeeded++;
     const d = r.describe, s = r.sample;
     console.log([
       r.cameraId.padEnd(7), (r.failure ?? 'ok').padEnd(13), (d?.codec ?? '-').padEnd(6),
       (d?.width ? `${d.width}x${d.height}` : '-').padEnd(10), String(d?.fps ?? '-').padEnd(4),
       (s?.timeToFirstFrameMs != null ? (s.timeToFirstFrameMs / 1000).toFixed(1) + 's' : '-').padEnd(7),
-      (s ? Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec).toFixed(1) + 's' : '-').padEnd(8), r.flags.join(',') || (r.failureDetail ?? ''),
+      (s && s.frames > 0 ? Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec).toFixed(1) + 's' : '-').padEnd(8), r.flags.join(',') || (r.failureDetail ?? ''),
     ].join(' '));
   }
 }));
 
-if (rejected >= 3) console.error('\nThe source rejected the credentials 3 times (401), so the run stopped early. Check GRID_EMAIL / GRID_PASSWORD in demo.local AND scale.local (scale.local wins), and that no GRID_* variables are set in the shell.');
+const notProbed = ids.filter((_, i) => !reports[i]);
+if (rejected >= 3) {
+  console.error(succeeded === 0
+    ? '\nThe source rejected the credentials 3 times (401) and nothing was accepted, so the run stopped early. Check GRID_EMAIL / GRID_PASSWORD in demo.local AND scale.local (scale.local wins), and that no GRID_* variables are set in the shell.'
+    : `\nThe grid started refusing this account (401) after ${succeeded} good probes, even after a pause, so the run stopped. That is a limit on the grid side, not a wrong password. Wait a while, stop other users of the account (demo, app tabs), and run the rest with --cams.`);
+}
+if (notProbed.length) console.error(`Not probed: ${notProbed.join(',')}`);
 for (let i = reports.length - 1; i >= 0; i--) if (!reports[i]) reports.splice(i, 1);
 
 mkdirSync('.demo-logs', { recursive: true });
