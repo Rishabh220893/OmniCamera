@@ -23,10 +23,9 @@ import { mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { createProfileStore, type ProfileRow } from '../server/cameraProfile';
 import { allocateSlots, type EncoderKind } from '../server/cameraRecipe';
-import { renderPathsYaml, type PathBuildOptions } from '../server/mediaPaths';
+import { renderPathsYaml } from '../server/mediaPaths';
 import { applyPaths } from '../server/mediaApply';
-import { planMedia } from '../server/mediaPlan';
-import { credentialResolver } from '../server/siteSecrets';
+import { planMedia, pathBuildOptionsFromEnv } from '../server/mediaPlan';
 import { loadLocalEnv } from '../server/localEnv';
 import { mergeProfileFiles, profileFiles } from '../server/profileFiles';
 
@@ -59,15 +58,7 @@ async function loadRows(): Promise<{ rows: ProfileRow[]; from: string }> {
   return { rows: mergeProfileFiles(files).map((report) => ({ report, override: null, overrideReason: null })), from: `${files.length} saved probe run(s)` };
 }
 
-const build = (): PathBuildOptions => ({
-  site: { host: env.GRID_RTSP_HOST || '103.250.160.189', rtspPort: Number(env.GRID_RTSP_PORT || 8554), pathPrefix: env.GRID_RTSP_PATH || 'stream' },
-  credentials: credentialResolver(site, env),
-  transcode: {
-    ffmpeg: env.MEDIA_FFMPEG || 'ffmpeg', bitrate: env.MEDIA_TRANSCODE_BITRATE || '2500k',
-    publishPort: Number(env.MEDIA_TRANSCODE_RTSP_PORT || 18554), scaleFilter: env.MEDIA_SCALE_FILTER || null,
-  },
-  startTimeout: env.SOURCE_START_TIMEOUT || '60s', closeAfter: env.SOURCE_CLOSE_AFTER || '5s',
-});
+const build = () => pathBuildOptionsFromEnv(site, env);
 
 const { rows, from } = await loadRows();
 const plan = planMedia(rows, { encoder, build: build() });

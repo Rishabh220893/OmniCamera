@@ -90,6 +90,14 @@ test('a stream that closes early is snapshot-only once, unsupported when it repe
   assert.equal(decide(r, { closedEarlyRuns: 2 }).recipe, 'G');
 });
 
+test('cause: a few words for a list, without the counts or how it is played', () => {
+  assert.equal(decide(report({ codec: 'hevc' }, { frames: 300, corruptErrors: 75 })).cause, 'hevc'.replace('hevc', 'H.265') + ', damaged video');
+  assert.equal(decide(report({}, { reorderedPackets: 5, maxReorderSec: 2, keyframeIntervalSec: { min: 20, median: 20, max: 30 } })).cause, 'B-frames, long gaps between keyframes');
+  assert.equal(decide(report({ codec: 'hevc', width: 2560, height: 1440 })).cause, 'H.265, 2560x1440');
+  assert.equal(decide(report()).cause, undefined, 'a camera that plays as it is has no cause to list');
+  assert.match(decide(report(), { force: 'B' }).cause!, /^Manual override \(the measurements chose A\)$/);
+});
+
 test('manual override: any recipe can be forced, and the reason keeps what the measurements chose', () => {
   const clean = report();
   const toB = decide(clean, { force: 'B' });

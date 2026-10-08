@@ -259,6 +259,22 @@ running MediaMTX through its control API), `server/mediaPlan.ts`, `server/siteSe
   media server (the app's live-tile cap does it; a gate that refuses the seventh belongs with step 5); recipe D does not scale until a filter
   is validated on the target PC (`MEDIA_SCALE_FILTER`).
 
+## Step 4 status
+
+Built: Registry > **Playback profiles** (`src/components/CameraProfilesPanel.tsx`) and its server side (`/api/camera-profiles/*` in `server.ts`,
+`server/profileService.ts`, `server/probeJob.ts`, `server/cameraProbeRun.ts`). It lists each camera's recipe, reason, measurements and problems; filters by recipe
+and text and pages through the list; starts and stops a probe; loads saved probe runs; sets and clears an override (reason required); and previews and applies the
+result to the running media server. How to use it: `docs/media-server.md`.
+
+- **Checked in a real browser** against a real PostgreSQL 16 and a real MediaMTX: the 30 grid cameras listed with the counts from the earlier analysis; an
+  override saved and cleared through the screen; the media-server preview showed 28 added, the apply added them, and a second preview showed 28 unchanged; the
+  phone layout has no sideways scroll. The profile store's SQL also ran against the real database (the earlier tests used a fake): schema twice, upsert, history,
+  decision, override.
+- **Not covered:** a probe started from the screen against real cameras (the probe job is tested with fakes and the probe itself ran from the command line);
+  signing in as a Firebase admin (the checks used the local-demo guest switch, `MEDIA_ALLOW_GUESTS`); a list of thousands of cameras (the screen pages 20 at a
+  time, but the server returns every camera in one answer, so it would need paging on the server first).
+- **Left out on purpose:** the media server's own slot limit (step 5), and showing which cameras the registry already has next to the profiles.
+
 ## Open points for step 1
 
 - Postgres schema details (column types, how a probe run references a site) and a migration approach.

@@ -154,3 +154,24 @@ node --import tsx scripts/media-config.ts apply                 change the runni
   unless `MEDIA_SCALE_FILTER` is set (for example `vpp_qsv=w=1920:h=1080`) after trying it on the target PC.
 - **Not enforced here: the number of re-encodes running at once.** They run only while watched, and about 6 fit on the demo PC (7 made one
   fail). The app's live-tile cap (`MEDIA_MAX_LIVE_TILES`, default 6) is what keeps it under that; the media server does not refuse a seventh.
+
+## The Registry screen: Playback profiles
+
+Registry > **Playback profiles** (admins) shows the same thing as `media-config.ts plan`, and lets you act on it without a terminal:
+
+- **Probe N cameras** runs the onboarding probe from the server (about 30 s per camera, two at a time; needs ffmpeg on the server and the camera login in
+  `GRID_EMAIL` / `GRID_PASSWORD` or `STREAM_*`). Progress shows on the screen; **Stop** keeps what was probed.
+- **Load saved probe runs** reads what `scripts/probe-cameras.ts` saved in `.demo-logs`, so you do not have to probe again.
+- Each camera shows how it will be played, why (in a few words; hover for the full sentence), what was measured and the problems found, with a pencil to
+  **override** the choice. An override needs a reason and is kept with the profile.
+- **Apply to the media server** previews the changes, then applies them to the running media server (add, replace, remove; unchanged cameras keep playing). It
+  appears only when the media server is on the same machine as the app (`MEDIA_SERVER_URL` is localhost, or `MEDIA_API_URL` is set).
+
+Profiles are kept in Postgres, so this needs `DATABASE_URL`. Only admins can use it; with `MEDIA_ALLOW_GUESTS=true` (local demo only) the sign-in check is skipped.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MEDIA_ENCODER` | `qsv` | `none` on a machine without Intel Quick Sync: cameras that need a re-encode show snapshots instead. |
+| `MEDIA_MAX_TRANSCODES` | 6 | How many re-encodes fit at once on this machine; only used for the "fits about N at once" line. |
+| `MEDIA_API_URL` | derived | The media server's control API, if it is not `http://127.0.0.1:9997` on this machine. |
+| `GRID_WHEP_PORT` | 8889 | The WebRTC port probed on the camera host. |

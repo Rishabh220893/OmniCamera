@@ -8,6 +8,8 @@ import { cn } from '../lib/utils';
 import { CameraConfig, RoutePoint, RegistryAuditEntry } from '../types';
 import { GapAnalysisReport } from '../lib/registryReport';
 import MapTab from './MapTab';
+import CameraProfilesPanel from './CameraProfilesPanel';
+import { gridCamId } from '../lib/mediaServer';
 
 interface RegistryTabProps {
   cameras: CameraConfig[];
@@ -77,6 +79,8 @@ export default function RegistryTab({
     [filtered, clampedPage]
   );
   const resetToFirstPage = () => setPage(0);
+  // Grid camera ids (cam01 ...) among the registry's cameras: the default list to probe.
+  const gridIds = useMemo(() => Array.from(new Set(cameras.map((c) => gridCamId(c.remoteStreamUrl || '')).filter((x): x is string => !!x))), [cameras]);
 
   return (
     <motion.div
@@ -153,6 +157,9 @@ export default function RegistryTab({
           {types.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
       </div>
+
+      {/* How each camera is played, from what it was measured to do */}
+      <CameraProfilesPanel isAdmin={isAdmin} registryGridIds={gridIds} />
 
       {/* GIS map */}
       <MapTab

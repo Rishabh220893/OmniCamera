@@ -17,6 +17,13 @@ import { createBullBackend } from './server/bullBackend';
 import { createFirestoreEventStore, createPostgresEventStore, createTeeEventStore, EventStore, FirestoreLogMode, PostgresEventStore } from './server/eventStore';
 import { createFirestoreLeases } from './server/leaseStore';
 import { trimLiveManifest } from './server/hlsManifest';
+import { createProfileStore, RECIPES, type ProfileStore } from './server/cameraProfile';
+import { applyToMedia, importSaved, listViews, saveReport, summarize } from './server/profileService';
+import { createProbeJob } from './server/probeJob';
+import { probeCamera, type ProbeTarget } from './server/cameraProbeRun';
+import { pathBuildOptionsFromEnv } from './server/mediaPlan';
+import { credentialResolver } from './server/siteSecrets';
+import { profileFiles } from './server/profileFiles';
 import { randomUUID } from 'crypto';
 
 // Dedicated plate detector + OCR service (anpr-service/). Optional: when
@@ -1513,6 +1520,114 @@ Analyze this context to answer user queries:
     }
     res.status(200).json({ ...workerStatus, anpr, ffmpeg: await checkFfmpeg() });
   });
+
+  // ---- Playback profiles (docs/camera-onboarding-plan.md) ----
+  // What each camera was measured to do, the playback recipe chosen for it, a manual override, and the actions the Registry's
+  // "Playback profiles" panel offers: import saved probe runs, probe cameras, apply the recipes to the media server.
+  // Profiles are kept in Postgres (DATABASE_URL). Admins only; MEDIA_ALLOW_GUESTS=true (local demo) skips the sign-in check, as for /api/media/config.
+  const profileEncoder = (process.env.MEDIA_ENCODER === 'none' ? 'none' : 'qsv') as 'qsv' | 'none';
+  const profileSlots = Math.max(1, Number(process.env.MEDIA_MAX_TRANSCODES) || 6);
+  const siteName = (v: unknown) => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : 'grid');
+  let profileStoreP: Promise<ProfileStore> | null = null;
+  async function profileStore(): Promise<ProfileStore | null> {
+    if (!process.env.DATABASE_URL) return null;
+    profileStoreP ??= (async () => {
+      const { Pool } = await import('pg');
+      const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+      const store = createProfileStore(pool);
+      await store.ensureSchema();
+      return store;
+    })();
+    try { return await profileStoreP; } catch (e) { profileStoreP = null; throw e; }
+  }
+  async function requireProfileAdmin(req: express.Request, res: express.Response): Promise<boolean> {
+    if (process.env.MEDIA_ALLOW_GUESTS === 'true') return true;
+    const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+    if (!idToken || !registryDb) { res.status(401).json({ error: 'Sign-in required.' }); return false; }
+    try {
+      const uid = (await getAuth().verifyIdToken(idToken)).uid;
+      if ((await registryDb.collection('users').doc(uid).get()).data()?.role === 'admin') return true;
+      res.status(403).json({ error: 'Only an admin can change playback profiles.' });
+    } catch { res.status(401).json({ error: 'Sign-in could not be verified.' }); }
+    return false;
+  }
+  const mediaApiUrl = (() => {
+    if (process.env.MEDIA_API_URL) return process.env.MEDIA_API_URL.replace(/\/+$/, '');
+    // The control API only listens on the media server's own machine, so it is reachable only when that is this machine.
+    try { const h = new URL(process.env.MEDIA_SERVER_URL || '').hostname; if (h === 'localhost' || h === '127.0.0.1') return `http://127.0.0.1:${process.env.MEDIA_API_PORT || 9997}`; } catch { /* no media server URL */ }
+    return '';
+  })();
+
+  let probeTarget: ProbeTarget | null = null;
+  let probeStore: ProfileStore | null = null;
+  const probeJob = createProbeJob({
+    probe: (id) => probeCamera(id, probeTarget!),
+    save: (report) => saveReport(probeStore!, report, profileEncoder),
+  });
+
+  type ProfileHandler = (store: ProfileStore, site: string, req: express.Request, res: express.Response) => Promise<void>;
+  const profileRoute = (handler: ProfileHandler): express.RequestHandler => async (req, res) => {
+    if (!(await requireProfileAdmin(req, res))) return;
+    try {
+      const store = await profileStore();
+      if (!store) { res.status(501).json({ error: 'Playback profiles are kept in Postgres. Set DATABASE_URL on the server.' }); return; }
+      await handler(store, siteName(req.body?.site ?? req.query.site), req, res);
+    } catch (err) {
+      console.error('[PROFILES]', err);
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Playback profiles failed.' });
+    }
+  };
+
+  app.get('/api/camera-profiles', profileRoute(async (store, site, _req, res) => {
+    const views = await listViews(store, site, profileEncoder);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ views, summary: summarize(views, profileSlots), probe: probeJob.status(), canApplyMedia: mediaApiUrl !== '', encoder: profileEncoder });
+  }));
+
+  app.post('/api/camera-profiles/import', profileRoute(async (store, site, _req, res) => {
+    const files = profileFiles();
+    if (files.length === 0) { res.status(404).json({ error: 'No saved probe runs found in .demo-logs. Run scripts/probe-cameras.ts, or use "Probe cameras".' }); return; }
+    res.json({ imported: await importSaved(store, site, files, profileEncoder), files: files.length });
+  }));
+
+  app.post('/api/camera-profiles/probe', profileRoute(async (store, site, req, res) => {
+    if (!(await checkFfmpeg()).available) { res.status(503).json({ error: 'ffmpeg is not installed on the server, so cameras cannot be probed.' }); return; }
+    const raw = (req.body as { cameraIds?: unknown }).cameraIds;
+    const ids = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(x)) : [];
+    if (ids.length === 0) { res.status(400).json({ error: "'cameraIds' must list at least one camera id." }); return; }
+    const sampleSec = Math.min(120, Math.max(5, Number((req.body as { sampleSec?: unknown }).sampleSec) || 30));
+    try { credentialResolver(site, process.env)(ids[0]); }
+    catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : 'No camera login is set.' }); return; }
+    const build = pathBuildOptionsFromEnv(site, process.env);
+    probeTarget = { site, source: build.site, whepPort: Number(process.env.GRID_WHEP_PORT || 8889), credentials: build.credentials, sampleSec };
+    probeStore = store;
+    if (!probeJob.start(ids)) { res.status(409).json({ error: 'A probe is already running.', probe: probeJob.status() }); return; }
+    res.status(202).json({ probe: probeJob.status() });
+  }));
+
+  app.post('/api/camera-profiles/probe/stop', profileRoute(async (_store, _site, _req, res) => {
+    probeJob.stop();
+    res.json({ probe: probeJob.status() });
+  }));
+
+  app.post('/api/camera-profiles/override', profileRoute(async (store, site, req, res) => {
+    const { cameraId, recipe, reason } = req.body as { cameraId?: unknown; recipe?: unknown; reason?: unknown };
+    if (typeof cameraId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(cameraId)) { res.status(400).json({ error: "'cameraId' is required." }); return; }
+    if (recipe !== null && (typeof recipe !== 'string' || !(RECIPES as readonly string[]).includes(recipe))) { res.status(400).json({ error: `'recipe' must be one of ${RECIPES.join(', ')}, or null to clear the override.` }); return; }
+    if (recipe !== null && (typeof reason !== 'string' || !reason.trim())) { res.status(400).json({ error: 'An override needs a reason.' }); return; }
+    await store.setOverride(site, cameraId, recipe as string | null, recipe === null ? null : String(reason).trim().slice(0, 300));
+    res.json({ ok: true });
+  }));
+
+  app.post('/api/camera-profiles/apply-media', profileRoute(async (store, site, req, res) => {
+    if (!mediaApiUrl) { res.status(501).json({ error: "The media server's control API is not reachable from this server (it only listens on its own machine). Use scripts/media-config.ts on that machine." }); return; }
+    let build;
+    try { build = pathBuildOptionsFromEnv(site, process.env); build.credentials('cam01'); }
+    catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : 'No camera login is set.' }); return; }
+    const dryRun = (req.body as { dryRun?: unknown }).dryRun !== false;
+    const pathsFile = process.env.MEDIA_PATHS_FILE || path.join(process.cwd(), 'media-server', 'bin', 'paths.generated.yml');
+    res.json(await applyToMedia(store, { site, encoder: profileEncoder, build, api: mediaApiUrl, dryRun, pathsFile }));
+  }));
 
   const server = http.createServer(app);
 

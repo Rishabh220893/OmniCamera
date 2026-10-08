@@ -20,10 +20,9 @@
  * Credentials: GRID_EMAIL / GRID_PASSWORD (or STREAM_EMAIL / STREAM_PASSWORD) from the environment, demo.local or scale.local.
  * Every RTSP pull counts against the account's watch time: a full run is ~30 s per camera.
  */
-import net from 'node:net';
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { PROBE_VERSION, deriveFlags, createProfileStore, type FailureStage, type ProbeReport } from '../server/cameraProfile';
-import { probeSource } from '../server/cameraProbe';
+import { createProfileStore, type ProbeReport } from '../server/cameraProfile';
+import { probeCamera } from '../server/cameraProbeRun';
 import { GRID_GROUND_TRUTH } from '../server/gridGroundTruth';
 
 const argv = process.argv.slice(2);
@@ -52,49 +51,9 @@ const sampleSec = Math.max(3, Number(opt('--sample', '30')));
 const parallel = Math.max(1, Number(opt('--parallel', '2')));
 const transport = flag('--udp') ? 'udp' : 'tcp';
 const ids = (opt('--cams', '') || Array.from({ length: 30 }, (_, i) => `cam${String(i + 1).padStart(2, '0')}`).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
-const enc = (v: string) => encodeURIComponent(v).replace(/@/g, '%40');
-const redact = (s: string) => s.replace(/\r/g, '').split(pass).join('***').split(enc(pass)).join('***').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');
-const url = (id: string) => `rtsp://${enc(email)}:${enc(pass)}@${HOST}:8554/stream/${id}`;
 
-function tcpReachable(port: number, ms = 5000): Promise<{ ok: boolean; error?: string }> {
-  return new Promise((resolve) => {
-    const s = net.connect({ host: HOST, port, timeout: ms });
-    s.once('connect', () => { s.destroy(); resolve({ ok: true }); });
-    s.once('timeout', () => { s.destroy(); resolve({ ok: false, error: 'timed out' }); });
-    s.once('error', (e: NodeJS.ErrnoException) => resolve({ ok: false, error: e.code || String(e) }));
-  });
-}
-
-async function whep(id: string) {
-  const t0 = Date.now();
-  try {
-    const r = await fetch(`http://${HOST}:8889/stream/${id}/whep`, { method: 'OPTIONS', signal: AbortSignal.timeout(8000) });
-    return { ok: r.status < 500, status: r.status, ms: Date.now() - t0 };
-  } catch (e: any) { return { ok: false, status: 0, ms: Date.now() - t0, error: e.cause?.code || e.name || String(e) }; }
-}
-
-async function probe(id: string): Promise<ProbeReport> {
-  const report: ProbeReport = {
-    cameraId: id, site: SITE, transport, probedAt: new Date().toISOString(), probeVersion: PROBE_VERSION,
-    reachable: false, failure: null, failureDetail: null, describe: null, sample: null, whep: null, flags: [],
-  };
-  const fail = (stage: FailureStage, detail: string) => { report.failure = stage; report.failureDetail = redact(detail); };
-  report.whep = await whep(id);
-
-  // Stage 1: reachability
-  const tcp = await tcpReachable(8554);
-  if (!tcp.ok) { fail('unreachable', `RTSP port 8554: ${tcp.error}`); return report; }
-  report.reachable = true;
-
-  // Stages 2 and 3: describe and sample (server/cameraProbe.ts)
-  const r = await probeSource({ url: url(id), rtsp: true, transport, sampleSec, redact });
-  report.describe = r.describe;
-  report.sample = r.sample.elapsedSec > 0 ? r.sample : null; // null when the describe stage already failed the camera
-  if (r.notes.length) report.notes = r.notes;
-  if (r.failure) fail(r.failure.stage, r.failure.detail);
-  report.flags = deriveFlags(report.describe, report.sample);
-  return report;
-}
+const target = { site: SITE, source: { host: HOST, rtspPort: 8554, pathPrefix: 'stream' }, whepPort: 8889, credentials: () => ({ user: email, pass }), transport: transport as 'tcp' | 'udp', sampleSec };
+const probe = (id: string) => probeCamera(id, target);
 
 const reports: ProbeReport[] = new Array(ids.length);
 let next = 0, rejected = 0, succeeded = 0, pauseUntil = 0;

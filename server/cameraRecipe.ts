@@ -37,6 +37,8 @@ export interface Decision {
   recipe: Recipe;
   /** One sentence naming the measurement that decided it. */
   reason: string;
+  /** The same in a few words, without the counts and without how it is played, for a list: "H.265, damaged video". */
+  cause?: string;
   /** Needs one of the machine's transcode slots while it is live. */
   transcode: boolean;
   encode: EncodeSpec | null;
@@ -90,11 +92,12 @@ const LIVE: Recipe[] = ['A', 'B', 'C', 'D'];
 
 function forced(r: ProbeReport, natural: Decision, recipe: Recipe): Decision {
   const reason = `Manual override to ${recipe} (the measurements chose ${natural.recipe}: ${natural.reason})`;
-  if (!LIVE.includes(recipe)) return { ...natural, recipe, reason, transcode: false, encode: null, gridLive: false, focusRecipe: null };
+  const cause = `Manual override (the measurements chose ${natural.recipe})`;
+  if (!LIVE.includes(recipe)) return { ...natural, recipe, reason, cause, transcode: false, encode: null, gridLive: false, focusRecipe: null };
   const reencode = recipe !== 'A';
   const ttff = r.sample?.timeToFirstFrameMs;
   return {
-    ...natural, recipe, reason, transcode: reencode,
+    ...natural, recipe, reason, cause, transcode: reencode,
     encode: reencode ? { inputCodec: r.describe?.codec ?? 'h264', bframes: 0, gopFrames: 30, maxHeight: recipe === 'D' ? THRESHOLDS.highResHeight : null } : null,
     gridLive: ttff == null || ttff <= THRESHOLDS.maxStartMs,
     focusRecipe: null,
@@ -131,13 +134,15 @@ function decideFromMeasurements(r: ProbeReport, opts: DecideOptions): Decision {
   const needsReencode = codecChange || flags.has('bframes') || gapProblem || damaged;
   const tall = (d.height ?? 0) > THRESHOLDS.highResHeight;
 
-  let recipe: Recipe = 'A', reason = 'Clean H.264 with no B-frames and keyframes close enough together; plays as it is';
+  let recipe: Recipe = 'A', reason = 'Clean H.264 with no B-frames and keyframes close enough together; plays as it is', cause: string | undefined;
   if (needsReencode) {
-    const causes: string[] = [];
-    if (codecChange) causes.push(`${(d.codec ?? 'unknown codec').replace('hevc', 'H.265')}`);
-    if (flags.has('bframes')) causes.push(s.maxReorderSec > 0 ? `B-frames (reordering up to ${s.maxReorderSec}s)` : 'B-frames');
-    if (gapProblem) causes.push(`keyframes up to ${Math.round(Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec))}s apart`);
-    if (damaged) causes.push(`damaged video (${s.corruptErrors} decoder errors in ${s.frames} frames)`);
+    const causes: string[] = [], brief: string[] = [];
+    if (codecChange) { const name = (d.codec ?? 'unknown codec').replace('hevc', 'H.265'); causes.push(name); brief.push(name); }
+    if (flags.has('bframes')) { causes.push(s.maxReorderSec > 0 ? `B-frames (reordering up to ${s.maxReorderSec}s)` : 'B-frames'); brief.push('B-frames'); }
+    if (gapProblem) { causes.push(`keyframes up to ${Math.round(Math.max(s.keyframeIntervalSec?.max ?? 0, s.sinceLastKeyframeSec))}s apart`); brief.push('long gaps between keyframes'); }
+    if (damaged) { causes.push(`damaged video (${s.corruptErrors} decoder errors in ${s.frames} frames)`); brief.push('damaged video'); }
+    if (tall) brief.push(`${d.width}x${d.height}`);
+    cause = brief.join(', ');
     recipe = tall ? 'D' : codecChange ? 'C' : 'B';
     reason = `${causes.join(', ')}${tall ? `, ${d.width}x${d.height}` : ''}: re-encoded to H.264 with no B-frames and a keyframe at least every 30 frames${tall ? `, scaled down to ${THRESHOLDS.highResHeight}p` : ''}`;
   }
@@ -148,7 +153,7 @@ function decideFromMeasurements(r: ProbeReport, opts: DecideOptions): Decision {
 
   const webrtcOk = !!r.whep?.ok && d.codec === 'h264' && !flags.has('bframes') && !gapProblem && !damaged;
   return {
-    recipe, reason,
+    recipe, reason, cause,
     transcode: needsReencode,
     encode: needsReencode ? { inputCodec: d.codec ?? 'h264', bframes: 0, gopFrames: 30, maxHeight: recipe === 'D' ? THRESHOLDS.highResHeight : null } : null,
     gridLive: s.timeToFirstFrameMs == null || s.timeToFirstFrameMs <= THRESHOLDS.maxStartMs,
