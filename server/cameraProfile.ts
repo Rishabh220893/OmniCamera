@@ -22,6 +22,9 @@ export const THRESHOLDS = {
   slowFirstFrameMs: 10_000,
   /** Over this the camera is snapshot-only until focused (decision 5). */
   maxStartMs: 30_000,
+  /** Decoder error lines per decoded frame above this (and at least `corruptMinErrors`) mean visibly damaged video. */
+  corruptPerFrame: 0.1,
+  corruptMinErrors: 5,
   /** missed / (missed + decoded) above this is "heavy packet loss". */
   lossRatio: 0.02,
   /** A sample that ends before this fraction of the requested time, after frames arrived, "closed early". */
@@ -276,7 +279,7 @@ export function deriveFlags(d: DescribeResult | null, s: SampleMeasurement | nul
     if (s.frames > 0 && longestGap > THRESHOLDS.sparseKeyframeSec) flags.push('sparse_keyframes');
     const lossBase = s.missedPackets + s.frames;
     if (lossBase > 0 && s.missedPackets / lossBase > THRESHOLDS.lossRatio) flags.push('packet_loss');
-    if (s.corruptErrors > 0) flags.push('corrupt_frames');
+    if (s.corruptErrors >= THRESHOLDS.corruptMinErrors && s.corruptErrors / Math.max(s.frames, 1) > THRESHOLDS.corruptPerFrame) flags.push('corrupt_frames');
     if (s.timestampErrors > 0) flags.push('timestamp_problems');
     if ((s.timeToFirstFrameMs ?? 0) > THRESHOLDS.slowFirstFrameMs) flags.push('slow_first_frame');
     if (s.exitedEarly) flags.push('closed_early');

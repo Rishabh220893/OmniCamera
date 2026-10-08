@@ -59,7 +59,9 @@ test('flags each fault class from the plan', () => {
   assert.ok(!deriveFlags(d(), sample({ keyframeIntervalSec: { min: 2, median: 3, max: 4 } })).includes('sparse_keyframes'));
   assert.ok(deriveFlags(d(), sample({ frames: 100, missedPackets: 10 })).includes('packet_loss'));
   assert.ok(!deriveFlags(d(), sample({ frames: 750, missedPackets: 2 })).includes('packet_loss'));
-  assert.ok(deriveFlags(d(), sample({ corruptErrors: 1 })).includes('corrupt_frames'));
+  assert.ok(deriveFlags(d(), sample({ frames: 100, corruptErrors: 20 })).includes('corrupt_frames'));
+  assert.ok(!deriveFlags(d(), sample({ frames: 100, corruptErrors: 3 })).includes('corrupt_frames'), 'a few startup errors are not damage');
+  assert.ok(!deriveFlags(d(), sample({ frames: 750, corruptErrors: 40 })).includes('corrupt_frames'), 'rare errors in a long clean run are not damage');
   assert.ok(deriveFlags(d(), sample({ timeToFirstFrameMs: 14_000 })).includes('slow_first_frame'));
   assert.ok(deriveFlags(d(), sample({ exitedEarly: true })).includes('closed_early'));
 });
