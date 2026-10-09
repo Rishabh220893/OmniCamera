@@ -17,7 +17,7 @@ function memoryStore(initial: ProbeReport[] = []) {
   const store: ProfileStore = {
     ensureSchema: async () => {},
     async listProfiles(site) { return [...rows.values()].filter((r) => r.report.site === site).sort((a, b) => a.report.cameraId.localeCompare(b.report.cameraId)); },
-    async saveProbe(report) { log.push(`probe ${report.cameraId}`); const prev = rows.get(`${report.site}/${report.cameraId}`); rows.set(`${report.site}/${report.cameraId}`, { report, override: prev?.override ?? null, overrideReason: prev?.overrideReason ?? null }); },
+    async saveProbe(report) { log.push(`probe ${report.cameraId}`); const prev = rows.get(`${report.site}/${report.cameraId}`); rows.set(`${report.site}/${report.cameraId}`, { report, override: prev?.override ?? null, overrideReason: prev?.overrideReason ?? null }); return { kept: false, consecutiveFailures: report.failure ? 1 : 0 }; },
     async saveDecision(site, cameraId, decision) { log.push(`decision ${cameraId} ${decision.recipe}`); const r = rows.get(`${site}/${cameraId}`); if (r) r.decision = decision; },
     async setOverride(site, cameraId, recipe, reason) { const r = rows.get(`${site}/${cameraId}`); if (r) { r.override = recipe; r.overrideReason = reason; } },
     async history() { return []; },
@@ -217,4 +217,21 @@ test('probe job: stop() ends the run and keeps what was probed; a camera that th
   await odd.settled();
   assert.deepEqual([odd.status().state, odd.status().done, odd.status().failed], ['finished', 4, 1]);
   assert.match(odd.status().message!, /Could not save cam03: database down|cam02: ffmpeg not found/);
+});
+
+test('a failed probe that kept the earlier good profile does not rewrite the decision', async () => {
+  const m = memoryStore([byId('cam28')]);
+  await m.store.saveDecision('grid', 'cam28', { recipe: 'B', reason: 'from the good probe' });
+  m.log.length = 0;
+  const keeping: ProfileStore = { ...m.store, saveProbe: async (r) => { m.log.push(`probe ${r.cameraId}`); return { kept: true, consecutiveFailures: 1 }; } };
+  await saveReport(keeping, { ...byId('cam28'), failure: 'no_frame', failureDetail: 'no frame within 60s', sample: null, flags: [] }, 'qsv');
+  assert.deepEqual(m.log, ['probe cam28'], 'only the history is written, not a decision of "no video"');
+  assert.equal(m.rows.get('grid/cam28')!.decision?.recipe, 'B');
+});
+
+test('view: a camera that kept its good profile through a failed probe says so, and how many more failures it takes', () => {
+  const v = profileView({ ...row('cam10'), lastFailure: { probedAt: '2026-10-09T10:00:00.000Z', failure: 'no_frame', detail: 'no frame within 60s', inARow: 1 } }, 'qsv');
+  assert.notEqual(v.recipe, 'G', 'still plays with the recipe from the last good probe');
+  assert.deepEqual(v.lastFailure, { at: '2026-10-09T10:00:00.000Z', failure: 'no_frame', detail: 'no frame within 60s', inARow: 1, limit: 3 });
+  assert.equal(profileView(row('cam10'), 'qsv').lastFailure, null);
 });

@@ -273,6 +273,11 @@ result to the running media server. How to use it: `docs/media-server.md`.
 - **Not covered:** a probe started from the screen against real cameras (the probe job is tested with fakes and the probe itself ran from the command line);
   signing in as a Firebase admin (the checks used the local-demo guest switch, `MEDIA_ALLOW_GUESTS`); a list of thousands of cameras (the screen pages 20 at a
   time, but the server returns every camera in one answer, so it would need paging on the server first).
+- **A failed probe does not erase a good profile.** Found while answering "what does Apply do after I probe": a camera that timed out once (cam10 and cam11 do this)
+  was saved as "no video", and Apply would have removed its path. Now the failure goes into the history and the row shows it, and the stored profile only becomes
+  "no video" after 3 failures in a row (`FAILURES_BEFORE_REPLACING_PROFILE`). Checked against a real PostgreSQL
+  (`TEST_DATABASE_URL=... node --import tsx --test tests/profileStorePg.test.ts`) and through the running app: cam06 kept recipe C through two failed probes and
+  became unsupported on the third.
 - **Left out on purpose:** the media server's own slot limit (step 5), and showing which cameras the registry already has next to the profiles.
 
 ## Open points for step 1

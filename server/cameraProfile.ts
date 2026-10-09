@@ -327,12 +327,38 @@ CREATE TABLE IF NOT EXISTS camera_profiles (
   recipe_override TEXT,
   override_reason TEXT,
   decision        JSONB,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  latest_failure  JSONB,
   PRIMARY KEY (site, camera_id)
 );
 ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS decision JSONB;
+ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS latest_failure JSONB;
 `;
 
-export interface ProfileRow { report: ProbeReport; override: string | null; overrideReason: string | null }
+/**
+ * A camera that gave video before keeps its profile through a failed probe (a timeout, a 401 while the grid limits the account,
+ * a camera that is slow some minutes): the failure is recorded in the history and shown, but the stored profile only becomes
+ * "no video" after this many failed probes in a row.
+ */
+export const FAILURES_BEFORE_REPLACING_PROFILE = 3;
+
+/** The most recent failed probe of a camera whose stored profile is an earlier, good one. */
+export interface LastFailure { probedAt: string; failure: string; detail: string | null; inARow: number }
+
+export interface ProfileRow {
+  report: ProbeReport;
+  override: string | null;
+  overrideReason: string | null;
+  /** Set when the latest probe failed but the stored profile is still the earlier good one. */
+  lastFailure?: LastFailure | null;
+}
+
+export interface SaveProbeResult {
+  /** True when the probe failed and the camera's earlier good profile was kept. */
+  kept: boolean;
+  consecutiveFailures: number;
+}
 
 export const RECIPES = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 
@@ -344,8 +370,11 @@ export interface ProfileStore {
   saveDecision(site: string, cameraId: string, decision: { recipe: string; reason: string } & Record<string, unknown>): Promise<void>;
   /** Forces a recipe for one camera, or clears it with null. Every change needs a reason. */
   setOverride(site: string, cameraId: string, recipe: string | null, reason: string | null): Promise<void>;
-  /** Appends the run to history and refreshes the current profile. Recipe columns are left alone (step 2). */
-  saveProbe(report: ProbeReport): Promise<void>;
+  /**
+   * Appends the run to history and refreshes the current profile, except that a failed probe does not replace an earlier good
+   * profile until it has failed FAILURES_BEFORE_REPLACING_PROFILE times in a row. Recipe columns are left alone.
+   */
+  saveProbe(report: ProbeReport): Promise<SaveProbeResult>;
   history(site: string, cameraId: string, limit?: number): Promise<ProbeReport[]>;
 }
 
@@ -358,21 +387,36 @@ export function createProfileStore(pg: PgLike): ProfileStore {
         `INSERT INTO probe_runs (camera_id, site, probed_at, probe_version, failure, report) VALUES ($1,$2,$3,$4,$5,$6)`,
         [r.cameraId, r.site, r.probedAt, r.probeVersion, r.failure, JSON.stringify(r)],
       );
-      await pg.query(
-        `INSERT INTO camera_profiles (site, camera_id, updated_at, probe_version, failure, codec, width, height, fps, time_to_first_frame_ms, flags, profile)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      // One statement, so two probes finishing together cannot interleave. `keep` = this probe failed, the stored profile is a good
+      // one, and this is not yet the Nth failure in a row: then every profile column keeps its stored value.
+      const keep = `(EXCLUDED.failure IS NOT NULL AND camera_profiles.failure IS NULL AND camera_profiles.consecutive_failures + 1 < $14)`;
+      const col = (c: string) => `${c} = CASE WHEN ${keep} THEN camera_profiles.${c} ELSE EXCLUDED.${c} END`;
+      const res = await pg.query(
+        `INSERT INTO camera_profiles (site, camera_id, updated_at, probe_version, failure, codec, width, height, fps, time_to_first_frame_ms, flags, profile, consecutive_failures, latest_failure)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+           CASE WHEN $5::text IS NULL THEN 0 ELSE 1 END,
+           CASE WHEN $5::text IS NULL THEN NULL ELSE jsonb_build_object('probedAt', $15::text, 'failure', $5::text, 'detail', $13::text) END)
          ON CONFLICT (site, camera_id) DO UPDATE SET
-           updated_at = EXCLUDED.updated_at, probe_version = EXCLUDED.probe_version, failure = EXCLUDED.failure,
-           codec = EXCLUDED.codec, width = EXCLUDED.width, height = EXCLUDED.height, fps = EXCLUDED.fps,
-           time_to_first_frame_ms = EXCLUDED.time_to_first_frame_ms, flags = EXCLUDED.flags, profile = EXCLUDED.profile`,
+           ${['updated_at', 'probe_version', 'failure', 'codec', 'width', 'height', 'fps', 'time_to_first_frame_ms', 'flags', 'profile'].map(col).join(',\n           ')},
+           consecutive_failures = CASE WHEN EXCLUDED.failure IS NULL THEN 0 ELSE camera_profiles.consecutive_failures + 1 END,
+           latest_failure = EXCLUDED.latest_failure
+         RETURNING (failure IS NULL) AS stored_good, consecutive_failures`,
         [r.site, r.cameraId, r.probedAt, r.probeVersion, r.failure, r.describe?.codec ?? null, r.describe?.width ?? null,
-          r.describe?.height ?? null, r.describe?.fps ?? null, r.sample?.timeToFirstFrameMs ?? null, r.flags, JSON.stringify(r)],
+          r.describe?.height ?? null, r.describe?.fps ?? null, r.sample?.timeToFirstFrameMs ?? null, r.flags, JSON.stringify(r),
+          r.failureDetail, FAILURES_BEFORE_REPLACING_PROFILE, r.probedAt],
       );
+      const row = res.rows[0] as { stored_good?: boolean; consecutive_failures?: number } | undefined;
+      return { kept: r.failure !== null && row?.stored_good === true, consecutiveFailures: row?.consecutive_failures ?? (r.failure ? 1 : 0) };
     },
 
     async listProfiles(site) {
-      const res = await pg.query(`SELECT profile, recipe_override, override_reason FROM camera_profiles WHERE site = $1 ORDER BY camera_id`, [site]);
-      return res.rows.map((row) => ({ report: row.profile as ProbeReport, override: row.recipe_override ?? null, overrideReason: row.override_reason ?? null }));
+      const res = await pg.query(`SELECT profile, recipe_override, override_reason, failure, consecutive_failures, latest_failure FROM camera_profiles WHERE site = $1 ORDER BY camera_id`, [site]);
+      return res.rows.map((row) => {
+        const lf = row.latest_failure as { probedAt: string; failure: string; detail: string | null } | null | undefined;
+        // Only when the stored profile is a good one: a stored failure already is the latest news.
+        const lastFailure: LastFailure | null = lf && row.failure === null ? { probedAt: lf.probedAt, failure: lf.failure, detail: lf.detail ?? null, inARow: Number(row.consecutive_failures) || 1 } : null;
+        return { report: row.profile as ProbeReport, override: row.recipe_override ?? null, overrideReason: row.override_reason ?? null, lastFailure };
+      });
     },
 
     async saveDecision(site, cameraId, decision) {

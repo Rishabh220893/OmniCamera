@@ -214,6 +214,12 @@ export default function CameraProfilesPanel({ isAdmin, registryGridIds, site = '
                       </div>
                       <p className="text-xs text-ink" title={v.reason}>{v.cause}</p>
                       <p className="text-xs text-ink-muted">{measuredLine(v)}</p>
+                      {v.lastFailure && (
+                        <p className="text-xs text-warning" role="status">
+                          The last probe failed ({v.lastFailure.detail || v.lastFailure.failure}, {ageLabel(v.lastFailure.at)}). These are the measurements from the last good probe;
+                          after {v.lastFailure.limit - v.lastFailure.inARow} more failure{v.lastFailure.limit - v.lastFailure.inARow === 1 ? '' : 's'} in a row this camera is marked as having no video.
+                        </p>
+                      )}
                       {v.failure && v.failureDetail && <p className="text-xs text-critical break-words">{v.failureDetail}</p>}
                       {v.notes.map((n) => <p key={n} className="text-[11px] text-ink-muted">{n}</p>)}
                       {v.flags.length > 0 && <div className="flex flex-wrap gap-1.5">{v.flags.map((f) => <span key={f} className="badge badge-neutral">{FLAG_LABEL[f] ?? f}</span>)}</div>}

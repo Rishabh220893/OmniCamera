@@ -4,7 +4,7 @@
  */
 import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
-import type { ProfileRow, ProfileStore, ProbeReport } from './cameraProfile';
+import { FAILURES_BEFORE_REPLACING_PROFILE, type ProfileRow, type ProfileStore, type ProbeReport } from './cameraProfile';
 import { allocateSlots, decide, type EncoderKind, type Recipe } from './cameraRecipe';
 import { renderPathsYaml } from './mediaPaths';
 import { applyPaths } from './mediaApply';
@@ -31,6 +31,7 @@ export function profileView(row: ProfileRow, encoder: EncoderKind): ProfileView 
     recipe: dec.recipe, naturalRecipe: natural.recipe, reason: dec.reason, cause: dec.cause ?? dec.reason,
     override: (row.override as RecipeCode | null) ?? null, overrideReason: row.overrideReason,
     transcode: dec.transcode, gridLive: dec.gridLive, speed: dec.speed, webrtcFocus: dec.focusRecipe === 'E', health: dec.health,
+    lastFailure: row.lastFailure ? { at: row.lastFailure.probedAt, failure: row.lastFailure.failure, detail: row.lastFailure.detail, inARow: row.lastFailure.inARow, limit: FAILURES_BEFORE_REPLACING_PROFILE } : null,
     pathKind: dec.recipe === 'F' || dec.recipe === 'G' || dec.recipe === 'E' ? 'none' : dec.transcode ? 're-encode' : 'pull',
   };
 }
@@ -52,9 +53,10 @@ export async function listViews(store: ProfileStore, site: string, encoder: Enco
   return rows.map((row) => profileView(row, encoder)).sort((a, b) => a.cameraId.localeCompare(b.cameraId, undefined, { numeric: true }));
 }
 
-/** Saves a probe run and what the decision table makes of it (a manual override, if one exists, is kept). */
+/** Saves a probe run and what the decision table makes of it. A manual override is kept, and so is an earlier good profile when this probe merely failed. */
 export async function saveReport(store: ProfileStore, report: ProbeReport, encoder: EncoderKind): Promise<void> {
-  await store.saveProbe(report);
+  const saved = await store.saveProbe(report);
+  if (saved.kept) return; // the earlier good profile stays, and so does the decision made from it
   const dec = decide(report, { encoder });
   await store.saveDecision(report.site, report.cameraId, { ...dec });
 }

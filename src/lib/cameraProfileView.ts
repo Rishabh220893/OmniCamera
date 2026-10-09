@@ -40,6 +40,8 @@ export interface ProfileView {
   webrtcFocus: boolean;
   health: number;
   pathKind: 'pull' | 're-encode' | 'none';
+  /** Set when the latest probe failed but the measurements above are from an earlier, good one. */
+  lastFailure: { at: string; failure: string; detail: string | null; inARow: number; limit: number } | null;
 }
 
 export interface ProfileSummary {

@@ -167,6 +167,10 @@ Registry > **Playback profiles** (admins) shows the same thing as `media-config.
 - **Apply to the media server** previews the changes, then applies them to the running media server (add, replace, remove; unchanged cameras keep playing). It
   appears only when the media server is on the same machine as the app (`MEDIA_SERVER_URL` is localhost, or `MEDIA_API_URL` is set).
 
+**A failed probe does not erase a camera.** Every probe is kept in the history, but a camera that gave video before keeps its profile (and its path on the media
+server) until it has failed 3 probes in a row. Until then its row says "The last probe failed ... after N more failures in a row this camera is marked as having no
+video". This is because the grid sometimes refuses or times out a camera that played a minute earlier. A good probe resets the count.
+
 Profiles are kept in Postgres, so this needs `DATABASE_URL`. Only admins can use it; with `MEDIA_ALLOW_GUESTS=true` (local demo only) the sign-in check is skipped.
 
 | Variable | Default | Meaning |
