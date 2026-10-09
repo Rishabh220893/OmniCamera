@@ -200,6 +200,7 @@ const HLS_UPSTREAM_CONCURRENCY = Math.max(1, Number(process.env.HLS_UPSTREAM_CON
 // must be long enough to be worth watching; the cache makes player retries and page reloads instant.
 const HLS_LIVE_WINDOW_SEGMENTS = Math.max(3, Number(process.env.HLS_LIVE_WINDOW_SEGMENTS) || 100);
 const HLS_MANIFEST_CACHE_MS = Math.max(1_000, Number(process.env.HLS_MANIFEST_CACHE_MS) || 120_000);
+const HLS_LIVE_MANIFEST_CACHE_MS = Math.max(1_000, Number(process.env.HLS_LIVE_MANIFEST_CACHE_MS) || 4_000);
 const manifestLogAt = new Map<string, number>();
 // The grid caps each account's viewing time. Over the limit it answers "403 watch time limit reached ...
 // wait for your cooldown" on HLS and "401 Unauthorized" on RTSP and WHEP, and every retry just adds load (and
@@ -527,7 +528,7 @@ async function startServer() {
   // the resulting valid session cookie across all camera feeds.
   const sessionCookieCache = new Map<string, string>();
   const activeLoginPromises = new Map<string, Promise<string | null>>();
-  const manifestCache = new Map<string, { content: string; cachedAt: number }>();
+  const manifestCache = new Map<string, { content: string; cachedAt: number; ttlMs: number }>();
 
   async function loginForSessionCookie(targetUrl: string, password: string, email?: string, forceFresh = false): Promise<string | null> {
     const host = new URL(targetUrl).host;
@@ -635,7 +636,7 @@ async function startServer() {
     const manifestCacheKey = `${targetUrl}|${email || ''}|${password || ''}`;
     const sendCachedManifest = (): boolean => {
       const cached = isManifest ? manifestCache.get(manifestCacheKey) : undefined;
-      if (!cached || Date.now() - cached.cachedAt >= HLS_MANIFEST_CACHE_MS) return false;
+      if (!cached || Date.now() - cached.cachedAt >= cached.ttlMs) return false;
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('X-Cache', 'HIT');
@@ -717,7 +718,10 @@ async function startServer() {
           res.status(502).send('Upstream returned a 2xx status but the response was not a valid HLS manifest.');
           return;
         }
-        const trim = trimLiveManifest(text, HLS_LIVE_WINDOW_SEGMENTS);
+        // The grid's playlists keep growing but end with ENDLIST. Left in, a player treats the window as a finished recording and
+        // stops when it reaches the end of it. For the grid the marker is dropped, so the player stays at the live edge and reloads.
+        const gridLive = new URL(targetUrl).hostname.toLowerCase() === 'cctv.corp8.cloud';
+        const trim = trimLiveManifest(text, HLS_LIVE_WINDOW_SEGMENTS, { live: gridLive });
         // Where the time goes: queued here, waiting for the grid to start answering, or downloading the body.
         const path = new URL(targetUrl).pathname;
         const timings = `queued ${((slotAt - queuedAt) / 1000).toFixed(1)}s, grid first byte ${((headersAt - slotAt) / 1000).toFixed(1)}s, body ${((bodyAt - headersAt) / 1000).toFixed(1)}s`;
@@ -742,7 +746,8 @@ async function startServer() {
           return proxyLine(trimmed);
         }).join('\n');
 
-        manifestCache.set(manifestCacheKey, { content: rewritten, cachedAt: Date.now() });
+        // A live playlist is reused only for about one segment, or the player would run out of new segments before it refreshes.
+        manifestCache.set(manifestCacheKey, { content: rewritten, cachedAt: Date.now(), ttlMs: gridLive ? Math.min(HLS_MANIFEST_CACHE_MS, HLS_LIVE_MANIFEST_CACHE_MS) : HLS_MANIFEST_CACHE_MS });
 
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Cache-Control', 'no-cache');

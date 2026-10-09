@@ -39,6 +39,12 @@ export interface PathBuildOptions {
   transcode: TranscodeSettings;
   /** How long MediaMTX waits for the first picture, and how long it keeps a source after the last viewer leaves. */
   startTimeout: string;
+  /**
+   * Start timeout for a re-encode, which has more to do before the first picture: connect, wait for the camera's first frame (46 s on
+   * cam21 on 2026-10-10), decode, encode and publish. Defaults to `startTimeout`. Too short and MediaMTX kills ffmpeg and starts it
+   * again, which only opens more sessions on the grid.
+   */
+  encodeStartTimeout?: string;
   closeAfter: string;
 }
 
@@ -102,7 +108,7 @@ export function buildPaths(items: Array<{ cameraId: string; decision: Decision }
     if (!QSV_DECODE.has(d.encode.inputCodec)) { skipped.push({ cameraId: id, why: `no hardware decoder for ${d.encode.inputCodec}; software decoding is not used` }); continue; }
     paths[id] = {
       runOnDemand: ffmpegCommand(id, d.encode.inputCodec, d.encode.maxHeight, d.encode.gopFrames, o),
-      runOnDemandStartTimeout: o.startTimeout, runOnDemandCloseAfter: o.closeAfter, runOnDemandRestart: true,
+      runOnDemandStartTimeout: o.encodeStartTimeout ?? o.startTimeout, runOnDemandCloseAfter: o.closeAfter, runOnDemandRestart: true,
     };
   }
   return { paths, skipped };

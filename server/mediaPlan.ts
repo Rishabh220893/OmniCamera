@@ -32,6 +32,6 @@ export function pathBuildOptionsFromEnv(site: string, env: Record<string, string
       ffmpeg: env.MEDIA_FFMPEG || 'ffmpeg', bitrate: env.MEDIA_TRANSCODE_BITRATE || '2500k',
       publishPort: Number(env.MEDIA_TRANSCODE_RTSP_PORT || 18554), scaleFilter: env.MEDIA_SCALE_FILTER || null,
     },
-    startTimeout: env.SOURCE_START_TIMEOUT || '60s', closeAfter: env.SOURCE_CLOSE_AFTER || '5s',
+    startTimeout: env.SOURCE_START_TIMEOUT || '60s', encodeStartTimeout: env.MEDIA_ENCODE_START_TIMEOUT || '120s', closeAfter: env.SOURCE_CLOSE_AFTER || '5s',
   };
 }

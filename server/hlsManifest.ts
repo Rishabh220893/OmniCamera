@@ -12,12 +12,15 @@ export interface TrimResult {
 // starts from the first segment and every refresh re-downloads the whole thing, which across ~30 cameras
 // is what stalled the grid. This keeps only the newest `keep` segments, which is what a live playlist
 // normally looks like, and renumbers the sequence tags so the player still sees a consistent timeline.
-export function trimLiveManifest(text: string, keep: number): TrimResult {
+// `live` also removes #EXT-X-ENDLIST: the grid's playlist keeps growing while it carries that marker, and a player that sees it
+// treats the window as a finished recording, plays to its end and stops instead of following the live edge.
+export function trimLiveManifest(text: string, keep: number, opts: { live?: boolean } = {}): TrimResult {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/);
   const firstInf = lines.findIndex((l) => l.startsWith('#EXTINF'));
   const hadEndList = lines.some((l) => l.trim() === '#EXT-X-ENDLIST');
   const hadPlaylistType = lines.some((l) => l.startsWith('#EXT-X-PLAYLIST-TYPE'));
-  const untouched = (total: number): TrimResult => ({ text, totalSegments: total, keptSegments: total, trimmed: false, hadEndList, hadPlaylistType });
+  const withoutEnd = (t: string) => (opts.live ? t.split(/\r?\n/).filter((l) => l.trim() !== '#EXT-X-ENDLIST').join('\n') : t);
+  const untouched = (total: number): TrimResult => ({ text: withoutEnd(text), totalSegments: total, keptSegments: total, trimmed: false, hadEndList, hadPlaylistType });
   if (firstInf < 0) return untouched(0);
 
   const header = lines.slice(0, firstInf);
@@ -29,7 +32,7 @@ export function trimLiveManifest(text: string, keep: number): TrimResult {
     const t = line.trim();
     if (!t) continue;
     if (t.startsWith('#')) {
-      if (t === '#EXT-X-ENDLIST') { tail.push(line); continue; }
+      if (t === '#EXT-X-ENDLIST') { if (!opts.live) tail.push(line); continue; }
       current.push(line);
     } else {
       current.push(line);

@@ -203,3 +203,10 @@ test('store: list profiles with overrides, save the decision, set and clear an o
   await assert.rejects(store.setOverride('grid', 'cam01', 'Z', 'x'), /Unknown recipe/);
   await assert.rejects(store.setOverride('grid', 'cam01', 'B', '  '), /needs a reason/);
 });
+
+test('a re-encode gets its own, longer start timeout; a plain pull keeps the normal one', () => {
+  const plan = buildPaths([item('cam06')], opts({ encodeStartTimeout: '120s' }));
+  assert.equal(plan.paths.cam06.runOnDemandStartTimeout, '120s');
+  assert.equal(buildPaths([item('cam01', 'A')], opts({ encodeStartTimeout: '120s' })).paths.cam01.sourceOnDemandStartTimeout, '60s');
+  assert.equal(buildPaths([item('cam06')], opts()).paths.cam06.runOnDemandStartTimeout, '60s', 'unset = the normal timeout');
+});

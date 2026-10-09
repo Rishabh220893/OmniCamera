@@ -61,3 +61,14 @@ test('is a no-op on text that is not a segment playlist', () => {
   const r = trimLiveManifest('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nlow/index.m3u8\n', 10);
   assert.equal(r.trimmed, false);
 });
+
+test('live: the end-of-list marker is dropped, trimmed or not, so a player follows the live edge instead of stopping', () => {
+  const trimmed = trimLiveManifest(playlist(20, [], ['#EXT-X-ENDLIST']), 5, { live: true });
+  assert.equal(trimmed.trimmed, true);
+  assert.equal(trimmed.hadEndList, true, 'still reported, so the log says the grid sent one');
+  assert.ok(!trimmed.text.includes('#EXT-X-ENDLIST'));
+  const short = trimLiveManifest(playlist(3, [], ['#EXT-X-ENDLIST']), 5, { live: true });
+  assert.equal(short.trimmed, false);
+  assert.ok(!short.text.includes('#EXT-X-ENDLIST'));
+  assert.ok(trimLiveManifest(playlist(3, [], ['#EXT-X-ENDLIST']), 5).text.includes('#EXT-X-ENDLIST'), 'other hosts are unchanged');
+});

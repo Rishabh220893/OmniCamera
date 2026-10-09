@@ -622,7 +622,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     const watchdog = setTimeout(() => {
       if (useMedia) noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail));
       scheduleReconnect('Timed out waiting for a real picture from this stream.');
-    }, useMedia ? 90_000 : 60_000);
+    }, useMedia ? 150_000 : 60_000); // longer than the media server's own start timeout for a re-encode (120 s)
     const clearWatchdog = () => clearTimeout(watchdog);
     video.addEventListener('playing', clearWatchdog);
 
