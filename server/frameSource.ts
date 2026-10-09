@@ -105,6 +105,17 @@ export interface FrameRequest {
 }
 
 /**
+ * The grid camera id in a registry URL (https://cctv.corp8.cloud/<id>/index.m3u8), whatever the id looks like: the catalogue
+ * decides the ids, and they are not always "camNN". URLs on other hosts (for example this app's own media server) keep the older
+ * "/camNN" rule, so they still reach the grid directly as before; anything else is not a grid camera.
+ */
+export function gridCameraId(url: string): string | null {
+  const m = url.match(/^https?:\/\/cctv\.corp8\.cloud\/([A-Za-z0-9_-]+)\//i);
+  if (m) return m[1];
+  return url.match(/\/(cam\d+)/i)?.[1]?.toLowerCase() ?? null;
+}
+
+/**
  * Grabs one frame for a registry camera. Order mirrors /api/camera-snapshot:
  * direct RTSP for grid cameras (fast), then the proxied HLS URL; other
  * rtsp:// URLs go straight to ffmpeg, plain images are fetched, anything
@@ -112,11 +123,11 @@ export interface FrameRequest {
  */
 export async function grabFrame(req: FrameRequest): Promise<Buffer> {
   const { url, localBaseUrl, creds, gridRtspHost } = req;
-  const camId = url.match(/\/(cam\d+)/i)?.[1];
+  const camId = gridCameraId(url);
 
   let frame: Buffer | null = null;
   if (camId) {
-    const rtsp = `rtsp://${encodeURIComponent(creds.email).replace(/@/g, '%40')}:${encodeURIComponent(creds.password)}@${gridRtspHost}/stream/${camId.toLowerCase()}`;
+    const rtsp = `rtsp://${encodeURIComponent(creds.email).replace(/@/g, '%40')}:${encodeURIComponent(creds.password)}@${gridRtspHost}/stream/${encodeURIComponent(camId)}`;
     frame = await extractFrameWithFfmpeg(rtsp, true, 7_000);
     if (!frame) {
       const proxied = `${localBaseUrl}/api/proxy-hls?url=${encodeURIComponent(url)}&password=${encodeURIComponent(creds.password)}&email=${encodeURIComponent(creds.email)}`;

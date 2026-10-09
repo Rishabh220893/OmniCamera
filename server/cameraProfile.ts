@@ -210,7 +210,8 @@ export function parseFfmpegInput(stderr: string): DescribeResult | null {
 }
 
 /** The ffmpeg arguments for the stage 3 sample: decode for measurements, and copy packets to stdout for timestamps. */
-export function buildSampleArgs(url: string, transport: 'tcp' | 'udp', sampleSec: number, rtsp = true, realtime = false): string[] {
+/** RTSP is always pulled over TCP: UDP fails across NAT and delivers partial frames that look like camera damage. */
+export function buildSampleArgs(url: string, transport: 'tcp', sampleSec: number, rtsp = true, realtime = false): string[] {
   return [
     '-hide_banner', '-nostdin', '-loglevel', 'info', ...(rtsp ? ['-rtsp_transport', transport] : []), ...(realtime ? ['-re'] : []), '-t', String(sampleSec), '-i', url,
     '-map', '0:v:0', '-an', '-vf', 'showinfo', '-progress', 'pipe:2', '-nostats', '-f', 'null', '-',
@@ -233,6 +234,11 @@ export function buildSample(args: {
 }): SampleMeasurement {
   const frames = parseShowInfo(args.stderr);
   const problems = countLogProblems(args.stderr);
+  // Joining mid-stream makes the decoder print "Could not find ref with POC" / "Error constructing the frame RPS" until the first
+  // keyframe arrives (integrator guide, section 3). That is normal, so only decoder errors after the first decoded keyframe count as
+  // damage. The join lines stay in `problemSamples`, so they are logged, not hidden.
+  const firstKey = args.stderr.search(/Parsed_showinfo[^\n]*iskey:\s*1/);
+  const corruptErrors = firstKey >= 0 ? countLogProblems(args.stderr.slice(firstKey)).corruptErrors : problems.corruptErrors;
   const pk = parseFramecrc(args.packets ?? '');
   const keys = frames.filter((f) => f.key).map((f) => f.ptsTime);
   const times = frames.map((f) => f.ptsTime);
@@ -251,10 +257,13 @@ export function buildSample(args: {
     sinceLastKeyframeSec: keys.length ? Math.round((last - Math.max(...keys)) * 100) / 100 : 0,
     problemSamples: problems.samples,
     missedPackets: problems.missedPackets,
-    corruptErrors: problems.corruptErrors,
+    corruptErrors,
     // Packet decode times going backwards is a camera fault; decoded frames are always in order, so they say nothing.
     timestampErrors: problems.timestampErrors + pk.dtsBackwards,
-    exitedEarly: frames.length > 0 && args.elapsedSec < args.requestedSec * THRESHOLDS.earlyCloseFraction,
+    // Stream time as well as wall time: the gateway replays the buffered group of pictures faster than real time at join, so a
+    // healthy sample can end in less wall time than it asked for. Only a stream that was short in both ways closed early.
+    exitedEarly: frames.length > 0 && args.elapsedSec < args.requestedSec * THRESHOLDS.earlyCloseFraction
+      && last - first < args.requestedSec * THRESHOLDS.earlyCloseFraction,
   };
 }
 

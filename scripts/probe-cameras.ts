@@ -7,7 +7,6 @@
  *   node --import tsx scripts/probe-cameras.ts --sample 30           seconds of video to sample (default 30; 5 for a smoke test)
  *   node --import tsx scripts/probe-cameras.ts --parallel 2          cameras at a time (default 2; streams are real time)
  *   node --import tsx scripts/probe-cameras.ts --host H --site NAME  another source (site name selects the credentials)
- *   node --import tsx scripts/probe-cameras.ts --udp                 probe over UDP instead of TCP
  *   node --import tsx scripts/probe-cameras.ts --db                  also save to Postgres (PROFILE_DATABASE_URL or DATABASE_URL)
  *
  * Stages, each with its own timeout and a named failure:
@@ -24,6 +23,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createProfileStore, type ProbeReport } from '../server/cameraProfile';
 import { probeCamera } from '../server/cameraProbeRun';
 import { GRID_GROUND_TRUTH } from '../server/gridGroundTruth';
+import { extractCameraArray } from '../src/lib/sentinelCatalogue';
 
 const argv = process.argv.slice(2);
 const opt = (n: string, d: string) => { const i = argv.indexOf(n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
@@ -49,10 +49,28 @@ console.log(`Credentials: ${mask(email)} (password ${pass.length} chars)`);
 
 const sampleSec = Math.max(3, Number(opt('--sample', '30')));
 const parallel = Math.max(1, Number(opt('--parallel', '2')));
-const transport = flag('--udp') ? 'udp' : 'tcp';
-const ids = (opt('--cams', '') || Array.from({ length: 30 }, (_, i) => `cam${String(i + 1).padStart(2, '0')}`).join(',')).split(',').map((s) => s.trim()).filter(Boolean);
+const transport = 'tcp'; // always TCP (integrator guide); there is deliberately no UDP option
+// The camera set comes from the catalogue (the contract; ids and the set of cameras can change). --cams overrides it.
+// The 30 camNN ids are only a last resort when the catalogue cannot be read, and the run says so.
+async function catalogueIds(): Promise<string[] | null> {
+  try {
+    const res = await fetch(`http://${HOST}/api/ingest`, { headers: { Authorization: 'Basic ' + Buffer.from(`${email}:${pass}`).toString('base64') }, signal: AbortSignal.timeout(15_000) });
+    if (!res.ok) return null;
+    const ids = extractCameraArray(await res.json()).map((c) => [c.id, c.camera_id, c.cam_id, c.camId].find((v) => typeof v === 'string' && v.trim()) as string | undefined).filter((v): v is string => !!v);
+    return ids.length ? [...new Set(ids)] : null;
+  } catch { return null; }
+}
+let ids = opt('--cams', '').split(',').map((s) => s.trim()).filter(Boolean);
+if (!ids.length) {
+  const fromCatalogue = await catalogueIds();
+  if (fromCatalogue) { ids = fromCatalogue; console.log(`Camera list: ${ids.length} cameras from http://${HOST}/api/ingest`); }
+  else {
+    ids = Array.from({ length: 30 }, (_, i) => `cam${String(i + 1).padStart(2, '0')}`);
+    console.warn(`Camera list: could not read http://${HOST}/api/ingest, falling back to the built-in cam01..cam30. Pass --cams to choose cameras.`);
+  }
+}
 
-const target = { site: SITE, source: { host: HOST, rtspPort: 8554, pathPrefix: 'stream' }, whepPort: 8889, credentials: () => ({ user: email, pass }), transport: transport as 'tcp' | 'udp', sampleSec };
+const target = { site: SITE, source: { host: HOST, rtspPort: 8554, pathPrefix: 'stream' }, whepPort: 8889, credentials: () => ({ user: email, pass }), sampleSec };
 const probe = (id: string) => probeCamera(id, target);
 
 const reports: ProbeReport[] = new Array(ids.length);

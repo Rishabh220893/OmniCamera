@@ -18,3 +18,11 @@ test('an odd camera id or a non-URL is not turned into a hostname', () => {
   assert.equal(shardedMediaBase('not a url', 'cam01'), 'not a url');
   assert.equal(shardedMediaBase('', 'cam01'), '');
 });
+
+test('grid camera id: any id on the grid host, the older /camNN rule elsewhere, nothing for a foreign camera', async () => {
+  const { gridCameraId } = await import('../server/frameSource.ts');
+  assert.equal(gridCameraId('https://cctv.corp8.cloud/7/index.m3u8'), '7');
+  assert.equal(gridCameraId('https://cctv.corp8.cloud/lobby-2/index.m3u8'), 'lobby-2');
+  assert.equal(gridCameraId('https://media.example.com/CAM05/index.m3u8'), 'cam05');
+  assert.equal(gridCameraId('https://other.example.com/live/index.m3u8'), null);
+});

@@ -1074,7 +1074,8 @@ async function startServer() {
         return fetchUpstream(`${base}${path}`, { headers: buildHeaders(cookie), redirect: 'manual' }, { timeoutMs: 20_000, retries: 0 });
       };
 
-      let upstream = await fetchCatalogue('/cameras.json');
+      // /api/ingest is the catalogue the integrator guide names; /cameras.json is the older name, tried only on a 404.
+      let upstream = await fetchCatalogue('/api/ingest');
       // A direct 401 (stale cached cookie, or loginForSessionCookie having
       // silently failed and left no cookie at all) or a 3xx redirect to a
       // login page both mean the session was invalid — retry once with a
@@ -1085,13 +1086,13 @@ async function startServer() {
       // wired up to the right host.
       if (password && (upstream.status === 401 || (upstream.status >= 300 && upstream.status < 400))) {
         if (cacheKey) sessionCookieCache.delete(cacheKey);
-        upstream = await fetchCatalogue('/cameras.json', true);
+        upstream = await fetchCatalogue('/api/ingest', true);
       }
       // Two documented names for the same idea across the two guide
-      // revisions we were given (/api/ingest, cameras.json) — only falls
-      // back to the generic one on an actual 404, not an auth failure
-      // (which the retry above already handles).
-      if (upstream.status === 404) upstream = await fetchCatalogue('/api/ingest');
+      // revisions we were given: /api/ingest (current) and cameras.json
+      // (older). The older one is tried only when the current one fails for a
+      // reason other than auth (which the retry above already handles).
+      if (!upstream.ok && upstream.status !== 401 && upstream.status !== 403) upstream = await fetchCatalogue('/cameras.json');
 
       if (!upstream.ok) {
         console.warn(`[CAMERA CATALOGUE] Upstream returned status ${upstream.status}, serving bundled fallback catalogue`);

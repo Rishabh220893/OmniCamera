@@ -74,6 +74,21 @@ test('a sample that ends early after frames arrived is "closed early"; one with 
   assert.equal(buildSample({ requestedSec: 30, elapsedSec: 8, timeToFirstFrameMs: null, stderr: '' }).exitedEarly, false);
 });
 
+test('a burst replayed faster than real time at join is not "closed early"; a stream short in stream time too is', () => {
+  const frames = (n: number) => Array.from({ length: n }, (_, i) => info(i, i === 0 ? 1 : 0, i === 0 ? 'I' : 'P')).join('\n');
+  // 30 s of stream time delivered in 8 s of wall time: the gateway's buffered GOP, not a closed stream.
+  assert.equal(buildSample({ requestedSec: 30, elapsedSec: 8, timeToFirstFrameMs: 500, stderr: frames(30) }).exitedEarly, false);
+  assert.equal(buildSample({ requestedSec: 30, elapsedSec: 8, timeToFirstFrameMs: 500, stderr: frames(8) }).exitedEarly, true);
+});
+
+test('decoder errors before the first decoded keyframe (join warnings) are not counted as damage, but stay in the samples', () => {
+  const join = ['[hevc @ 0x1] Error constructing the frame RPS.', '[hevc @ 0x1] Could not find ref with POC 12', '[h264 @ 0x1] error while decoding MB 3 4'];
+  const stderr = [...join, info(0, 1, 'I'), info(1, 0, 'P'), '[h264 @ 0x1] error while decoding MB 1 1', info(2, 0, 'P')].join('\n');
+  const s = buildSample({ requestedSec: 30, elapsedSec: 30, timeToFirstFrameMs: 500, stderr });
+  assert.equal(s.corruptErrors, 1, 'only the error after the first keyframe counts');
+  assert.ok(s.problemSamples.length >= 2, 'the join warnings are still logged');
+});
+
 test('packet timestamps: no reordering when pts equals dts, reordering when pts runs ahead', () => {
   const head = '#tb 0: 1/90000\n#media_type 0: video\n';
   const row = (dts: number, pts: number) => `0, ${dts}, ${pts}, 3600, 1000, 0x1`;

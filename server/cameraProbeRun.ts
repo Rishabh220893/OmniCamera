@@ -13,7 +13,6 @@ export interface ProbeTarget {
   /** The WebRTC (WHEP) port on the same host. */
   whepPort: number;
   credentials: (cameraId: string) => Credentials;
-  transport?: 'tcp' | 'udp';
   sampleSec?: number;
 }
 
@@ -38,7 +37,7 @@ async function whep(host: string, port: number, id: string, prefix: string) {
 }
 
 export async function probeCamera(id: string, t: ProbeTarget): Promise<ProbeReport> {
-  const transport = t.transport ?? 'tcp';
+  const transport = 'tcp' as const; // the integrator guide requires TCP; UDP is not offered
   const sampleSec = t.sampleSec ?? 30;
   const cred = t.credentials(id);
   const redact = (s: string) => s.replace(/\r/g, '').split(cred.pass).join('***').split(urlEncode(cred.pass)).join('***').replace(/rtsp:\/\/[^@\s]*@/g, 'rtsp://***@');

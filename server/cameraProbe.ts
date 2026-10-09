@@ -33,7 +33,8 @@ export interface SourceOptions {
   /** rtsp://… for a camera, or a file path for the lab. */
   url: string;
   rtsp: boolean;
-  transport: 'tcp' | 'udp';
+  /** RTSP is always pulled over TCP (integrator guide). */
+  transport: 'tcp';
   sampleSec: number;
   /** Removes credentials from any text that ends up in a report. */
   redact?: (text: string) => string;
