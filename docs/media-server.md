@@ -179,3 +179,39 @@ Profiles are kept in Postgres, so this needs `DATABASE_URL`. Only admins can use
 | `MEDIA_MAX_TRANSCODES` | 6 | How many re-encodes fit at once on this machine; only used for the "fits about N at once" line. |
 | `MEDIA_API_URL` | derived | The media server's control API, if it is not `http://127.0.0.1:9997` on this machine. |
 | `GRID_WHEP_PORT` | 8889 | The WebRTC port probed on the camera host. |
+
+
+## Self-healing and re-probing (step 5)
+
+The media server can fail on a camera after it was profiled: the grid starts dropping packets and MediaMTX's HLS muxer dies (`unable to extract DTS: too many reordered frames`).
+Self-healing follows MediaMTX's log, and when a camera keeps failing it moves one step down the ladder instead of leaving viewers on a broken tile:
+
+```
+direct (A) -> re-encode (floor B) -> snapshots (floor F)        re-encoded cameras (B, C, D) go straight to snapshots
+```
+
+- **It starts in dry run.** It records what it *would* change (Registry > Playback profiles > Self-healing > recent changes) and changes nothing. Read those for a day,
+  then set `MEDIA_SELF_HEAL=on`. In `on` mode a change is also applied to the running media server, one path, without a restart, and written to the paths file.
+- **A person always wins.** A camera with a manual override is never moved. "Reset to measured" (the arrow on a row) clears a move.
+- **A camera comes back up** only after it probes clean twice in a row, at least 24 hours after it was moved, and one step at a time. Cameras that are damaged by nature stay put until reset.
+- It needs the media server on the same machine (it reads the log, `MEDIA_LOG`, default `media-server/bin/mediamtx.log`, and calls the control API). Otherwise the panel says it is not
+  watching, and only re-probing runs. Postgres is needed too (`DATABASE_URL`).
+- Login refusals (401) from the camera host are not failures: the grid does that when too many streams start at once. They are counted and ignored.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MEDIA_SELF_HEAL` | `dry` | `dry`, `on` or `off` |
+| `MEDIA_LOG` | `media-server/bin/mediamtx.log` | MediaMTX's log file (the media server must log to it: `scripts/demo.mjs` does) |
+| `MEDIA_HEAL_SITE` | `grid` | The site self-healing and re-probing work on |
+| `MEDIA_HEAL_FAILURES` | 3 | Failures of one kind that move a camera down |
+| `MEDIA_HEAL_WINDOW_MIN` | 10 | ...within this many minutes |
+| `MEDIA_HEAL_COOLDOWN_MIN` | 30 | No further automatic change to a camera for this long |
+| `MEDIA_HEAL_PROMOTE_PROBES` | 2 | Clean probes in a row needed to move a camera back up |
+| `MEDIA_HEAL_PROMOTE_HOURS` | 24 | Minimum time since the move before it can be undone |
+| `MEDIA_REPROBE` | off | `on` turns on scheduled re-probing |
+| `MEDIA_REPROBE_HOURS` | 24 | How often a healthy camera is probed again |
+| `MEDIA_REPROBE_FAILING_MIN` | 60 | How often a camera whose last probe failed is probed again |
+| `MEDIA_REPROBE_HEALED_HOURS` / `MEDIA_REPROBE_UNSUPPORTED_HOURS` | 6 / 6 | Moved-down cameras, and cameras with no video |
+| `MEDIA_REPROBE_PER_HOUR` / `MEDIA_REPROBE_BATCH` | 6 / 2 | At most this many cameras per rolling hour, and per run. Probes use the camera account's watch time |
+
+When a re-probe changes how a camera is played, that is recorded too (`reprobe`), and in `on` mode applied.

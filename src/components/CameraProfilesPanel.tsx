@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Download, Loader2, Pencil, Play, RefreshCw, Search, ServerCog, Square } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Download, History, Loader2, Pencil, Play, RefreshCw, RotateCcw, Search, ServerCog, Square } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { profilesApi } from '../lib/cameraProfiles';
 import {
-  FLAG_LABEL, RECIPE_CODES, RECIPE_LABEL, ageLabel, filterViews, measuredLine, recipeTone,
-  type MediaApplyResponse, type ProfilesResponse, type RecipeCode,
+  CHANGE_SOURCE_LABEL, FLAG_LABEL, RECIPE_CODES, RECIPE_LABEL, ageLabel, filterViews, measuredLine, recipeTone,
+  type MediaApplyResponse, type ProfilesResponse, type RecipeChangeView, type RecipeCode,
 } from '../lib/cameraProfileView';
 
 const PAGE_SIZE = 20;
@@ -33,6 +33,7 @@ export default function CameraProfilesPanel({ isAdmin, registryGridIds, site = '
   const [media, setMedia] = useState<MediaApplyResponse | null>(null);
   const [confirmApply, setConfirmApply] = useState(false);
   const [page, setPage] = useState(0);
+  const [history, setHistory] = useState<{ id: string; changes: RecipeChangeView[] } | null>(null);
   const wasRunning = useRef(false);
 
   const load = useCallback(async () => {
@@ -87,6 +88,17 @@ export default function CameraProfilesPanel({ isAdmin, registryGridIds, site = '
     await profilesApi.setOverride(site, editing.id, recipe, recipe ? editing.reason : null);
     setEditing(null);
     await load();
+  });
+  const doReset = (id: string) => act('reset', async () => {
+    const r = await profilesApi.resetHeal(site, id);
+    setNotice(r.reset
+      ? `${id} goes back to the way it was measured.${data?.heal?.mode === 'on' ? ' The media server is being updated.' : ' Use "Apply to the media server" to make the media server follow.'}`
+      : `${id} had nothing to reset.`);
+    await load();
+  });
+  const toggleHistory = (id: string) => act('history', async () => {
+    if (history?.id === id) { setHistory(null); return; }
+    setHistory({ id, changes: (await profilesApi.changes(site, id)).changes });
   });
   const doMedia = (dryRun: boolean) => act(dryRun ? 'preview' : 'apply', async () => {
     setConfirmApply(false);
@@ -179,6 +191,58 @@ export default function CameraProfilesPanel({ isAdmin, registryGridIds, site = '
             </div>
           )}
 
+          {/* Self-healing and re-probing */}
+          {data?.heal && (
+            <div className="rounded-xl border border-border p-4 space-y-3" data-testid="self-heal">
+              <div className="flex items-start gap-3">
+                <Activity className="w-4 h-4 text-ink-muted mt-0.5 shrink-0" strokeWidth={1.75} />
+                <div className="space-y-1 min-w-0">
+                  <p className="text-sm font-semibold text-ink flex flex-wrap items-center gap-2">
+                    Self-healing
+                    <span className={cn('badge', data.heal.mode === 'on' ? 'badge-success' : data.heal.mode === 'dry' ? 'badge-warning' : 'badge-neutral')}>
+                      {data.heal.mode === 'on' ? 'On' : data.heal.mode === 'dry' ? 'Dry run' : 'Off'}
+                    </span>
+                    {data.heal.transcodes && (
+                      <span className={cn('badge', data.heal.transcodes.over ? 'badge-critical' : 'badge-neutral')} title="Re-encodes running on the media server now, against how many this machine fits at once">
+                        Re-encoding {data.heal.transcodes.running.length} of {data.heal.transcodes.slots}
+                      </span>
+                    )}
+                  </p>
+                  <p className="text-xs text-ink-muted">
+                    {data.heal.mode === 'dry'
+                      ? 'Watches the media server and records which cameras it WOULD move to a safer way of playing, without changing anything. Set MEDIA_SELF_HEAL=on to let it act.'
+                      : data.heal.mode === 'on'
+                        ? `Moves a camera one step down (direct, then re-encoded, then snapshots) after ${data.heal.config.failures} failures in ${data.heal.config.windowMin} minutes, and back up after ${data.heal.config.promoteProbes} clean probes at least ${data.heal.config.promoteHours} hours later.`
+                        : 'Self-healing is off.'}
+                  </p>
+                  {!data.heal.listening && data.heal.mode !== 'off' && (
+                    <p className="text-xs text-warning">Not watching the media server: {data.heal.listenError || 'its log cannot be read'}. Cameras are only re-checked by probes.</p>
+                  )}
+                  {data.heal.lastError && <p className="text-xs text-critical break-words">{data.heal.lastError}</p>}
+                  <p className="text-[11px] text-ink-muted">
+                    Seen: {data.heal.counters.failureEvents} failure{data.heal.counters.failureEvents === 1 ? '' : 's'}
+                    {data.heal.counters.ignoredAuth > 0 && ` (and ${data.heal.counters.ignoredAuth} login refusals from the camera host, ignored)`}
+                    {' · '}{data.heal.mode === 'on' ? `${data.heal.counters.demotions} moved down, ${data.heal.counters.promotions} back up` : `${data.heal.counters.wouldDemote} would have moved`}
+                    {data.heal.reprobe.enabled ? ` · re-probing on: ${data.heal.reprobe.startedLastHour} started in the last hour` : ' · scheduled re-probing is off (MEDIA_REPROBE=on)'}
+                  </p>
+                </div>
+              </div>
+              {data.heal.recent.length > 0 && (
+                <ul className="text-xs divide-y divide-border rounded-lg border border-border" aria-label="Recent changes">
+                  {data.heal.recent.map((c, i) => (
+                    <li key={`${c.cameraId}-${c.at}-${i}`} className="px-3 py-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="font-mono font-semibold text-ink">{c.cameraId}</span>
+                      <span className="text-ink-muted">{RECIPE_LABEL[c.from]?.short ?? c.from} → {RECIPE_LABEL[c.to]?.short ?? c.to}</span>
+                      <span className={cn('badge', c.source === 'dry' ? 'badge-warning' : 'badge-neutral')}>{CHANGE_SOURCE_LABEL[c.source]}</span>
+                      <span className="text-ink-muted flex-1 min-w-[160px]">{c.trigger}</span>
+                      <span className="text-[10px] text-ink-muted" title={c.at}>{ageLabel(c.at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {/* Empty state */}
           {data && views.length === 0 && (
             <div className="text-center py-10 space-y-2">
@@ -204,10 +268,17 @@ export default function CameraProfilesPanel({ isAdmin, registryGridIds, site = '
                           <span className="text-sm font-semibold text-ink font-mono">{v.cameraId}</span>
                           <span className={cn('badge whitespace-nowrap', recipeTone(v.recipe))} title={RECIPE_LABEL[v.recipe].long}>{RECIPE_LABEL[v.recipe].short}</span>
                           {v.override && <span className="badge badge-warning whitespace-nowrap" title={`The measurements chose ${RECIPE_LABEL[v.naturalRecipe].short}`}>Overridden</span>}
+                          {v.heal && !v.override && <span className="badge badge-warning whitespace-nowrap" title={v.heal.reason}>Moved by self-healing</span>}
                           {v.recipe !== 'F' && v.recipe !== 'G' && !v.gridLive && <span className="badge badge-neutral whitespace-nowrap" title="The first picture takes over 30 seconds, so the grid shows snapshots and this camera goes live only when you focus it.">Snapshot in grid</span>}
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           <span className="text-[10px] text-ink-muted" title={v.probedAt ?? undefined}>probed {ageLabel(v.probedAt)}</span>
+                          {v.heal && (
+                            <button onClick={() => doReset(v.cameraId)} disabled={!!busy} className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center"
+                              aria-label={`Reset ${v.cameraId} to the way it was measured`} title="Undo the move and go back to the measured choice"><RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
+                          )}
+                          <button onClick={() => { void toggleHistory(v.cameraId); }} className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center"
+                            aria-label={`Show the changes made to ${v.cameraId}`} aria-expanded={history?.id === v.cameraId} title="History of changes"><History className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
                           <button onClick={() => setEditing(isEditing ? null : { id: v.cameraId, recipe: v.override ?? 'auto', reason: v.overrideReason ?? '' })}
                             className="btn-ghost !p-2 min-w-[36px] min-h-[36px] flex items-center justify-center" aria-label={`Change how ${v.cameraId} is played`} title="Override the recommendation"><Pencil className="w-3.5 h-3.5" strokeWidth={1.75} /></button>
                         </div>
@@ -224,6 +295,14 @@ export default function CameraProfilesPanel({ isAdmin, registryGridIds, site = '
                       {v.notes.map((n) => <p key={n} className="text-[11px] text-ink-muted">{n}</p>)}
                       {v.flags.length > 0 && <div className="flex flex-wrap gap-1.5">{v.flags.map((f) => <span key={f} className="badge badge-neutral">{FLAG_LABEL[f] ?? f}</span>)}</div>}
                       {v.override && !isEditing && <p className="text-xs text-warning">Override reason: {v.overrideReason}</p>}
+                      {v.heal && !v.override && <p className="text-xs text-warning">Self-healing since {ageLabel(v.heal.at)}: {v.heal.reason}</p>}
+                      {history?.id === v.cameraId && (
+                        <div className="rounded-lg bg-surface-muted p-3 text-xs space-y-1" aria-live="polite">
+                          {history.changes.length === 0 ? <p className="text-ink-muted">No changes recorded for {v.cameraId}.</p> : history.changes.map((c, i) => (
+                            <p key={`${c.at}-${i}`} className="text-ink-muted"><span className="text-ink font-semibold">{RECIPE_LABEL[c.from]?.short ?? c.from} → {RECIPE_LABEL[c.to]?.short ?? c.to}</span> · {CHANGE_SOURCE_LABEL[c.source]} · {c.trigger} · <span title={c.at}>{ageLabel(c.at)}</span></p>
+                          ))}
+                        </div>
+                      )}
                       {isEditing && editing && (
                         <div className="rounded-xl bg-surface-muted p-3 flex flex-wrap items-end gap-3">
                           <label className="text-xs font-semibold text-ink space-y-1">

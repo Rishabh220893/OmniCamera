@@ -59,6 +59,12 @@ export interface DecideOptions {
   closedEarlyRuns?: number;
   /** A manual override: use this recipe whatever the measurements say. The reason keeps what the table would have chosen. */
   force?: Recipe;
+  /**
+   * Set by self-healing (server/selfHeal.ts) after the media server failed on this camera at runtime: the camera may not use a
+   * recipe cheaper than this. B means "re-encode even though the probe saw a clean stream", F means "snapshots only". It sits
+   * between the measurements and a manual override, which always wins.
+   */
+  heal?: { recipe: 'B' | 'F'; reason: string } | null;
 }
 
 const sec = (ms: number | null | undefined) => (ms == null ? null : ms / 1000);
@@ -84,8 +90,28 @@ export function healthScore(r: ProbeReport): number {
 }
 
 export function decide(r: ProbeReport, opts: DecideOptions = {}): Decision {
-  const natural = decideFromMeasurements(r, opts);
+  const measured = decideFromMeasurements(r, opts);
+  const natural = opts.heal ? healed(r, measured, opts.heal, opts.encoder ?? 'qsv') : measured;
   return opts.force && opts.force !== natural.recipe ? forced(r, natural, opts.force) : natural;
+}
+
+/** Applies a self-heal floor. A camera that is already F or G, or already re-encoded, is not affected by a floor of B. */
+function healed(r: ProbeReport, natural: Decision, heal: NonNullable<DecideOptions['heal']>, encoder: EncoderKind): Decision {
+  if (natural.recipe === 'F' || natural.recipe === 'G') return natural;
+  const note = `Self-heal: ${heal.reason}`;
+  const snapshots = (why: string): Decision => ({
+    ...natural, recipe: 'F', transcode: false, encode: null, gridLive: false, focusRecipe: null, wanted: natural.recipe,
+    reason: `${why} (measured as ${natural.recipe}: ${natural.reason})`, cause: 'Moved to snapshots by self-heal',
+  });
+  if (heal.recipe === 'F') return snapshots(`${note}; snapshots until the camera has probed clean again`);
+  if (natural.transcode) return natural; // already re-encoded: a floor of B asks for nothing more
+  if (encoder === 'none') return snapshots(`${note}; it needs a re-encode but this machine has no hardware encoder`);
+  const d = r.describe, tall = (d?.height ?? 0) > THRESHOLDS.highResHeight;
+  return {
+    ...natural, recipe: tall ? 'D' : 'B', transcode: true, focusRecipe: null,
+    encode: { inputCodec: d?.codec ?? 'h264', bframes: 0, gopFrames: 30, maxHeight: tall ? THRESHOLDS.highResHeight : null },
+    reason: `${note}; re-encoded to clean H.264 (measured as A: ${natural.reason})`, cause: 'Re-encoded after the direct stream failed',
+  };
 }
 
 const LIVE: Recipe[] = ['A', 'B', 'C', 'D'];

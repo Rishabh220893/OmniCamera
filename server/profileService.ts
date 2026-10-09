@@ -18,7 +18,7 @@ const RECIPE_CODES: RecipeCode[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 export function profileView(row: ProfileRow, encoder: EncoderKind): ProfileView {
   const r = row.report, s = r.sample, d = r.describe;
   const natural = decide(r, { encoder });
-  const dec = decide(r, { encoder, force: (row.override as Recipe | null) ?? undefined });
+  const dec = decide(r, { encoder, force: (row.override as Recipe | null) ?? undefined, heal: row.healFloor ?? null });
   const has = !!s && s.frames > 0;
   return {
     cameraId: r.cameraId, site: r.site, probedAt: r.probedAt, failure: r.failure, failureDetail: r.failureDetail, notes: r.notes ?? [],
@@ -30,6 +30,7 @@ export function profileView(row: ProfileRow, encoder: EncoderKind): ProfileView 
     flags: r.flags,
     recipe: dec.recipe, naturalRecipe: natural.recipe, reason: dec.reason, cause: dec.cause ?? dec.reason,
     override: (row.override as RecipeCode | null) ?? null, overrideReason: row.overrideReason,
+    heal: row.healFloor ?? null,
     transcode: dec.transcode, gridLive: dec.gridLive, speed: dec.speed, webrtcFocus: dec.focusRecipe === 'E', health: dec.health,
     lastFailure: row.lastFailure ? { at: row.lastFailure.probedAt, failure: row.lastFailure.failure, detail: row.lastFailure.detail, inARow: row.lastFailure.inARow, limit: FAILURES_BEFORE_REPLACING_PROFILE } : null,
     pathKind: dec.recipe === 'F' || dec.recipe === 'G' || dec.recipe === 'E' ? 'none' : dec.transcode ? 're-encode' : 'pull',

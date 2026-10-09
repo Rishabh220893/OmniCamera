@@ -40,6 +40,8 @@ export interface ProfileView {
   webrtcFocus: boolean;
   health: number;
   pathKind: 'pull' | 're-encode' | 'none';
+  /** Set when self-healing moved this camera down after the media server kept failing on it. */
+  heal: { recipe: 'B' | 'F'; reason: string; at: string } | null;
   /** Set when the latest probe failed but the measurements above are from an earlier, good one. */
   lastFailure: { at: string; failure: string; detail: string | null; inARow: number; limit: number } | null;
 }
@@ -69,8 +71,34 @@ export interface ProbeJobStatus {
   message: string | null;
 }
 
+/** One change of how a camera is played (a row of recipe_changes). */
+export interface RecipeChangeView {
+  cameraId: string;
+  at: string;
+  from: RecipeCode;
+  to: RecipeCode;
+  /** auto = self-heal acted; dry = self-heal only said what it would do; reprobe = a re-probe changed the choice; manual = a person did. */
+  source: 'auto' | 'dry' | 'reprobe' | 'manual';
+  trigger: string;
+}
+
+export interface HealView {
+  mode: 'off' | 'dry' | 'on';
+  /** Whether the media server's log is being followed. Without it only re-probing runs. */
+  listening: boolean;
+  listenError: string | null;
+  config: { failures: number; windowMin: number; cooldownMin: number; promoteProbes: number; promoteHours: number };
+  counters: { failureEvents: number; ignoredAuth: number; demotions: number; wouldDemote: number; promotions: number; reprobeChanges: number; skippedOverride: number; applyErrors: number };
+  lastError: string | null;
+  recent: RecipeChangeView[];
+  reprobe: { enabled: boolean; lastRunAt: string | null; lastIds: string[]; startedLastHour: number; nextDue: Array<{ cameraId: string; cls: string }>; error: string | null };
+  /** Re-encodes running now against the slots this machine fits; null when the media server's API is not reachable. */
+  transcodes: { running: string[]; slots: number; over: boolean } | null;
+}
+
 export interface ProfilesResponse {
   views: ProfileView[];
+  heal: HealView | null;
   summary: ProfileSummary;
   probe: ProbeJobStatus;
   /** Whether the server can change the media server (a MediaMTX control API is configured). */
@@ -97,6 +125,10 @@ export const RECIPE_LABEL: Record<RecipeCode, { short: string; long: string }> =
   E: { short: 'WebRTC', long: 'direct WebRTC for the focused camera' },
   F: { short: 'Snapshots only', long: 'no live video, snapshots' },
   G: { short: 'Unsupported', long: 'no usable video from this camera' },
+};
+
+export const CHANGE_SOURCE_LABEL: Record<RecipeChangeView['source'], string> = {
+  auto: 'Moved automatically', dry: 'Would have moved (dry run)', reprobe: 'Changed by a re-probe', manual: 'Changed by hand',
 };
 
 export const RECIPE_CODES: RecipeCode[] = ['A', 'B', 'C', 'D', 'F', 'G'];

@@ -18,6 +18,12 @@ import { createFirestoreEventStore, createPostgresEventStore, createTeeEventStor
 import { createFirestoreLeases } from './server/leaseStore';
 import { trimLiveManifest } from './server/hlsManifest';
 import { createProfileStore, RECIPES, type ProfileStore } from './server/cameraProfile';
+import { createSelfHealer, healConfigFromEnv, healModeFromEnv, type SelfHealer } from './server/selfHeal';
+import { createMediaLogParser } from './server/mediaEvents';
+import { tailFile, type LogTail } from './server/logTail';
+import { createReprobeScheduler, reprobeConfigFromEnv, reprobeEnabledFromEnv, type ReprobeScheduler } from './server/reprobeScheduler';
+import { fetchActivePaths, runningTranscodes } from './server/mediaWatch';
+import type { HealView, RecipeCode } from './src/lib/cameraProfileView';
 import { applyToMedia, importSaved, listViews, saveReport, summarize } from './server/profileService';
 import { createProbeJob } from './server/probeJob';
 import { probeCamera, type ProbeTarget } from './server/cameraProbeRun';
@@ -1558,12 +1564,89 @@ Analyze this context to answer user queries:
     return '';
   })();
 
+  /** What the Registry shows about self-healing, re-probing and running re-encodes. null when self-healing is off or has not started. */
+  async function healView(store: ProfileStore, site: string, views: Array<{ cameraId: string; transcode: boolean }>): Promise<HealView | null> {
+    if (!healer) return null;
+    const s = healer.status();
+    const rs = reprobe ? await reprobe.status() : null;
+    let transcodes: HealView['transcodes'] = null;
+    if (mediaApiUrl) {
+      try {
+        const r = runningTranscodes(await fetchActivePaths(mediaApiUrl), views.filter((v) => v.transcode).map((v) => v.cameraId), profileSlots);
+        transcodes = { running: r.running, slots: r.slots, over: r.over };
+      } catch { transcodes = null; }
+    }
+    return {
+      mode: s.mode, listening: healTail !== null && healTail.error() === null, listenError: healTail?.error() ?? (healTail ? null : s.listenError ?? 'The media server is not on this machine, so its log is not followed.'),
+      config: { failures: s.config.failures, windowMin: s.config.windowMs / 60_000, cooldownMin: s.config.cooldownMs / 60_000, promoteProbes: s.config.promoteProbes, promoteHours: s.config.promoteAfterMs / 3_600_000 },
+      counters: s.counters, lastError: s.lastError,
+      recent: (await store.changes(site, null, 8)).map((c) => ({ cameraId: c.cameraId, at: c.at, from: c.from as RecipeCode, to: c.to as RecipeCode, source: c.source, trigger: c.trigger })),
+      reprobe: { enabled: rs?.enabled ?? false, lastRunAt: rs?.lastRunAt ?? null, lastIds: rs?.lastIds ?? [], startedLastHour: rs?.startedLastHour ?? 0, nextDue: (rs?.nextDue ?? []).map((d) => ({ cameraId: d.cameraId, cls: d.cls })), error: rs?.error ?? null },
+      transcodes,
+    };
+  }
+
   let probeTarget: ProbeTarget | null = null;
   let probeStore: ProfileStore | null = null;
+  let healer: SelfHealer | null = null;
+  let healTail: LogTail | null = null;
+  let reprobe: ReprobeScheduler | null = null;
+  const healSite = siteName(process.env.MEDIA_HEAL_SITE);
   const probeJob = createProbeJob({
     probe: (id) => probeCamera(id, probeTarget!),
-    save: (report) => saveReport(probeStore!, report, profileEncoder),
+    save: async (report) => {
+      const store = probeStore!;
+      const prev = healer ? await store.getProfile(report.site, report.cameraId) : null;
+      await saveReport(store, report, profileEncoder);
+      if (healer && report.site === healSite) await healer.afterProbe(report, prev);
+    },
   });
+
+  /** Points the probe at a site and starts a run. Shared by the Registry button and the re-probe scheduler. */
+  function beginProbe(store: ProfileStore, site: string, ids: string[], sampleSec: number): { ok: true } | { ok: false; status: number; error: string } {
+    try { credentialResolver(site, process.env)(ids[0]); }
+    catch (e) { return { ok: false, status: 400, error: e instanceof Error ? e.message : 'No camera login is set.' }; }
+    const build = pathBuildOptionsFromEnv(site, process.env);
+    probeTarget = { site, source: build.site, whepPort: Number(process.env.GRID_WHEP_PORT || 8889), credentials: build.credentials, sampleSec };
+    probeStore = store;
+    return probeJob.start(ids) ? { ok: true } : { ok: false, status: 409, error: 'A probe is already running.' };
+  }
+
+  // ---- Self-healing and scheduled re-probing (docs/camera-onboarding-plan.md section 7) ----
+  // MEDIA_SELF_HEAL=dry (default) | on | off. It follows MediaMTX's log (MEDIA_LOG), so it only works when the media server runs on this machine.
+  const healMode = healModeFromEnv(process.env);
+  const healConfig = healConfigFromEnv(process.env);
+  const mediaLogFile = process.env.MEDIA_LOG || path.join(process.cwd(), 'media-server', 'bin', 'mediamtx.log');
+  const generatedPathsFile = () => process.env.MEDIA_PATHS_FILE || path.join(process.cwd(), 'media-server', 'bin', 'paths.generated.yml');
+  async function initSelfHeal() {
+    const store = await profileStore();
+    if (!store || healMode === 'off') return;
+    healer = createSelfHealer({
+      store, site: healSite, encoder: profileEncoder, mode: healMode, cfg: healConfig, log: (m) => console.log(m),
+      apply: async () => {
+        if (!mediaApiUrl) return ["the media server's control API is not reachable from this server; run scripts/media-config.ts apply on its machine"];
+        const build = pathBuildOptionsFromEnv(healSite, process.env);
+        build.credentials('cam01');
+        return (await applyToMedia(store, { site: healSite, encoder: profileEncoder, build, api: mediaApiUrl, dryRun: false, pathsFile: generatedPathsFile() })).errors;
+      },
+    });
+    if (mediaApiUrl) {
+      const parser = createMediaLogParser();
+      healTail = tailFile(mediaLogFile, (line) => { const ev = parser.feed(line); if (ev) void healer?.onEvent(ev); });
+    }
+    console.log('[HEAL] self-heal ' + healMode + '; ' + (mediaApiUrl ? 'following ' + mediaLogFile : 'the media server is not on this machine, so its log is not followed'));
+    if (reprobeEnabledFromEnv(process.env)) {
+      reprobe = createReprobeScheduler({
+        list: () => store.listProfiles(healSite),
+        busy: () => probeJob.status().state === 'running',
+        start: (ids) => beginProbe(store, healSite, ids, 30).ok,
+        cfg: reprobeConfigFromEnv(process.env), log: (m) => console.log(m),
+      });
+      reprobe.startTimer();
+      console.log('[REPROBE] scheduled re-probing is on');
+    }
+  }
+  void initSelfHeal().catch((e) => console.warn('[HEAL] could not start:', e instanceof Error ? e.message : e));
 
   type ProfileHandler = (store: ProfileStore, site: string, req: express.Request, res: express.Response) => Promise<void>;
   const profileRoute = (handler: ProfileHandler): express.RequestHandler => async (req, res) => {
@@ -1581,7 +1664,7 @@ Analyze this context to answer user queries:
   app.get('/api/camera-profiles', profileRoute(async (store, site, _req, res) => {
     const views = await listViews(store, site, profileEncoder);
     res.setHeader('Cache-Control', 'no-store');
-    res.json({ views, summary: summarize(views, profileSlots), probe: probeJob.status(), canApplyMedia: mediaApiUrl !== '', encoder: profileEncoder });
+    res.json({ views, heal: await healView(store, site, views), summary: summarize(views, profileSlots), probe: probeJob.status(), canApplyMedia: mediaApiUrl !== '', encoder: profileEncoder });
   }));
 
   app.post('/api/camera-profiles/import', profileRoute(async (store, site, _req, res) => {
@@ -1596,12 +1679,8 @@ Analyze this context to answer user queries:
     const ids = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(x)) : [];
     if (ids.length === 0) { res.status(400).json({ error: "'cameraIds' must list at least one camera id." }); return; }
     const sampleSec = Math.min(120, Math.max(5, Number((req.body as { sampleSec?: unknown }).sampleSec) || 30));
-    try { credentialResolver(site, process.env)(ids[0]); }
-    catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : 'No camera login is set.' }); return; }
-    const build = pathBuildOptionsFromEnv(site, process.env);
-    probeTarget = { site, source: build.site, whepPort: Number(process.env.GRID_WHEP_PORT || 8889), credentials: build.credentials, sampleSec };
-    probeStore = store;
-    if (!probeJob.start(ids)) { res.status(409).json({ error: 'A probe is already running.', probe: probeJob.status() }); return; }
+    const started = beginProbe(store, site, ids, sampleSec);
+    if ('error' in started) { res.status(started.status).json({ error: started.error, probe: probeJob.status() }); return; }
     res.status(202).json({ probe: probeJob.status() });
   }));
 
@@ -1617,6 +1696,19 @@ Analyze this context to answer user queries:
     if (recipe !== null && (typeof reason !== 'string' || !reason.trim())) { res.status(400).json({ error: 'An override needs a reason.' }); return; }
     await store.setOverride(site, cameraId, recipe as string | null, recipe === null ? null : String(reason).trim().slice(0, 300));
     res.json({ ok: true });
+  }));
+
+  app.get('/api/camera-profiles/changes', profileRoute(async (store, site, req, res) => {
+    const id = typeof req.query.cameraId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(req.query.cameraId) ? req.query.cameraId : null;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ changes: await store.changes(site, id, 50) });
+  }));
+
+  app.post('/api/camera-profiles/heal/reset', profileRoute(async (_store, _site, req, res) => {
+    const { cameraId } = req.body as { cameraId?: unknown };
+    if (typeof cameraId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(cameraId)) { res.status(400).json({ error: "'cameraId' is required." }); return; }
+    if (!healer) { res.status(501).json({ error: 'Self-healing is off on this server (MEDIA_SELF_HEAL=off).' }); return; }
+    res.json({ reset: await healer.reset(cameraId) });
   }));
 
   app.post('/api/camera-profiles/apply-media', profileRoute(async (store, site, req, res) => {

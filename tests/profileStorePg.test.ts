@@ -69,3 +69,43 @@ test('store on PostgreSQL: a failed probe keeps the good profile until it has fa
     await pool.end();
   }
 });
+
+test('store on PostgreSQL: the self-heal floor and the change log round-trip, and a later probe keeps the floor', { skip: !URL && 'set TEST_DATABASE_URL to run against PostgreSQL' }, async () => {
+  const { Pool } = await import('pg');
+  const pool = new Pool({ connectionString: URL, max: 2 });
+  const site = `test-${randomBytes(4).toString('hex')}`;
+  const store = createProfileStore(pool);
+  const probe = (n: number): ProbeReport => ({ ...GRID_REPORTS[0], site, cameraId: 'camH', probedAt: `2026-10-09T11:0${n}:00.000Z` });
+  try {
+    await store.ensureSchema();
+    assert.equal(await store.getProfile(site, 'camH'), null);
+    await store.saveProbe(probe(0));
+    assert.equal((await store.getProfile(site, 'camH'))?.healFloor, null);
+
+    await store.setHealFloor(site, 'camH', { recipe: 'B', reason: '3 muxer crashes in 2 min', at: '2026-10-09T11:30:00.000Z' });
+    let row = await store.getProfile(site, 'camH');
+    assert.deepEqual(row?.healFloor, { recipe: 'B', reason: '3 muxer crashes in 2 min', at: '2026-10-09T11:30:00.000Z' });
+    assert.deepEqual((await store.listProfiles(site))[0].healFloor, row?.healFloor);
+
+    await store.saveProbe(probe(1)); // a new probe replaces the measurements, not the floor
+    assert.equal((await store.getProfile(site, 'camH'))?.healFloor?.recipe, 'B');
+
+    await store.recordChange({ site, cameraId: 'camH', at: '2026-10-09T11:30:00.000Z', from: 'A', to: 'B', source: 'auto', trigger: '3 muxer crashes in 2 min', evidence: { events: [{ kind: 'dts_error' }], rtpPacketsLost: 1000 } });
+    await store.recordChange({ site, cameraId: 'camH', at: '2026-10-09T12:00:00.000Z', from: 'B', to: 'F', source: 'dry', trigger: 'again', evidence: {} });
+    await store.recordChange({ site, cameraId: 'camOther', at: '2026-10-09T12:05:00.000Z', from: 'A', to: 'B', source: 'manual', trigger: 'x', evidence: {} });
+    const mine = await store.changes(site, 'camH');
+    assert.deepEqual(mine.map((c) => `${c.from}>${c.to}:${c.source}`), ['B>F:dry', 'A>B:auto'], 'newest first, this camera only');
+    assert.deepEqual(mine[1].evidence, { events: [{ kind: 'dts_error' }], rtpPacketsLost: 1000 });
+    assert.equal((await store.changes(site, null)).length, 3);
+    assert.equal((await store.changes(site, null, 1)).length, 1);
+
+    await store.setHealFloor(site, 'camH', null);
+    row = await store.getProfile(site, 'camH');
+    assert.equal(row?.healFloor, null);
+  } finally {
+    await pool.query(`DELETE FROM camera_profiles WHERE site = $1`, [site]);
+    await pool.query(`DELETE FROM probe_runs WHERE site = $1`, [site]);
+    await pool.query(`DELETE FROM recipe_changes WHERE site = $1`, [site]);
+    await pool.end();
+  }
+});

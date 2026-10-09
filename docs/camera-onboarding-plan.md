@@ -280,6 +280,41 @@ result to the running media server. How to use it: `docs/media-server.md`.
   became unsupported on the third.
 - **Left out on purpose:** the media server's own slot limit (step 5), and showing which cameras the registry already has next to the profiles.
 
+## Step 5 status
+
+Built: re-probe scheduling and self-healing. `server/mediaEvents.ts` (MediaMTX log line to typed event), `server/logTail.ts` (follows the log file),
+`server/selfHeal.ts` (the ladder, hysteresis, the change log), `server/reprobeScheduler.ts` (which cameras to probe again and when),
+`server/mediaWatch.ts` (how many re-encodes are running), a `heal` floor in `decide()` (`server/cameraRecipe.ts`), two Postgres additions
+(`camera_profiles.heal_*` and the `recipe_changes` table), and the Registry's Playback profiles panel (a self-healing card, a badge and reset per camera,
+a history per camera). Settings and how to use it: `docs/media-server.md`.
+
+Choices confirmed 2026-10-09: self-heal starts in **dry run** (1A); the numbers are **settings** with conservative defaults (2C); the **slot gate waits for step 6** (3B);
+failure events come from **both the log and the API** (4C).
+
+- **The ladder:** A -> floor B (re-encode) -> floor F (snapshots); B, C and D go straight to F. Never G: only a probe can say a camera has no video.
+  The floor is stored beside the measurements, so "reset to measured" clears it and a manual override always wins.
+- **Demote:** 3 failures of one class (muxer crash, source error, re-encode exit, start timeout) within 10 minutes, then a 30 minute cooldown.
+  Packet loss is recorded as evidence but is not a failure on its own.
+- **Promote:** one rung at a time, after 2 clean probes in a row and 24 hours since the move; the clock restarts at each rung. A "clean" probe has video and no damage,
+  packet loss or early close. So a camera that is damaged by nature (25 of the 30 grid cameras were) stays where self-healing put it until someone resets it.
+  That is deliberate: promoting a damaged camera is what caused the crash in the first place.
+- **A 401 never counts.** The real log from 2026-10-09 shows the grid refusing the login while several cameras start at once (`bad status code: 401`, then ffmpeg
+  exits). Counting those would have demoted healthy cameras whenever the account was throttled, so they are ignored and shown as a count.
+- **Re-probe:** off unless `MEDIA_REPROBE=on`. Healthy cameras daily, cameras whose last probe failed hourly, demoted and unsupported ones every 6 hours; at most 6 cameras per
+  hour, 2 per run, never while a probe is running.
+- **Every change has a row** in `recipe_changes` (who, why, the log lines, how many RTP packets were lost), and the panel shows them.
+
+Checked: new tests for the log parser (on lines from the real MediaMTX log and from the cam14 incident), the tailer (growing, rotated and missing file), the ladder and its
+cooldown, a flapping camera, promotion one rung at a time, dry vs on, an override being respected, a failing apply, the scheduler's order and budget, and the store's SQL against a
+fake client. The whole suite passes with 3 tests skipped for lack of a PostgreSQL and a MediaMTX binary to run against. The panel was loaded in a browser against canned data (see below).
+
+- **Not covered:** the new SQL against a real PostgreSQL (`TEST_DATABASE_URL=... node --import tsx --test tests/profileStorePg.test.ts` now includes it; no database was
+  available when this was written); a real MediaMTX failing under a real camera while the healer watches. The patterns for the muxer crash, packet loss and exit lines
+  come from `scripts/check-media-health.mjs` and the cam14 notes, and only the 401 and "started on demand" lines were read from a real log, so run in dry mode first and read what it records.
+  The "timed out" pattern for a start timeout is a guess. Also not covered: scheduled re-probing against the real cameras, and `MEDIA_SELF_HEAL=on` applying to a live media server.
+- **Left for step 6:** the media server still does not refuse a seventh re-encode; the panel shows "Re-encoding N of 6" and turns red when it is over.
+- **Left out on purpose:** measuring twice and keeping the worse result (section 9) before a re-probe changes a recipe; probing only cameras someone watches or analyses (the budget per hour limits the load instead).
+
 ## Open points for step 1
 
 - Postgres schema details (column types, how a probe run references a site) and a migration approach.

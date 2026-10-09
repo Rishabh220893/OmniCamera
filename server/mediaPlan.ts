@@ -14,7 +14,7 @@ export function planMedia(rows: ProfileRow[], o: { encoder: EncoderKind; build: 
   const decisions = rows.map((row) => ({
     cameraId: row.report.cameraId,
     override: row.override,
-    decision: decide(row.report, { encoder: o.encoder, force: (row.override as Recipe | null) ?? undefined }),
+    decision: decide(row.report, { encoder: o.encoder, force: (row.override as Recipe | null) ?? undefined, heal: row.healFloor ?? null }),
   }));
   const { paths, skipped } = buildPaths(decisions, o.build);
   return { decisions, paths, skipped, managed: decisions.map((d) => d.cameraId) };

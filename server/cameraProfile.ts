@@ -334,6 +334,22 @@ CREATE TABLE IF NOT EXISTS camera_profiles (
 ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS decision JSONB;
 ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS latest_failure JSONB;
+ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS heal_floor  TEXT;
+ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS heal_reason TEXT;
+ALTER TABLE camera_profiles ADD COLUMN IF NOT EXISTS heal_at     TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS recipe_changes (
+  id          BIGSERIAL PRIMARY KEY,
+  site        TEXT        NOT NULL,
+  camera_id   TEXT        NOT NULL,
+  at          TIMESTAMPTZ NOT NULL,
+  from_recipe TEXT        NOT NULL,
+  to_recipe   TEXT        NOT NULL,
+  source      TEXT        NOT NULL,
+  trigger     TEXT        NOT NULL,
+  evidence    JSONB       NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS recipe_changes_camera_at ON recipe_changes (site, camera_id, at DESC);
+CREATE INDEX IF NOT EXISTS recipe_changes_site_at ON recipe_changes (site, at DESC);
 `;
 
 /**
@@ -346,8 +362,25 @@ export const FAILURES_BEFORE_REPLACING_PROFILE = 3;
 /** The most recent failed probe of a camera whose stored profile is an earlier, good one. */
 export interface LastFailure { probedAt: string; failure: string; detail: string | null; inARow: number }
 
+/** The lowest-cost recipe a camera may use at runtime, set by self-healing after the media server failed on it (see server/selfHeal.ts). */
+export interface HealFloor { recipe: 'B' | 'F'; reason: string; at: string }
+
+/** One change of how a camera is played, with who made it and why. `dry` = self-heal is in dry-run mode and only said what it would do. */
+export interface RecipeChange {
+  site: string;
+  cameraId: string;
+  at: string;
+  from: string;
+  to: string;
+  source: 'auto' | 'dry' | 'reprobe' | 'manual';
+  trigger: string;
+  evidence: Record<string, unknown>;
+}
+
 export interface ProfileRow {
   report: ProbeReport;
+  /** Self-heal floor, or null/absent. */
+  healFloor?: HealFloor | null;
   override: string | null;
   overrideReason: string | null;
   /** Set when the latest probe failed but the stored profile is still the earlier good one. */
@@ -376,6 +409,25 @@ export interface ProfileStore {
    */
   saveProbe(report: ProbeReport): Promise<SaveProbeResult>;
   history(site: string, cameraId: string, limit?: number): Promise<ProbeReport[]>;
+  /** One camera's current profile, or null. */
+  getProfile(site: string, cameraId: string): Promise<ProfileRow | null>;
+  /** Sets or clears (null) the self-heal floor. The change itself is recorded separately with recordChange. */
+  setHealFloor(site: string, cameraId: string, floor: HealFloor | null): Promise<void>;
+  recordChange(change: RecipeChange): Promise<void>;
+  /** Newest first. One camera, or the whole site when cameraId is null. */
+  changes(site: string, cameraId: string | null, limit?: number): Promise<RecipeChange[]>;
+}
+
+const PROFILE_COLUMNS = 'profile, recipe_override, override_reason, failure, consecutive_failures, latest_failure, heal_floor, heal_reason, heal_at';
+
+function rowToProfile(row: Record<string, unknown>): ProfileRow {
+  const lf = row.latest_failure as { probedAt: string; failure: string; detail: string | null } | null | undefined;
+  // Only when the stored profile is a good one: a stored failure already is the latest news.
+  const lastFailure: LastFailure | null = lf && row.failure === null ? { probedAt: lf.probedAt, failure: lf.failure, detail: lf.detail ?? null, inARow: Number(row.consecutive_failures) || 1 } : null;
+  const healFloor: HealFloor | null = row.heal_floor === 'B' || row.heal_floor === 'F'
+    ? { recipe: row.heal_floor, reason: String(row.heal_reason ?? ''), at: row.heal_at ? new Date(row.heal_at as string).toISOString() : '' }
+    : null;
+  return { report: row.profile as ProbeReport, override: (row.recipe_override as string | null) ?? null, overrideReason: (row.override_reason as string | null) ?? null, lastFailure, healFloor };
 }
 
 export function createProfileStore(pg: PgLike): ProfileStore {
@@ -410,13 +462,34 @@ export function createProfileStore(pg: PgLike): ProfileStore {
     },
 
     async listProfiles(site) {
-      const res = await pg.query(`SELECT profile, recipe_override, override_reason, failure, consecutive_failures, latest_failure FROM camera_profiles WHERE site = $1 ORDER BY camera_id`, [site]);
-      return res.rows.map((row) => {
-        const lf = row.latest_failure as { probedAt: string; failure: string; detail: string | null } | null | undefined;
-        // Only when the stored profile is a good one: a stored failure already is the latest news.
-        const lastFailure: LastFailure | null = lf && row.failure === null ? { probedAt: lf.probedAt, failure: lf.failure, detail: lf.detail ?? null, inARow: Number(row.consecutive_failures) || 1 } : null;
-        return { report: row.profile as ProbeReport, override: row.recipe_override ?? null, overrideReason: row.override_reason ?? null, lastFailure };
-      });
+      const res = await pg.query(`SELECT ${PROFILE_COLUMNS} FROM camera_profiles WHERE site = $1 ORDER BY camera_id`, [site]);
+      return res.rows.map(rowToProfile);
+    },
+
+    async getProfile(site, cameraId) {
+      const res = await pg.query(`SELECT ${PROFILE_COLUMNS} FROM camera_profiles WHERE site = $1 AND camera_id = $2`, [site, cameraId]);
+      return res.rows[0] ? rowToProfile(res.rows[0]) : null;
+    },
+
+    async setHealFloor(site, cameraId, floor) {
+      await pg.query(`UPDATE camera_profiles SET heal_floor = $3, heal_reason = $4, heal_at = $5 WHERE site = $1 AND camera_id = $2`,
+        [site, cameraId, floor?.recipe ?? null, floor?.reason ?? null, floor?.at ?? null]);
+    },
+
+    async recordChange(c) {
+      await pg.query(`INSERT INTO recipe_changes (site, camera_id, at, from_recipe, to_recipe, source, trigger, evidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [c.site, c.cameraId, c.at, c.from, c.to, c.source, c.trigger, JSON.stringify(c.evidence ?? {})]);
+    },
+
+    async changes(site, cameraId, limit = 50) {
+      const n = Math.min(Math.max(limit, 1), 500);
+      const res = cameraId === null
+        ? await pg.query(`SELECT * FROM recipe_changes WHERE site = $1 ORDER BY at DESC, id DESC LIMIT $2`, [site, n])
+        : await pg.query(`SELECT * FROM recipe_changes WHERE site = $1 AND camera_id = $2 ORDER BY at DESC, id DESC LIMIT $3`, [site, cameraId, n]);
+      return res.rows.map((r) => ({
+        site: r.site, cameraId: r.camera_id, at: new Date(r.at).toISOString(), from: r.from_recipe, to: r.to_recipe,
+        source: r.source, trigger: r.trigger, evidence: r.evidence ?? {},
+      }));
     },
 
     async saveDecision(site, cameraId, decision) {

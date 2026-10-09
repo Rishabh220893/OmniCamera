@@ -21,6 +21,10 @@ function memoryStore(initial: ProbeReport[] = []) {
     async saveDecision(site, cameraId, decision) { log.push(`decision ${cameraId} ${decision.recipe}`); const r = rows.get(`${site}/${cameraId}`); if (r) r.decision = decision; },
     async setOverride(site, cameraId, recipe, reason) { const r = rows.get(`${site}/${cameraId}`); if (r) { r.override = recipe; r.overrideReason = reason; } },
     async history() { return []; },
+    async getProfile(site, cameraId) { return rows.get(`${site}/${cameraId}`) ?? null; },
+    async setHealFloor(site, cameraId, floor) { const r = rows.get(`${site}/${cameraId}`); if (r) r.healFloor = floor; },
+    async recordChange() {},
+    async changes() { return []; },
   };
   return { store, rows, log };
 }

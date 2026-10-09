@@ -1,5 +1,5 @@
 import { auth } from './firebase';
-import type { MediaApplyResponse, ProbeJobStatus, ProfilesResponse, RecipeCode } from './cameraProfileView';
+import type { MediaApplyResponse, ProbeJobStatus, ProfilesResponse, RecipeChangeView, RecipeCode } from './cameraProfileView';
 
 /** Calls the server's playback-profile endpoints as the signed-in user (a guest in the local demo has no token, and the server allows that there). */
 async function call<T>(path: string, init: { method?: 'GET' | 'POST'; body?: unknown } = {}): Promise<T> {
@@ -21,5 +21,7 @@ export const profilesApi = {
   stopProbe: (site: string) => call<{ probe: ProbeJobStatus }>('/api/camera-profiles/probe/stop', { method: 'POST', body: { site } }),
   setOverride: (site: string, cameraId: string, recipe: RecipeCode | null, reason: string | null) =>
     call<{ ok: true }>('/api/camera-profiles/override', { method: 'POST', body: { site, cameraId, recipe, reason } }),
+  changes: (site: string, cameraId?: string) => call<{ changes: RecipeChangeView[] }>(`/api/camera-profiles/changes?site=${encodeURIComponent(site)}${cameraId ? `&cameraId=${encodeURIComponent(cameraId)}` : ''}`),
+  resetHeal: (site: string, cameraId: string) => call<{ reset: boolean }>('/api/camera-profiles/heal/reset', { method: 'POST', body: { site, cameraId } }),
   applyMedia: (site: string, dryRun: boolean) => call<MediaApplyResponse>('/api/camera-profiles/apply-media', { method: 'POST', body: { site, dryRun } }),
 };
