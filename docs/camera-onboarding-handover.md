@@ -3,6 +3,19 @@
 Written 2026-10-09. Read `docs/camera-onboarding-plan.md` for the design and the evidence; this file is where the work stands and what to do next.
 The plan has a status section per step. How to operate it day to day is in `docs/media-server.md` ("Paths generated from camera profiles", "The Registry screen").
 
+## 0. Start here: get the code
+
+Steps 1-4 live only on the branch, **not on `main`**. A new session that starts on `main` will not find any of it. First:
+```
+git fetch origin
+git checkout claude/camera-onboarding-step-1-ivp3tf
+git pull
+npm install
+npm test
+```
+Then work on that branch (commit and push to it). No pull request is needed for that. Open one only when the work should go into `main`; before merging, run the demo on the PC
+(`node scripts/demo.mjs up`) and confirm a re-encoded camera plays (section 5, item 1), since that is the one thing the tests cannot show. If it is merged first, start from `main` instead.
+
 ## 1. Where things are
 
 - **Branch:** `claude/camera-onboarding-step-1-ivp3tf`, about 15 commits ahead of `main` (`8a04f9e`, see `git log`). **Not merged. No pull request opened.** On the user's demo PC the step-3 start-up
@@ -104,5 +117,5 @@ for tests `MEDIAMTX_BIN`, `TEST_DATABASE_URL`, `SKIP_CAMERA_LAB`.
 
 ## 8. Suggested first message for the next session
 
-"Read docs/camera-onboarding-handover.md and docs/camera-onboarding-plan.md. Start step 5 (self-healing and re-probe). First tell me what you will do about the items in section 6 and in what order, and
+"Check out the branch claude/camera-onboarding-step-1-ivp3tf (it is not on main), then read docs/camera-onboarding-handover.md and docs/camera-onboarding-plan.md. Start step 5 (self-healing and re-probe). First tell me what you will do about the items in section 6 and in what order, and
 ask about anything that needs my hardware. The 'offline on port 3000' problem in section 5 item 2 is still open: here is the output: ..."
