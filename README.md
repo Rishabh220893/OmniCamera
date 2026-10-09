@@ -29,7 +29,7 @@ Plate search with exact matches, confirmable look-alike ("possible") matches, ro
 
 ## Media server (live video for many cameras)
 
-`media-server/` pulls each camera once and serves it to all browsers, so a wall of live tiles does not run through the app server. No signup or API key is needed for the software. Setup, hosting options and what was tested: [`docs/media-server.md`](docs/media-server.md).
+`media-server/` pulls each camera once and serves it to all browsers, so a wall of live tiles does not run through the app server. No signup or API key is needed for the software. Setup, hosting options and what was tested: [`docs/media-server.md`](docs/media-server.md). Which way each camera is played (direct, re-encoded, snapshots only) is measured and chosen per camera, with a Registry screen to review and override it: [`docs/camera-onboarding-plan.md`](docs/camera-onboarding-plan.md), status and next steps in [`docs/camera-onboarding-handover.md`](docs/camera-onboarding-handover.md).
 
 ## Deploy
 

@@ -1,6 +1,6 @@
 # Handover: what changed, what to check, what is left
 
-Companion to `docs/deployment.md` (how to deploy). Tab names below are the ones in the sidebar: **Feed, Logs, Registry, Settings, Guide**.
+Companion to `docs/deployment.md` (how to deploy). The camera onboarding work (probe, profiles, per-camera playback recipes, Registry "Playback profiles") has its own handover: `docs/camera-onboarding-handover.md`. Tab names below are the ones in the sidebar: **Feed, Logs, Registry, Settings, Guide**.
 
 ---
 

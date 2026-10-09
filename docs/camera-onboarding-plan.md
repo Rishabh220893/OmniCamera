@@ -1,7 +1,7 @@
 # Plan: a camera profile that picks each camera's best playback path
 
-Status: **plan only, nothing built yet** (written 2026-10-08; the five open decisions were answered the same day, see
-"Decisions" below). Today every special case is hand-kept and keyed on a grid
+Status: **steps 1-4 built, step 5 next** (written 2026-10-08; updated 2026-10-09; the five open decisions were answered on 2026-10-08, see
+"Decisions" below). Where things stand and what to do next: `docs/camera-onboarding-handover.md`. Today every special case is hand-kept and keyed on a grid
 camera id: `MEDIA_TRANSCODE_IDS` in `scripts/demo.mjs`, `GRID_HEALTH_ORDER` in `src/lib/cameraHealth.ts`, notes in
 `docs/media-server.md`. A real deployment has cameras with other names, codecs and faults, so this plan replaces those
 lists with something every new camera goes through.
@@ -148,14 +148,14 @@ would use up each account's watch time on the grid. So:
 
 ## 10. Order of work
 
-| Step | Work |
-|---|---|
-| 1 | Profile schema, plus a probe command running steps 1-3 on all 30 grid cameras, checked against the ground truth |
-| 2 | Decision engine and the synthetic lab with its tests |
-| 3 | Config generator replacing `MEDIA_TRANSCODE_IDS`, with hot reload |
-| 4 | Onboarding step in the Registry UI: results, recommended path, override |
-| 5 | Re-probe and self-healing |
-| 6 | Load test on the target machine, and docs |
+| Step | Work | State (2026-10-09) |
+|---|---|---|
+| 1 | Profile schema, plus a probe command running steps 1-3 on all 30 grid cameras, checked against the ground truth | Done. Run on the real grid: 28 of 30 gave video |
+| 2 | Decision engine and the synthetic lab with its tests | Done. All 15 lab cases give the right recipe; the grid replay gives 4 / 19 / 4 / 1 / 2 |
+| 3 | Config generator replacing `MEDIA_TRANSCODE_IDS`, with hot reload | Done. Checked against a real MediaMTX; the start-up from the generated file ran on the demo PC; a re-encode from it has not been confirmed playing |
+| 4 | Onboarding step in the Registry UI: results, recommended path, override | Done. Checked in a real browser with a real PostgreSQL and MediaMTX; not yet run on the demo PC |
+| 5 | Re-probe and self-healing | Not started. Brief: handover section 6 |
+| 6 | Load test on the target machine, and docs | Not started |
 
 ## Decisions (confirmed 2026-10-08)
 
@@ -280,19 +280,21 @@ result to the running media server. How to use it: `docs/media-server.md`.
   became unsupported on the third.
 - **Left out on purpose:** the media server's own slot limit (step 5), and showing which cameras the registry already has next to the profiles.
 
-## Open points for step 1
+## Open points from step 1, and how they ended
 
-- Postgres schema details (column types, how a probe run references a site) and a migration approach.
-- Which secret store holds the per-site secrets in a real deployment (environment variables are enough for the demo).
-- Whether the HLS endpoint `http://<host>/live/stream/<id>/index.m3u8` is reachable without the Cloudflare front door that
-  throttled the earlier `cctv.corp8.cloud` path (the probe will measure it per camera and record the answer).
+- **Postgres schema and migration:** `camera_profiles` and `probe_runs`, created and upgraded by `ensureSchema()` (idempotent `CREATE` and `ALTER ... ADD COLUMN IF NOT EXISTS`);
+  a probe run references its site by name. Checked on a real PostgreSQL 16.
+- **Where per-site secrets live:** environment variables (and `demo.local` / `scale.local`), named by site and camera (`server/siteSecrets.ts`). Enough for the demo; a secret store for
+  a real deployment is still open.
+- **Is the HLS endpoint reachable without the Cloudflare front door?** Still open: the probe measures RTSP and WHEP, not HLS (it would belong to the stage 4 "try each path through the media server" that
+  is not built).
 
 ## What is reused
 
 - `scripts/probe-grid.mjs`: base of the probe command.
 - `scripts/check-media-health.mjs`: step 4 of the probe.
 - The Quick Sync re-encode in `media-server/entrypoint.sh`: recipes B and C.
-- The ranking in `src/lib/cameraHealth.ts`: becomes the computed score.
+- The ranking in `src/lib/cameraHealth.ts`: becomes the computed score (the score is built in `healthScore()`; the list has not been replaced yet).
 
 ## Evidence this plan rests on (2026-10-08, demo PC: Celeron N4020, Intel UHD 600)
 
