@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
   AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Sparkles,
-  Grid2X2
+  Grid2X2, PanelsTopLeft
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { hasCachedSnapshot } from '../lib/snapshotCache';
@@ -12,6 +12,8 @@ import { useMediaConfig, mediaFailedCameras, gridCamId } from '../lib/mediaServe
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
+import FullPanel from './FullPanel';
+import type { TrackAlert, TrackingController } from '../lib/tracking';
 
 // 6 tiles per page: every one of them plays live. Only about six grid cameras stream cleanly (the others lose
 // packets at the grid itself, see src/lib/cameraHealth.ts), and the healthiest are listed first, so page 1 is
@@ -443,6 +445,12 @@ interface MonitorTabProps {
   onToggleAnalysisCamera: (id: string) => void;
   onJumpToLog: (logId: string) => void;
   onCameraStatusChange: (cameraId: string, status: FeedStatus) => void;
+  /** Background tracking (Full Panel), owned by App so alerts reach the screen on every tab. */
+  tracking: TrackingController;
+  panelOpenCameraId: string | null;
+  panelAlert: TrackAlert | null;
+  onPanelOpenCamera: (id: string) => void;
+  onPanelCloseCamera: () => void;
 }
 
 export default function MonitorTab({
@@ -450,7 +458,8 @@ export default function MonitorTab({
   cameraError, analysisError, logs, viewMode, onChangeViewMode, containerRef,
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
   onFallbackToSimulated, onChangeTab, streamAccessPassword, streamAccessEmail,
-  analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange
+  analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange,
+  tracking, panelOpenCameraId, panelAlert, onPanelOpenCamera, onPanelCloseCamera
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [gridFilter, setGridFilter] = useState('');
@@ -486,7 +495,8 @@ export default function MonitorTab({
 
   const pagedIds = useMemo(() => new Set(pagedCameras.map(c => c.id)), [pagedCameras]);
   const mountedCameras = useMemo(() => {
-    if (viewMode === 'focus') {
+    // The Full Panel loads nothing by itself; only cameras selected for the browser's analysis stay mounted (out of sight).
+    if (viewMode === 'focus' || viewMode === 'panel') {
       return cameras.filter(c => analysisCameraIds.has(c.id));
     }
     if (viewMode === 'matrix') {
@@ -504,6 +514,44 @@ export default function MonitorTab({
     return items.sort((a, b) => (a.log.isWatchlistMatch === b.log.isWatchlistMatch ? 0 : a.log.isWatchlistMatch ? -1 : 1));
   }, [logs]);
 
+  const viewSwitcher = (
+  <div className="ml-auto flex items-center gap-1 panel !p-1 bg-surface-muted border border-border rounded-xl">
+    <button
+      onClick={() => onChangeViewMode('focus')}
+      className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'focus' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+      title="Focused Spotlight View (Hotkey: G)"
+    >
+      <Rows3 className="w-3.5 h-3.5" strokeWidth={1.75} />
+      <span className="hidden sm:inline">Focus</span>
+    </button>
+    <button
+      onClick={() => onChangeViewMode('matrix')}
+      className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'matrix' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+      title="1+5 CCTV Matrix View (Hotkey: G)"
+    >
+      <Grid2X2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+      <span className="hidden sm:inline">1+5 Matrix</span>
+    </button>
+    <button
+      onClick={() => onChangeViewMode('grid')}
+      className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'grid' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+      title="Full Video Wall Grid (Hotkey: G)"
+    >
+      <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} />
+      <span className="hidden sm:inline">Wall Grid</span>
+    </button>
+    <button
+      onClick={() => onChangeViewMode('panel')}
+      className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'panel' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+      title="Full Panel: every camera as a tile, with background tracking"
+      data-testid="view-panel"
+    >
+      <PanelsTopLeft className="w-3.5 h-3.5" strokeWidth={1.75} />
+      <span className="hidden sm:inline">Full Panel</span>
+    </button>
+  </div>
+  );
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
@@ -514,7 +562,19 @@ export default function MonitorTab({
         <p className="text-sm text-ink-muted">Live camera monitoring and AI analysis.</p>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+      {viewMode === 'panel' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">{viewSwitcher}</div>
+          <FullPanel
+            cameras={cameras} activeCamera={activeCamera} tracking={tracking}
+            streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword}
+            openCameraId={panelOpenCameraId} openAlert={panelAlert}
+            onOpenCamera={(id) => { onSelectCamera(id); onPanelOpenCamera(id); }} onCloseCamera={onPanelCloseCamera}
+          />
+        </div>
+      )}
+
+      <div className={cn('grid grid-cols-1 xl:grid-cols-4 gap-8', viewMode === 'panel' && 'hidden')}>
       <div className="min-w-0 xl:col-span-3 space-y-6">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar lg:hidden">
@@ -540,32 +600,7 @@ export default function MonitorTab({
               />
             </div>
           )}
-          <div className="ml-auto flex items-center gap-1 panel !p-1 bg-surface-muted border border-border rounded-xl">
-            <button
-              onClick={() => onChangeViewMode('focus')}
-              className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'focus' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
-              title="Focused Spotlight View (Hotkey: G)"
-            >
-              <Rows3 className="w-3.5 h-3.5" strokeWidth={1.75} />
-              <span className="hidden sm:inline">Focus</span>
-            </button>
-            <button
-              onClick={() => onChangeViewMode('matrix')}
-              className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'matrix' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
-              title="1+5 CCTV Matrix View (Hotkey: G)"
-            >
-              <Grid2X2 className="w-3.5 h-3.5" strokeWidth={1.75} />
-              <span className="hidden sm:inline">1+5 Matrix</span>
-            </button>
-            <button
-              onClick={() => onChangeViewMode('grid')}
-              className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'grid' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
-              title="Full Video Wall Grid (Hotkey: G)"
-            >
-              <LayoutGrid className="w-3.5 h-3.5" strokeWidth={1.75} />
-              <span className="hidden sm:inline">Wall Grid</span>
-            </button>
-          </div>
+          {viewSwitcher}
         </div>
 
         {viewMode === 'grid' && filteredCameras.length === 0 && (

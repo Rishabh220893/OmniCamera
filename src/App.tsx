@@ -33,6 +33,8 @@ import DvrGuideModal from './components/DvrGuideModal';
 import FirstUseTour from './components/FirstUseTour';
 import CommandPalette from './components/CommandPalette';
 import IncidentAlertDrawer from './components/IncidentAlertDrawer';
+import TrackingAlertBanner from './components/TrackingAlertBanner';
+import { useTracking, type TrackAlert } from './lib/tracking';
 
 enum OperationType { CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write' }
 
@@ -151,6 +153,15 @@ export default function App() {
     () => localStorage.getItem('demo-guest-streamAccessEmail') || localStorage.getItem('omni_stream_email') || ''
   );
   const [isSaveLoading, setIsSaveLoading] = useState(false);
+  // Background tracking (Feed > Full Panel). Lives here so a red alert reaches the screen whichever tab is open.
+  const [panelOpenCameraId, setPanelOpenCameraId] = useState<string | null>(null);
+  const [panelAlert, setPanelAlert] = useState<TrackAlert | null>(null);
+  const [bannerAlert, setBannerAlert] = useState<TrackAlert | null>(null);
+  const focusAlert = (a: TrackAlert) => {
+    setActiveTab('monitor'); setViewMode('panel'); setActiveCameraId(a.cameraId);
+    setPanelAlert(a); setPanelOpenCameraId(a.cameraId);
+  };
+  const tracking = useTracking({ email: streamAccessEmail, password: streamAccessPassword }, (a) => { setBannerAlert(a); focusAlert(a); });
   const [saveSuccess, setSaveSuccess] = useState<boolean | null>(null);
   const [isLoadingDemoGrid, setIsLoadingDemoGrid] = useState(false);
   const [demoGridStatus, setDemoGridStatus] = useState<{ type: 'live' | 'fallback'; message: string } | null>(null);
@@ -1293,6 +1304,9 @@ export default function App() {
                     analysisCameraIds={analysisCameraIds} analyzingCameraIds={analyzingCameraIds}
                     onToggleAnalysisCamera={toggleAnalysisCamera} onJumpToLog={handleJumpToLog}
                     onCameraStatusChange={handleCameraStatusChange}
+                    tracking={tracking} panelOpenCameraId={panelOpenCameraId} panelAlert={panelAlert}
+                    onPanelOpenCamera={(id) => { setPanelOpenCameraId(id); setPanelAlert((p) => (p && p.cameraId === id ? p : null)); }}
+                    onPanelCloseCamera={() => { setPanelOpenCameraId(null); setPanelAlert(null); }}
                   />
                 </div>
                 <AnimatePresence mode="wait">
@@ -1360,6 +1374,11 @@ export default function App() {
               onSelectCamera={(id) => { setActiveCameraId(id); setActiveTab('monitor'); }}
               onJumpToLog={handleJumpToLog}
               onChangeTab={setActiveTab}
+            />
+
+            <TrackingAlertBanner
+              alert={bannerAlert}
+              onOpen={(a) => focusAlert(a)} onDismiss={() => setBannerAlert(null)}
             />
 
             <MobileNav activeTab={activeTab} onChangeTab={setActiveTab} />

@@ -3,7 +3,7 @@
  * One command to run everything for a demo, in any shell (PowerShell, cmd, Git Bash).
  *
  *   node scripts/demo.mjs check             pre-flight: is everything ready? (also runs inside `up`)
- *   node scripts/demo.mjs up                start media server + scheduler + worker(s), watch them
+ *   node scripts/demo.mjs up                start media server + plate reader (ANPR, installed on first use) + scheduler + worker(s), watch them
  *   node scripts/demo.mjs status            is analysis actually flowing? (queue, cameras, recent logs)
  *   node scripts/demo.mjs analysis-off      un-flag every camera for server analysis (--yes to apply)
  *   node scripts/demo.mjs stop              kill leftovers on the demo ports (add --anpr to include the plate reader)
@@ -12,7 +12,8 @@
  *
  * `up` options:  --workers N (default 1)   --dev (tsx + Vite instead of the production build)
  *                --build (force a rebuild)  --single (one process, in-memory queue, no Redis)
- *                --anpr (also run the plate reader on this PC)   --tunnel (anpr + public address for the deployed app)
+ *                --no-anpr (leave out the plate reader: plates are then read by Gemini)   --anpr (insist on it: stop if it cannot be installed)
+ *                --tunnel (anpr + public address for the deployed app)
  *                --no-media   --no-pg   --all-logs (show every analysis in the Logs tab, not only notable ones)
  *
  * Settings come from scale.local (and demo.local if present). Both are git-ignored. See DEMO.md.
@@ -92,6 +93,38 @@ function findCloudflared() {
 }
 const anprInstalled = () => fs.existsSync(VENV_PY) && spawnSync(VENV_PY, ['-c', 'import fast_alpr, fastapi, uvicorn'], { stdio: 'ignore' }).status === 0;
 
+// The plate reader on this PC is part of `up` by default (Feed > Full Panel > Track License Plate needs it). --no-anpr leaves it out.
+// An ANPR_SERVICE_URL in scale.local (a service elsewhere, e.g. a GPU box) is used instead, unless --anpr is passed. If it cannot be
+// installed here (no Python), a default `up` carries on without it and reads plates with Gemini; an explicit --anpr stops instead.
+let anprUnavailable = false;
+const anprExplicit = () => flag('--anpr') || flag('--tunnel');
+function anprExternalUrl() {
+  return parseEnvFile(path.join(ROOT, 'scale.local')).ANPR_SERVICE_URL || parseEnvFile(path.join(ROOT, 'demo.local')).ANPR_SERVICE_URL || process.env.ANPR_SERVICE_URL || '';
+}
+const useAnpr = () => !anprUnavailable && (anprExplicit() || (!flag('--no-anpr') && !anprExternalUrl()));
+
+/** Creates anpr-service/.venv and installs the packages. Returns false (and says why) instead of exiting. */
+function installAnpr() {
+  const py = findPython();
+  if (!py) { console.log(`${FAIL}  Python 3 not found. Install Python 3.10-3.12 from python.org (tick "Add to PATH").`); return false; }
+  console.log(`${INFO}  using ${py.cmd} ${py.version}`);
+  const step = (cmd, args) => { console.log(paint('dim', '> ' + [cmd, ...args].join(' '))); return spawnSync(cmd, args, { cwd: ANPR_DIR, stdio: 'inherit' }).status === 0; };
+  if (!fs.existsSync(VENV_PY) && !step(py.cmd, [...py.pre, '-m', 'venv', '.venv'])) return false;
+  if (!step(VENV_PY, ['-m', 'pip', 'install', '--upgrade', 'pip'])) return false;
+  if (!step(VENV_PY, ['-m', 'pip', 'install', '-r', flag('--gpu') ? 'requirements-gpu.txt' : 'requirements.txt'])) return false;
+  return anprInstalled();
+}
+
+/** Called first thing in `up`: installs the plate reader once if it is wanted and missing. */
+function ensureAnpr() {
+  if (!useAnpr() || anprInstalled()) return;
+  console.log(`${INFO}  the plate reader (ANPR) is not installed on this PC yet: installing it now (one time, a few minutes)...`);
+  if (installAnpr()) { console.log(`${PASS}  ANPR packages installed`); return; }
+  if (anprExplicit()) { console.log(`${FAIL}  the plate reader could not be installed, and --anpr was given`); process.exit(1); }
+  anprUnavailable = true;
+  console.log(`${WARN}  carrying on without the plate reader: plates will be read by Gemini ("unverified read"). Fix the problem above and run again, or pass --no-anpr to stop seeing this.`);
+}
+
 function loadConfig() {
   const env = { ...process.env, ...parseEnvFile(path.join(ROOT, 'demo.local')), ...parseEnvFile(path.join(ROOT, 'scale.local')) };
   env.GRID_EMAIL ||= env.STREAM_EMAIL;
@@ -106,7 +139,7 @@ function loadConfig() {
   // The Logs tab reads Firestore; by default only notable events are mirrored there once Postgres is the record.
   if (flag('--all-logs')) env.FIRESTORE_LOG_MODE = 'all';
   // --anpr: the plate-reading service runs on this PC, so the app reaches it on localhost (no tunnel needed).
-  if (flag('--anpr') || flag('--tunnel')) {
+  if (useAnpr()) {
     env.ANPR_SERVICE_URL = `http://127.0.0.1:${ANPR_PORT}`;
   }
   return env;
@@ -209,7 +242,7 @@ async function check(cfg, { quiet = false } = {}) {
 
   if (!flag('--dev')) add(distStale() ? INFO : PASS, 'Production build', distStale() ? 'out of date - `up` will rebuild (about a minute)' : 'up to date');
 
-  if (flag('--anpr') || flag('--tunnel')) {
+  if (useAnpr()) {
     const base = `http://127.0.0.1:${ANPR_PORT}`;
     if (!(await portFree(ANPR_PORT))) {
       // Something is already on the port. If it is an ANPR service that accepts our key, just use it.
@@ -222,8 +255,10 @@ async function check(cfg, { quiet = false } = {}) {
     } else {
       // We will start it: needs Python and the installed packages.
       const py = findPython();
-      add(py ? PASS : FAIL, 'Python (for ANPR)', py ? `${py.cmd} ${py.version}` : 'not found - install Python 3.10-3.12 from python.org, or drop --anpr');
-      add(anprInstalled() ? PASS : FAIL, 'ANPR packages', anprInstalled() ? 'installed (anpr-service/.venv)' : 'not installed - run once: node scripts/demo.mjs anpr-setup');
+      // Without --anpr this is only a warning: `up` installs it, or carries on with Gemini reading plates.
+      const bad = anprExplicit() ? FAIL : WARN;
+      add(py ? PASS : bad, 'Python (for ANPR)', py ? `${py.cmd} ${py.version}` : 'not found - install Python 3.10-3.12 from python.org, or pass --no-anpr');
+      add(anprInstalled() ? PASS : bad, 'ANPR packages', anprInstalled() ? 'installed (anpr-service/.venv)' : '`up` installs them on first use (or run: node scripts/demo.mjs anpr-setup)');
     }
     if (flag('--tunnel')) { const cf = findCloudflared(); add(cf ? PASS : FAIL, 'cloudflared (tunnel)', cf || 'not found - install it, or drop --tunnel'); }
   } else if (cfg.ANPR_SERVICE_URL) {
@@ -235,7 +270,7 @@ async function check(cfg, { quiet = false } = {}) {
       const keyBad = probe.status === 401;
       add(keyBad ? FAIL : PASS, 'ANPR service', keyBad ? `${base} rejected ANPR_API_KEY (401) - it must match the service's key` : `${h.status || 'ok'}, device ${h.device || '?'}, key accepted`);
     } catch (e) { add(WARN, 'ANPR service', `${base} not answering (${e.message}) - plates fall back to Gemini`); }
-  } else add(INFO, 'ANPR service', 'off - plates are read by Gemini ("unverified read"). Use --anpr to run the plate reader on this PC');
+  } else add(INFO, 'ANPR service', 'off - plates are read by Gemini ("unverified read"). Leave out --no-anpr to run the plate reader on this PC');
 
   if (!quiet) {
     console.log(paint('cyan', '\nPre-flight check'));
@@ -303,6 +338,7 @@ async function waitFor(what, fn, timeoutMs) {
 
 // ---------------------------------------------------------------- up
 async function up() {
+  ensureAnpr();
   const cfg = loadConfig();
   // Always replace a previous run: stop whatever still holds the demo ports (pass --keep to skip).
   if (!flag('--keep') && stop({ quiet: true })) {
@@ -342,9 +378,9 @@ async function up() {
   }
 
   // ANPR plate reader on this PC. The first start downloads the model weights, so allow several minutes.
-  if ((flag('--anpr') || flag('--tunnel')) && !(await portFree(ANPR_PORT))) {
+  if (useAnpr() && !(await portFree(ANPR_PORT))) {
     console.log(`${INFO}  reusing the ANPR service already running on :${ANPR_PORT}`);
-  } else if (flag('--anpr') || flag('--tunnel')) {
+  } else if (useAnpr()) {
     base.ANPR_API_KEY ||= ensureAnprKey();
     launch('anpr', 'yellow', VENV_PY, ['-m', 'uvicorn', 'anpr_service.main:app', '--host', '127.0.0.1', '--port', String(ANPR_PORT)],
       { ...base, ANPR_DEVICE: base.ANPR_DEVICE || 'auto' }, { cwd: ANPR_DIR });
@@ -489,14 +525,9 @@ function run(cmd, args, cwd) {
 }
 
 function anprSetup() {
-  const py = findPython();
-  if (!py) { console.log(`${FAIL}  Python 3 not found. Install Python 3.10-3.12 from python.org (tick "Add to PATH"), then run this again.`); process.exit(1); }
-  console.log(`${INFO}  using ${py.cmd} ${py.version}`);
-  if (!fs.existsSync(VENV_PY)) run(py.cmd, [...py.pre, '-m', 'venv', '.venv'], ANPR_DIR);
-  run(VENV_PY, ['-m', 'pip', 'install', '--upgrade', 'pip'], ANPR_DIR);
-  run(VENV_PY, ['-m', 'pip', 'install', '-r', flag('--gpu') ? 'requirements-gpu.txt' : 'requirements.txt'], ANPR_DIR);
-  console.log(anprInstalled() ? `${PASS}  ANPR packages installed. Start it with:  node scripts/demo.mjs up --anpr` : `${FAIL}  installed, but the packages do not import - see the output above`);
-  process.exit(anprInstalled() ? 0 : 1);
+  const ok = installAnpr();
+  console.log(ok ? `${PASS}  ANPR packages installed. \`node scripts/demo.mjs up\` starts the plate reader with everything else.` : `${FAIL}  the plate reader could not be installed - see the output above`);
+  process.exit(ok ? 0 : 1);
 }
 
 /** Runs scripts/check-anpr.mjs against the configured service, on a real frame from the camera grid. */

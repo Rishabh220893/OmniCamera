@@ -36,10 +36,7 @@ export function noteMediaFailure(cameraId: string, fallbackUsable: boolean): boo
 /** The media-server stream played: forget earlier failures. */
 export function noteMediaPlaying(cameraId: string): void { mediaFailureCounts.delete(cameraId); }
 
-/** "https://cctv.corp8.cloud/cam07/index.m3u8" -> "cam07" */
-export function gridCamId(streamUrl: string): string | null {
-  return streamUrl.match(/\/(cam\d{1,3})\//i)?.[1]?.toLowerCase() ?? null;
-}
+export { gridCamId } from './gridCamId';
 
 export function mediaPlaylistUrl(cfg: MediaConfig, camId: string): string {
   // MediaMTX answers the first playlist request with a one-time redirect to "?cookieCheck=1", and a browser

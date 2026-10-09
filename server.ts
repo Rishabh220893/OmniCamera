@@ -23,6 +23,8 @@ import { createMediaLogParser } from './server/mediaEvents';
 import { tailFile, type LogTail } from './server/logTail';
 import { createReprobeScheduler, reprobeConfigFromEnv, reprobeEnabledFromEnv, type ReprobeScheduler } from './server/reprobeScheduler';
 import { fetchActivePaths, runningTranscodes } from './server/mediaWatch';
+import { registerTrackingRoutes } from './server/trackingRoutes';
+import { readFile } from 'node:fs/promises';
 import type { HealView, RecipeCode } from './src/lib/cameraProfileView';
 import { applyToMedia, importSaved, listViews, saveReport, summarize } from './server/profileService';
 import { createProbeJob } from './server/probeJob';
@@ -415,6 +417,19 @@ async function startServer() {
   // Default 100kb limit is far too small: a captured frame plus up to 6
   // base64-encoded known-face reference images easily runs several MB.
   app.use(express.json({ limit: '25mb' }));
+
+  // Test mode (TRACKING_FAKE_FRAMES_DIR, see scripts/fake-grid.mjs): there are no real cameras, so the routes that would talk to the grid
+  // answer at once instead of sending anything to it, and the snapshot route serves the pretend pictures. Never set this in production.
+  if (process.env.TRACKING_FAKE_FRAMES_DIR) {
+    const fakeDir = process.env.TRACKING_FAKE_FRAMES_DIR;
+    app.use(['/api/whep-proxy', '/api/proxy-hls'], (_req, res) => { res.status(503).send('Test mode: there are no real cameras behind this route.'); });
+    app.get('/api/camera-snapshot', async (req, res) => {
+      const id = String(req.query.camId || '').toLowerCase();
+      if (!/^[a-z0-9_-]{1,64}$/.test(id)) { res.status(400).send('camId is required'); return; }
+      try { res.setHeader('Content-Type', 'image/jpeg'); res.send(await readFile(path.join(fakeDir, `${id}.jpg`))); }
+      catch { res.status(404).send('No such pretend camera.'); }
+    });
+  }
 
   // API routes
   app.post('/api/alerts', (req, res) => {
@@ -1720,6 +1735,34 @@ Analyze this context to answer user queries:
     const pathsFile = process.env.MEDIA_PATHS_FILE || path.join(process.cwd(), 'media-server', 'bin', 'paths.generated.yml');
     res.json(await applyToMedia(store, { site, encoder: profileEncoder, build, api: mediaApiUrl, dryRun, pathsFile }));
   }));
+
+  // ---- Background tracking across all cameras (Feed > Full Panel; server/tracking.ts) ----
+  // Any signed-in user (a guest in the local demo, MEDIA_ALLOW_GUESTS=true) may start one job. TRACKING_FAKE_FRAMES_DIR replaces the
+  // cameras with a folder of images (<camera id>.jpg) so the whole path can be tested without the grid.
+  async function requireSignedIn(req: express.Request, res: express.Response): Promise<boolean> {
+    if (process.env.MEDIA_ALLOW_GUESTS === 'true') return true;
+    const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
+    if (!idToken || !registryDb) { res.status(401).json({ error: 'Sign-in required.' }); return false; }
+    try { await getAuth().verifyIdToken(idToken); return true; }
+    catch { res.status(401).json({ error: 'Sign-in could not be verified.' }); return false; }
+  }
+  const trackFakeDir = process.env.TRACKING_FAKE_FRAMES_DIR || '';
+  registerTrackingRoutes(app, {
+    generate: (params) => generateContentWithFallback(VISION_MODELS, params as never),
+    anpr: anprClient ? { detect: (jpeg) => anprClient.detect(jpeg) } : null,
+    grab: async (camera, creds) => {
+      if (trackFakeDir) {
+        const id = camera.id.toLowerCase();
+        return readFile(path.join(trackFakeDir, `${id}.jpg`)).catch(() => readFile(path.join(trackFakeDir, 'default.jpg')));
+      }
+      return grabFrame({ url: camera.url, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` });
+    },
+    credentials: streamCredentials,
+    requireUser: requireSignedIn,
+    env: process.env,
+    // A scene that has not changed is not sent to Gemini again, but every camera is still looked at least once a minute.
+    gate: process.env.ANALYSIS_GATE === 'off' ? undefined : createMotionGate({ maxSkipMs: (Number(process.env.TRACK_GATE_MAX_SKIP_S) || 60) * 1000 }),
+  });
 
   const server = http.createServer(app);
 
