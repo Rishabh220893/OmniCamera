@@ -76,3 +76,11 @@ export const incidentsApi = {
   reopen: (id: string) => call<{ incident: IncidentRow }>(`/api/incidents/${encodeURIComponent(id)}/reopen`, { method: 'POST', body: {} }).then((r) => r.incident),
   addNote: (id: string, text: string) => call<{ incident: IncidentRow }>(`/api/incidents/${encodeURIComponent(id)}/notes`, { method: 'POST', body: { text } }).then((r) => r.incident),
 };
+
+// ---- the camera grid account --------------------------------------------------------------------------------------------
+
+export interface GridStatusRow {
+  blocked: boolean; retryAfterSec: number; message: string; trips: number; refusals: number; lastRefusalAt: string | null;
+  grabsLastMinute: number; grabsLastHour: number; limitPerMinute: number; store: string;
+}
+export const gridApi = { status: () => call<GridStatusRow>('/api/grid/status') };

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
+import type { CameraConfig } from '../types';
 import AlertsView from './events/AlertsView';
 import EventsView from './events/EventsView';
 import HealthView from './events/HealthView';
@@ -10,7 +11,7 @@ type Section = 'events' | 'alerts' | 'incidents' | 'rules' | 'health';
 const SECTIONS: Array<{ id: Section; label: string }> = [{ id: 'events', label: 'Events' }, { id: 'alerts', label: 'Alerts' }, { id: 'incidents', label: 'Incidents' }, { id: 'rules', label: 'Rules' }, { id: 'health', label: 'Health' }];
 
 /** Everything the analyzers, connected systems and gateways report, and what is done about it. */
-export default function EventsTab() {
+export default function EventsTab({ cameras = [] }: { cameras?: CameraConfig[] }) {
   const [section, setSection] = useState<Section>('events');
   const [openAlerts, setOpenAlerts] = useState<number | null>(null);
   const [openIncidents, setOpenIncidents] = useState<number | null>(null);
@@ -32,7 +33,7 @@ export default function EventsTab() {
       {section === 'alerts' && <AlertsView onCount={setOpenAlerts} />}
       {section === 'incidents' && <IncidentsView onCount={setOpenIncidents} />}
       {section === 'rules' && <RulesView />}
-      {section === 'health' && <HealthView />}
+      {section === 'health' && <HealthView cameras={cameras} />}
     </motion.div>
   );
 }

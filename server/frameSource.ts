@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { GridRefusedError } from './gridGuard';
 
 /**
  * Server-side still-frame capture (replaces the browser canvas grab for
@@ -142,7 +143,10 @@ export async function grabFrame(req: FrameRequest): Promise<Buffer> {
   let frame: Buffer | null = null;
   if (camId) {
     const rtsp = `rtsp://${encodeURIComponent(creds.email).replace(/@/g, '%40')}:${encodeURIComponent(creds.password)}@${gridRtspHost}/stream/${encodeURIComponent(camId)}`;
-    frame = await extractFrameWithFfmpeg(rtsp, true, rtspTimeoutMs());
+    const rtspTry = await extractFrameDetailed(rtsp, true, rtspTimeoutMs());
+    frame = rtspTry.buffer;
+    // The grid answers an account that is over its viewing-time limit with 401 on RTSP. Trying the HLS route next would only add load.
+    if (!frame && /\b401\b|Unauthorized/i.test(rtspTry.stderrTail)) throw new GridRefusedError('the grid answered 401 Unauthorized on RTSP (viewing-time limit or a rejected login)');
     if (!frame) {
       const proxied = `${localBaseUrl}/api/proxy-hls?url=${encodeURIComponent(url)}&password=${encodeURIComponent(creds.password)}&email=${encodeURIComponent(creds.email)}`;
       frame = await extractFrameWithFfmpeg(proxied, false, hlsTimeoutMs());

@@ -26,8 +26,8 @@ export interface JobOutcome {
   /** Epoch ms the run started; null if it never got that far (lease held elsewhere). */
   startedAt: number | null;
   ok: boolean;
-  /** 'unchanged': frame gate skipped the model call. 'held': another instance owns the camera. */
-  skipped?: 'unchanged' | 'held';
+  /** 'unchanged': frame gate skipped the model call. 'held': another instance owns the camera. 'paused': the camera grid is refusing the account or its grab limit is reached; not a failure. */
+  skipped?: 'unchanged' | 'held' | 'paused';
   error: string | null;
   failures: number;
   nextDueAt: number;

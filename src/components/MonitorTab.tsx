@@ -1,4 +1,5 @@
 import { MutableRefObject, useEffect, useMemo, useState } from 'react';
+import { summariseAnalysis } from '../lib/analysisStatus';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
@@ -717,13 +718,18 @@ export default function MonitorTab({
             )}
             {cameras.filter(cam => analysisCameraIds.has(cam.id)).map(cam => {
               const latest = logs.find(l => l.cameraId === cam.id);
+              const status = summariseAnalysis({ lastAnalysisTime: cam.lastAnalysisTime, lastAnalysisError: cam.lastAnalysisError, selected: true });
+              const trouble = status.state === 'failing' || status.state === 'paused';
               return (
                 <div key={cam.id} className="flex flex-col gap-1.5 max-w-xl">
                   {analysisCameraIds.size > 1 && (
                     <span className="text-[10px] font-bold text-ink-muted uppercase tracking-wide">{cam.name}</span>
                   )}
                   {latest ? (
-                    <p className="text-base text-ink">{latest.summary}</p>
+                    <>
+                      <p className="text-base text-ink">{latest.summary}</p>
+                      {trouble && isCapturing && <p className="text-xs text-warning">{status.detail}</p>}
+                    </>
                   ) : !isCapturing ? (
                     <p className="text-base text-ink-muted italic">Press Analyze to begin analysis.</p>
                   ) : analyzingCameraIds.has(cam.id) ? (
@@ -737,6 +743,7 @@ export default function MonitorTab({
                     // without it, up to a full sync-interval of silence reads
                     // as broken rather than as working-but-not-done-yet.
                     <div className="space-y-1.5">
+                      {trouble && <p className="text-sm text-warning">{status.detail}</p>}
                       <p className="text-sm text-ink-muted">Waiting for the first analysis — results appear roughly every {Math.max(5, cam.interval)}s.</p>
                       <div className="h-1 rounded-full bg-surface-muted overflow-hidden max-w-xs">
                         <div key={`${cam.id}-${cam.interval}`} className="h-full bg-accent progress-fill" style={{ animationDuration: `${Math.max(5, cam.interval)}s` }} />
@@ -780,6 +787,11 @@ export default function MonitorTab({
                   <span className={cn('text-[9px] font-medium', activeCameraId === cam.id ? 'text-white/70' : 'text-ink-muted')}>
                     {cam.useRemoteFeed ? 'RTSP / IP feed' : cam.useSimulatedFeed ? 'Simulated' : 'Local device'}
                   </span>
+                  {analysisCameraIds.has(cam.id) && (() => {
+                    const s = summariseAnalysis({ lastAnalysisTime: cam.lastAnalysisTime, lastAnalysisError: cam.lastAnalysisError, selected: true });
+                    const tone = activeCameraId === cam.id ? 'text-white/90' : s.state === 'ok' ? 'text-success' : s.state === 'failing' ? 'text-critical' : s.state === 'paused' ? 'text-warning' : 'text-ink-muted';
+                    return <span title={s.detail ?? s.text} className={cn('text-[9px] font-semibold truncate', tone)}>AI: {isCapturing ? s.text : 'ticked, not running'}</span>;
+                  })()}
                 </div>
                 <label
                   onClick={(e) => e.stopPropagation()}

@@ -1,4 +1,5 @@
 import type { QueueStats } from './analysisQueue';
+import { PauseError } from './gridGuard';
 import { AnalysisJob, JobBackend, JobOutcome, createLocalBackend } from './jobBackend';
 import type { FrameGate } from './frameGate';
 import { AnalysisResult, buildLogDocument } from './logEntry';
@@ -296,6 +297,16 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
         deps.sendWebhook(camera.webhookUrl, payload).catch((err) => deps.log.warn(`[ANALYSIS] Webhook failed for ${camera.name}:`, err));
       }
     } catch (err) {
+      if (err instanceof PauseError) {
+        // Not the camera's fault and not a failed attempt: no failure count, no offline report, no back-off. Try again when the pause ends.
+        if (lastError !== err.reason) {
+          deps.log.warn(`[ANALYSIS] "${camera.name}" is waiting: ${err.reason}`);
+          await deps.updateCamera(camera.id, { lastAnalysisError: err.reason }).catch(() => { /* best effort */ });
+        }
+        const retryAt = deps.now() + err.retryAfterMs;
+        await deps.release?.(camera.id, retryAt).catch((e) => deps.log.warn(`[ANALYSIS] Could not release lease on ${camera.name}:`, e));
+        return { cameraId: camera.id, startedAt: null, ok: true, skipped: 'paused', error: err.reason, failures: job.failures, nextDueAt: retryAt };
+      }
       const message = err instanceof Error ? err.message : String(err);
       const changed = lastError !== message;
       failures++;

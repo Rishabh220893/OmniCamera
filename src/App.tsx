@@ -1394,7 +1394,7 @@ export default function App() {
                   {activeTab === 'analytics' && (
                     <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} userId={user && user.uid !== 'demo-guest' ? user.uid : null} decidedBy={user?.email || user?.uid || 'unknown'} localSightings={guestSightings} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
                   )}
-                  {activeTab === 'events' && <EventsTab />}
+                  {activeTab === 'events' && <EventsTab cameras={cameras} />}
                   {activeTab === 'map' && (
                     <RegistryTab
                       cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={handleSelectCameraFromRegistry}

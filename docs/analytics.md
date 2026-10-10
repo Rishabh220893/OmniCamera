@@ -141,3 +141,36 @@ Optional per-camera settings, on the camera document: `analyzers: { 'local-detec
 Limits: it cannot tell a person from a vehicle or a branch, cannot follow an object between frames, and frames arrive seconds apart, so
 "line crossing" means movement touching the line from both sides. People, faces, scene and unusual-activity events need AI. `vms.alarm`
 comes only from a recorder. Verified with synthetic fingerprints and a fake model (`tests/localDetector.test.ts`); never run on real footage.
+
+## Grid guard and analysis status
+
+**The problem it solves.** The camera grid caps how long one account may watch. Past the cap it refuses the account (HLS "watch time limit
+reached", RTSP/WHEP "401 Unauthorized") for a cooldown it does not announce. Analysis used to keep asking, so a few dozen cameras at a
+60 s interval could keep the account refused for hours, and every camera then showed "Could not capture a frame".
+
+`server/gridGuard.ts` (used by the analysis worker's frame grab in `server.ts`):
+
+- **Limit on grabs per minute**: `GRID_GRABS_PER_MIN` (default 10). A grab holds a grid session for several seconds, so this limits session
+  time. Excess grabs wait their turn (up to 45 s) instead of failing; past that the camera is told "waiting its turn" and tries later.
+- **Pause while refused**: a refusal (the HLS 403 text, or a 401 on the grid's RTSP) pauses every grid grab, 5 min at first and doubling on
+  repeats up to 30 min (`HLS_COOLDOWN_MS` sets the base). Nothing is asked of the grid during the pause; analysis resumes by itself.
+- **A pause is not a failure.** The camera's failure count does not grow, it is not reported offline, it does not back off, and the reason
+  ("Paused: the camera grid is refusing this account...") is saved once on the camera (`lastAnalysisError`) so the screens can show it.
+- **Shared state.** The pause and the recent grabs are kept in Redis when `REDIS_URL` is set, so the Health tab (served by another process
+  than the worker that grabs) shows the real state and the limit holds across workers; without Redis they live in each process.
+- `GET /api/grid/status` (needs `event.view`) returns `{ blocked, retryAfterSec, message, trips, refusals, lastRefusalAt, grabsLastMinute,
+  grabsLastHour, limitPerMinute, store }`.
+
+**What people see** (`src/lib/analysisStatus.ts`, one wording everywhere):
+
+- Feed, right-hand camera list: under each ticked camera, "AI: Analysed 3 min ago", "Waiting for its first analysis", "Paused, resumes by
+  itself" or "Not working right now" (hover for the reason and the last time it worked).
+- Feed, "Ongoing context": the reason in plain words instead of an endless "Waiting for the first analysis".
+- Events > Health, "AI analysis and the camera grid": whether the grid is refusing the account (and for how long), how much of the grab
+  allowance is used, and a table of every camera that is or was analysed: working, waiting, paused or not working, last analysed, why.
+
+**Limits.** The per-minute limit is a guess at a safe rate; the grid does not publish its allowance, so tune `GRID_GRABS_PER_MIN` by watching
+the Health tab. A wrong password also answers 401 and is treated as a refusal (the pause then lasts minutes: correct the login and restart).
+Only the analysis worker's grabs go through the guard; the live wall tiles and the playback proxy still use the account too, and the
+guard learns of their refusals (they report to it) but does not limit them. Never run against a real over-limit account in a test: the
+tests use a fake clock and a fake store.
