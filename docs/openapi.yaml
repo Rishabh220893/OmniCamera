@@ -193,7 +193,7 @@ paths:
   /api/admin/users:
     get:
       summary: Accounts created through this API (never other accounts)
-      description: Admin (`user.manage`). Also `POST /api/admin/users` {username, password, role, departmentId}, `PATCH /api/admin/users/{uid}` {password?, role?, departmentId?, disabled?}, `DELETE /api/admin/users/{uid}`; `GET|POST /api/admin/departments`, `DELETE /api/admin/departments/{id}` (refused while it has users or cameras); `GET /api/admin/cameras`; `POST /api/admin/cameras/allot` {cameraIds, departmentId|null}. Passwords are never returned. See docs/admin-users.md.
+      description: Admin (`user.manage`). Also `POST /api/admin/users` {username, password, role, departmentId}, `PATCH /api/admin/users/{uid}` {password?, role?, departmentId?, disabled?}, `DELETE /api/admin/users/{uid}`; `GET|POST /api/admin/departments`, `PATCH /api/admin/departments/{id}` {retentionDays? 1-3650|null, storage? cloud|local|mixed|null} (how long the department's own system keeps video, and where), `DELETE /api/admin/departments/{id}` (refused while it has users or cameras); `GET /api/admin/cameras`; `POST /api/admin/cameras/allot` {cameraIds, departmentId|null}. Passwords are never returned. See docs/admin-users.md.
       tags: [Admin]
       security: [{ adminToken: [] }]
       responses:

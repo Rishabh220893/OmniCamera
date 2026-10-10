@@ -11,7 +11,15 @@ import type { Role } from '../authz/policy';
 
 export const DEPARTMENT_RE = /^[A-Za-z0-9][\w .&-]{0,59}$/;
 
-export interface Department { id: string; name: string; createdAt: string; createdBy: string }
+export const STORAGE_KINDS = ['cloud', 'local', 'mixed'] as const;
+export type StorageKind = (typeof STORAGE_KINDS)[number];
+
+/**
+ * `retentionDays` and `storage` describe the department's OWN video system (Profile 3 keeps no video centrally): how long it keeps footage and
+ * where. The dashboard uses them to say that video for an old event is likely no longer held. Both are optional (unknown).
+ */
+export interface Department { id: string; name: string; createdAt: string; createdBy: string; retentionDays?: number; storage?: StorageKind }
+export interface DepartmentPatch { retentionDays?: number | null; storage?: StorageKind | null }
 export interface DepartmentView extends Department { users: number; cameras: number }
 
 export interface ManagedUser {
@@ -48,6 +56,8 @@ export interface UserPatch { password?: string; role?: Role; departmentId?: stri
 export interface AdminDirectory {
   listDepartments(): Promise<DepartmentView[]>;
   createDepartment(name: string, by: string): Promise<Department>;
+  /** Sets or clears (null) the department's retention and storage description. */
+  updateDepartment(id: string, patch: DepartmentPatch): Promise<Department>;
   /** Refuses while a user or a camera still belongs to it. */
   deleteDepartment(id: string): Promise<void>;
   listUsers(): Promise<ManagedUser[]>;
@@ -63,6 +73,23 @@ export function checkDepartmentName(raw: unknown): string {
   const n = typeof raw === 'string' ? raw.trim().replace(/\s+/g, ' ') : '';
   if (!DEPARTMENT_RE.test(n)) throw new DirectoryError('A department name is 1-60 characters: letters, digits, space and . _ & -, starting with a letter or digit.', 'invalid');
   return n;
+}
+
+export function checkDepartmentPatch(raw: unknown): DepartmentPatch {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const p: DepartmentPatch = {};
+  if (r.retentionDays !== undefined) {
+    if (r.retentionDays === null || r.retentionDays === '') p.retentionDays = null;
+    else if (typeof r.retentionDays === 'number' && Number.isInteger(r.retentionDays) && r.retentionDays >= 1 && r.retentionDays <= 3650) p.retentionDays = r.retentionDays;
+    else throw new DirectoryError("'retentionDays' is a whole number of days from 1 to 3650.", 'invalid');
+  }
+  if (r.storage !== undefined) {
+    if (r.storage === null || r.storage === '') p.storage = null;
+    else if (typeof r.storage === 'string' && (STORAGE_KINDS as readonly string[]).includes(r.storage)) p.storage = r.storage as StorageKind;
+    else throw new DirectoryError("'storage' must be cloud, local or mixed.", 'invalid');
+  }
+  if (!Object.keys(p).length) throw new DirectoryError('Nothing to change.', 'invalid');
+  return p;
 }
 
 /** Validates the body of "create a user"; the department must be named for everyone but an admin. */
@@ -121,6 +148,13 @@ export function createMemoryDirectory(o: { now?: () => Date } = {}): MemoryDirec
       const d: Department = { id: n, name: n, createdAt: now().toISOString(), createdBy: by };
       departments.set(n, d);
       return d;
+    },
+    async updateDepartment(id, patch) {
+      const d = departments.get(id);
+      if (!d) throw new DirectoryError('No such department.', 'not_found');
+      if (patch.retentionDays !== undefined) { if (patch.retentionDays === null) delete d.retentionDays; else d.retentionDays = patch.retentionDays; }
+      if (patch.storage !== undefined) { if (patch.storage === null) delete d.storage; else d.storage = patch.storage; }
+      return { ...d };
     },
     async deleteDepartment(id) {
       if (!departments.has(id)) throw new DirectoryError('No such department.', 'not_found');

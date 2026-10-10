@@ -1,6 +1,7 @@
 import { auth } from './firebase';
 
-export interface DepartmentRow { id: string; name: string; users: number; cameras: number; createdAt: string }
+export type StorageKind = 'cloud' | 'local' | 'mixed';
+export interface DepartmentRow { id: string; name: string; users: number; cameras: number; createdAt: string; retentionDays?: number; storage?: StorageKind }
 export interface UserRow { uid: string; username: string; role: 'viewer' | 'operator' | 'admin'; departmentId: string | null; disabled: boolean; lastSignInAt: string | null; createdAt: string }
 export interface CameraRow { id: string; name: string; ownerUserId: string; departmentId: string | null; streamUrl?: string }
 
@@ -20,6 +21,7 @@ export async function call<T>(path: string, init: { method?: 'GET' | 'POST' | 'P
 export const adminApi = {
   departments: () => call<{ departments: DepartmentRow[] }>('/api/admin/departments').then((r) => r.departments),
   createDepartment: (name: string) => call<{ department: DepartmentRow }>('/api/admin/departments', { method: 'POST', body: { name } }),
+  updateDepartment: (id: string, patch: { retentionDays?: number | null; storage?: StorageKind | null }) => call<{ department: DepartmentRow }>(`/api/admin/departments/${encodeURIComponent(id)}`, { method: 'PATCH', body: patch }),
   deleteDepartment: (id: string) => call<{ status: string }>(`/api/admin/departments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   users: () => call<{ users: UserRow[] }>('/api/admin/users').then((r) => r.users),
   createUser: (u: { username: string; password: string; role: string; departmentId: string | null }) => call<{ user: UserRow }>('/api/admin/users', { method: 'POST', body: u }),

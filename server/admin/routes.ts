@@ -2,6 +2,7 @@
  * HTTP side of user and department administration (docs/admin-users.md). Admin only (`user.manage`); every use is in the access log.
  *   GET    /api/admin/departments                 departments with their user and camera counts
  *   POST   /api/admin/departments                 { name }
+ *   PATCH  /api/admin/departments/:id             { retentionDays?, storage? } (null clears): how long the department's own system keeps video, and where
  *   DELETE /api/admin/departments/:id             refused while it still has users or cameras
  *   GET    /api/admin/users                       accounts created here (never other accounts); never shows a password
  *   POST   /api/admin/users                       { username, password, role?, departmentId }
@@ -11,7 +12,7 @@
  *   POST   /api/admin/cameras/allot               { cameraIds: [...], departmentId | null }
  */
 import type { Express, Request, Response } from 'express';
-import { DirectoryError, checkDepartmentName, checkNewUser, checkUserPatch, type AdminDirectory } from './directory';
+import { DirectoryError, checkDepartmentName, checkDepartmentPatch, checkNewUser, checkUserPatch, type AdminDirectory } from './directory';
 
 export interface AdminRoutesContext {
   directory: AdminDirectory;
@@ -42,6 +43,10 @@ export function registerAdminRoutes(app: Express, ctx: AdminRoutesContext): void
   app.post('/api/admin/departments', guard(async (req, res, who) => {
     const name = checkDepartmentName((req.body as { name?: unknown } | undefined)?.name);
     res.status(201).json({ department: await ctx.directory.createDepartment(name, who.uid) });
+  }));
+
+  app.patch('/api/admin/departments/:id', guard(async (req, res) => {
+    res.json({ department: await ctx.directory.updateDepartment(idParam(req), checkDepartmentPatch(req.body)) });
   }));
 
   app.delete('/api/admin/departments/:id', guard(async (req, res) => {

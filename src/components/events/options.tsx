@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { adminApi } from '../../lib/adminApi';
+import { useEffect, useMemo, useState } from 'react';
+import { adminApi, type DepartmentRow } from '../../lib/adminApi';
 
 /** Event types a person can pick, in plain words. The code is what the server matches on. */
 export const EVENT_TYPE_OPTIONS: { group: string; items: { value: string; label: string }[] }[] = [
@@ -22,13 +22,19 @@ export const EVENT_TYPE_OPTIONS: { group: string; items: { value: string; label:
 ];
 export const KNOWN_EVENT_TYPES = new Set(EVENT_TYPE_OPTIONS.flatMap((g) => g.items.map((i) => i.value)));
 
-/** Department names for a dropdown. Only admins may list them; for anyone else `names` stays null and the caller keeps a text box. */
-export function useDepartmentNames(): string[] | null {
-  const [names, setNames] = useState<string[] | null>(null);
+/** The departments, with their video retention. Only admins may list them; for anyone else this stays null and callers keep a text box. */
+export function useDepartments(): DepartmentRow[] | null {
+  const [rows, setRows] = useState<DepartmentRow[] | null>(null);
   useEffect(() => {
     let live = true;
-    adminApi.departments().then((d) => { if (live) setNames(d.map((x) => x.name)); }).catch(() => { if (live) setNames(null); });
+    adminApi.departments().then((d) => { if (live) setRows(d); }).catch(() => { if (live) setRows(null); });
     return () => { live = false; };
   }, []);
-  return names;
+  return rows;
+}
+
+/** Department names for a dropdown. */
+export function useDepartmentNames(): string[] | null {
+  const rows = useDepartments();
+  return useMemo(() => (rows ? rows.map((x) => x.name) : null), [rows]);
 }

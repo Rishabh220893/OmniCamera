@@ -4,7 +4,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { emailToUsername, normaliseUsername, passwordProblem, usernameToEmail } from '../src/lib/username.ts';
-import { DirectoryError, checkDepartmentName, checkNewUser, createMemoryDirectory, type MemoryDirectory } from '../server/admin/directory.ts';
+import { DirectoryError, checkDepartmentName, checkDepartmentPatch, checkNewUser, createMemoryDirectory, type MemoryDirectory } from '../server/admin/directory.ts';
 import { registerAdminRoutes } from '../server/admin/routes.ts';
 import { registerEventRoutes } from '../server/events/routes.ts';
 import { createMemoryAlertStore } from '../server/events/store.ts';
@@ -231,5 +231,38 @@ test('alerts: department members see, acknowledge and resolve their department\'
     assert.equal((await call('POST', `/api/alerts/${gate.id}/acknowledge`, 'admin')).json.alert.state, 'acknowledged', 'the owner still handles their alerts');
     assert.equal((await store.getAlertForDepartments(['Traffic'], gate.id))!.ackBy, 'demo-admin');
     assert.equal(await store.getAlertForDepartments(['Water'], gate.id), null);
+  });
+});
+
+// ---- how long a department's own system keeps video ----------------------------------------------------------------------
+
+test('department video settings: retention days and storage are validated, set, listed and cleared', async () => {
+  assert.deepEqual(checkDepartmentPatch({ retentionDays: 15, storage: 'cloud' }), { retentionDays: 15, storage: 'cloud' });
+  assert.deepEqual(checkDepartmentPatch({ retentionDays: null }), { retentionDays: null });
+  for (const bad of [{ retentionDays: 0 }, { retentionDays: 3651 }, { retentionDays: 1.5 }, { retentionDays: '7' }, { storage: 'tape' }, {}, undefined]) {
+    assert.throws(() => checkDepartmentPatch(bad), DirectoryError, JSON.stringify(bad));
+  }
+  const d = createMemoryDirectory();
+  await d.createDepartment('Traffic Police', 'admin1');
+  await err(d.updateDepartment('Nope', { retentionDays: 7 }), 'not_found');
+  assert.equal((await d.updateDepartment('Traffic Police', { retentionDays: 7, storage: 'local' })).retentionDays, 7);
+  const listed = (await d.listDepartments())[0];
+  assert.equal(listed.retentionDays, 7);
+  assert.equal(listed.storage, 'local');
+  const cleared = await d.updateDepartment('Traffic Police', { retentionDays: null });
+  assert.equal(cleared.retentionDays, undefined);
+  assert.equal(cleared.storage, 'local', 'only what was named is cleared');
+});
+
+test('admin routes: PATCH sets a department\'s retention and storage, refuses bad values and non-admins', async () => {
+  await withAdminRoutes(async ({ call }) => {
+    await call('POST', '/api/admin/departments', { name: 'Forest' });
+    const ok = await call('PATCH', '/api/admin/departments/Forest', { retentionDays: 15, storage: 'mixed' });
+    assert.deepEqual([ok.status, ok.json.department.retentionDays, ok.json.department.storage], [200, 15, 'mixed']);
+    assert.equal((await call('GET', '/api/admin/departments')).json.departments[0].retentionDays, 15);
+    assert.equal((await call('PATCH', '/api/admin/departments/Forest', { retentionDays: -1 })).status, 400);
+    assert.equal((await call('PATCH', '/api/admin/departments/Nowhere', { retentionDays: 7 })).status, 404);
+    assert.equal((await call('PATCH', '/api/admin/departments/Forest', { retentionDays: 7 }, 'someone')).status, 403);
+    assert.equal((await call('GET', '/api/admin/departments')).json.departments[0].retentionDays, 15, 'a refused change changes nothing');
   });
 });

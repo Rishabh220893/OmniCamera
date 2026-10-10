@@ -12,8 +12,8 @@ import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { usernameToEmail } from '../../src/lib/username';
 import { claimsFor, type Role } from '../authz/policy';
 import {
-  DirectoryError, checkDepartmentName, withoutLogin,
-  type AdminDirectory, type CameraRow, type Department, type DepartmentView, type ManagedUser, type NewUser, type UserPatch,
+  DirectoryError, STORAGE_KINDS, checkDepartmentName, withoutLogin,
+  type StorageKind, type AdminDirectory, type CameraRow, type Department, type DepartmentView, type ManagedUser, type NewUser, type UserPatch,
 } from './directory';
 
 const MAX_CAMERAS = 20_000;
@@ -55,6 +55,14 @@ export function createFirebaseDirectory(auth: Auth, db: Firestore, o: { now?: ()
     return { ref, data: snap.data()! };
   }
 
+  const readDepartment = (data: FirebaseFirestore.DocumentData, id: string): Department => {
+    const days = data.retentionDays, kind = data.storage;
+    return {
+      id, name: String(data.name ?? id), createdAt: String(data.createdAt ?? ''), createdBy: String(data.createdBy ?? ''),
+      ...(typeof days === 'number' ? { retentionDays: days } : {}), ...(STORAGE_KINDS.includes(kind) ? { storage: kind as StorageKind } : {}),
+    };
+  };
+
   return {
     async listDepartments(): Promise<DepartmentView[]> {
       try {
@@ -69,7 +77,7 @@ export function createFirebaseDirectory(auth: Auth, db: Firestore, o: { now?: ()
           return m;
         };
         const uc = count(users), cc = count(cams);
-        return deps.docs.map((d) => ({ id: d.id, name: String(d.get('name') ?? d.id), createdAt: String(d.get('createdAt') ?? ''), createdBy: String(d.get('createdBy') ?? ''), users: uc.get(d.id) ?? 0, cameras: cc.get(d.id) ?? 0 }))
+        return deps.docs.map((d) => ({ ...readDepartment(d.data(), d.id), users: uc.get(d.id) ?? 0, cameras: cc.get(d.id) ?? 0 }))
           .sort((a, b) => a.name.localeCompare(b.name));
       } catch (e) { return wrap(e); }
     },
@@ -82,6 +90,19 @@ export function createFirebaseDirectory(auth: Auth, db: Firestore, o: { now?: ()
         const dep: Department = { id: n, name: n, createdAt: now().toISOString(), createdBy: by };
         await db.collection('departments').doc(n).create(dep);
         return dep;
+      } catch (e) { return wrap(e); }
+    },
+
+    async updateDepartment(id, patch): Promise<Department> {
+      try {
+        const ref = db.collection('departments').doc(id);
+        const snap = await ref.get();
+        if (!snap.exists) throw new DirectoryError('No such department.', 'not_found');
+        const update: Record<string, unknown> = {};
+        if (patch.retentionDays !== undefined) update.retentionDays = patch.retentionDays === null ? FieldValue.delete() : patch.retentionDays;
+        if (patch.storage !== undefined) update.storage = patch.storage === null ? FieldValue.delete() : patch.storage;
+        await ref.update(update);
+        return readDepartment((await ref.get()).data()!, id);
       } catch (e) { return wrap(e); }
     },
 

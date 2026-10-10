@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Building2, KeyRound, Trash2, UserPlus, Users, Video } from 'lucide-react';
-import { adminApi, type CameraRow, type DepartmentRow, type UserRow } from '../lib/adminApi';
+import { adminApi, type CameraRow, type DepartmentRow, type StorageKind, type UserRow } from '../lib/adminApi';
 import { PASSWORD_MIN } from '../lib/username';
 
 const ROLE_LABEL = { viewer: 'Viewer', operator: 'Operator', admin: 'Admin' } as const;
@@ -98,6 +98,7 @@ export default function AdminUsersPanel() {
               <li key={d.id} className="flex items-center justify-between gap-3 px-4 py-2.5 text-xs">
                 <span className="font-semibold text-ink">{d.name}</span>
                 <span className="text-ink-muted">{d.users} user{d.users === 1 ? '' : 's'} &middot; {d.cameras} camera{d.cameras === 1 ? '' : 's'}</span>
+                <DepartmentVideoSettings department={d} busy={busy} onSave={(patch) => run(`Video settings of '${d.name}' saved.`, () => adminApi.updateDepartment(d.id, patch))} />
                 <button className="btn-ghost !p-1.5 text-critical" title={d.users || d.cameras ? 'Move its users and cameras first' : 'Delete department'} disabled={busy || d.users > 0 || d.cameras > 0} aria-label={`Delete department ${d.name}`}
                   onClick={() => run(`Department '${d.name}' deleted.`, () => adminApi.deleteDepartment(d.id))}><Trash2 className="w-4 h-4" strokeWidth={1.75} /></button>
               </li>
@@ -185,5 +186,23 @@ export default function AdminUsersPanel() {
         <p className="text-[10px] text-ink-muted">People in a department see its cameras in their own Monitor, Map and Registry, in addition to the alerts raised on them. Cameras not given to a department stay with whoever registered them.</p>
       </section>
     </div>
+  );
+}
+
+/** How long a department's own system keeps video, and where. Shown to people reading old events ("video likely no longer held"). */
+function DepartmentVideoSettings({ department: d, busy, onSave }: { department: DepartmentRow; busy: boolean; onSave: (patch: { retentionDays: number | null; storage: StorageKind | null }) => Promise<unknown> }) {
+  const [days, setDays] = useState(d.retentionDays ? String(d.retentionDays) : '');
+  const [storage, setStorage] = useState<StorageKind | ''>(d.storage ?? '');
+  const n = days.trim() === '' ? null : Number(days);
+  const valid = n === null || (Number.isInteger(n) && n >= 1 && n <= 3650);
+  const changed = (n ?? undefined) !== d.retentionDays || (storage || undefined) !== d.storage;
+  return (
+    <span className="flex items-center gap-1.5">
+      <input className="input !py-1 !px-2 !text-xs w-20" type="number" min={1} max={3650} placeholder="days" value={days} onChange={(e) => setDays(e.target.value)} aria-label={`Days of video kept by ${d.name}`} />
+      <select className="input !py-1 !px-2 !text-xs !w-auto" value={storage} onChange={(e) => setStorage(e.target.value as StorageKind | '')} aria-label={`Where ${d.name} stores video`}>
+        <option value="">Storage unknown</option><option value="cloud">Cloud</option><option value="local">Local</option><option value="mixed">Cloud and local</option>
+      </select>
+      <button className="btn-secondary !py-1 !px-2 text-[10px]" disabled={busy || !valid || !changed} onClick={() => void onSave({ retentionDays: n, storage: storage || null })}>Save</button>
+    </span>
   );
 }

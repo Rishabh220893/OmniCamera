@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Search, X } from 'lucide-react';
 import { eventsApi, SEVERITIES, type EventRow, type Severity } from '../../lib/eventsApi';
 import { ErrorBox, SeverityBadge, errText, when } from './shared';
-import { useDepartmentNames } from './options';
+import { useDepartments } from './options';
 
 const GROUPS = [
   { value: '', label: 'All types' }, { value: 'plate.*', label: 'Plates' }, { value: 'person.*', label: 'People' }, { value: 'scene.*', label: 'Scene' },
@@ -24,7 +24,9 @@ export default function EventsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const deptNames = useDepartmentNames();
+  const departmentRows = useDepartments();
+  const deptNames = useMemo(() => (departmentRows ? departmentRows.map((x) => x.name) : null), [departmentRows]);
+  const retentionOf = useMemo(() => new Map((departmentRows ?? []).filter((x) => x.retentionDays).map((x) => [x.id, x.retentionDays as number])), [departmentRows]);
 
   const filters = useMemo(() => ({
     q, types: group ? [group] : undefined, minSeverity: minSeverity || undefined, tag, department,
@@ -96,7 +98,7 @@ export default function EventsView() {
             <thead><tr className="text-left text-ink-muted uppercase tracking-wider text-[10px]"><th className="p-3 w-6" /><th className="p-3">Time</th><th className="p-3">Severity</th><th className="p-3">What</th><th className="p-3">Camera</th><th className="p-3">Department</th><th className="p-3">Tags</th></tr></thead>
             <tbody className="divide-y divide-border">
               {events.map((e) => (
-                <EventRowView key={e.id} event={e} expanded={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} onChanged={replace} />
+                <EventRowView key={e.id} retentionDays={e.department ? retentionOf.get(e.department) : undefined} event={e} expanded={open === e.id} onToggle={() => setOpen(open === e.id ? null : e.id)} onChanged={replace} />
               ))}
             </tbody>
           </table>
@@ -108,7 +110,7 @@ export default function EventsView() {
   );
 }
 
-function EventRowView({ event: e, expanded, onToggle, onChanged }: { event: EventRow; expanded: boolean; onToggle: () => void; onChanged: (e: EventRow) => void }) {
+function EventRowView({ event: e, retentionDays, expanded, onToggle, onChanged }: { event: EventRow; retentionDays?: number; expanded: boolean; onToggle: () => void; onChanged: (e: EventRow) => void }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -125,7 +127,7 @@ function EventRowView({ event: e, expanded, onToggle, onChanged }: { event: Even
         <td className="p-3 text-ink-muted">{expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</td>
         <td className="p-3 whitespace-nowrap text-ink-muted">{when(e.ts)}</td>
         <td className="p-3"><SeverityBadge severity={e.severity} /></td>
-        <td className="p-3"><span className="font-semibold text-ink">{e.summary}</span><span className="block text-[10px] text-ink-muted">{e.type} &middot; {e.source}</span></td>
+        <td className="p-3"><span className="font-semibold text-ink">{e.summary}</span><span className="block text-[10px] text-ink-muted">{e.type} &middot; {e.source}</span>{retentionDays && Date.now() - new Date(e.ts).getTime() > retentionDays * 86_400_000 && <span className="badge badge-neutral !text-[10px] !normal-case mt-1" title={`This department keeps video for ${retentionDays} days`}>video likely no longer held</span>}</td>
         <td className="p-3">{e.cameraName}</td>
         <td className="p-3">{e.department ?? <span className="text-ink-muted">-</span>}</td>
         <td className="p-3">{e.tags.map((t) => <span key={t} className="badge badge-neutral !text-[10px] !normal-case mr-1">{t}</span>)}</td>
