@@ -15,6 +15,8 @@ export interface AnalyzerCamera {
   peopleThreshold?: number;
   vehicleThreshold?: number;
   suspiciousRules?: string;
+  /** False: the camera is not sent to the AI model; the local detector (no AI) watches it instead. Absent means on. */
+  aiAnalysis?: boolean;
   /** Free-form per-camera settings for analyzers that need them (zones, thresholds). */
   analyzers?: Record<string, unknown>;
 }

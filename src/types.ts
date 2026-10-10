@@ -48,6 +48,8 @@ export interface CameraConfig {
   /** When true, the server's analysis worker captures and analyzes this camera
    *  on its own schedule — no browser tab needs to stay open. */
   serverAnalysis?: boolean;
+  /** False: the AI model is not used for this camera; the server's built-in local detector (motion, zone, line) watches it instead. Absent or true: AI analysis. */
+  aiAnalysis?: boolean;
   /** Last error the server worker hit for this camera, cleared on recovery. */
   lastAnalysisError?: string;
 

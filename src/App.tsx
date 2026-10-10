@@ -77,7 +77,7 @@ function defaultCameraFields(name: string): Omit<CameraConfig, 'id'> {
     // stream configured yet, and defaulting to getUserMedia() would silently
     // open the viewer's own webcam/front camera on every first load instead
     // of showing a harmless demo tile. Matches the CSV bulk-import fallback.
-    suspiciousRules: 'Any unknown person approaching the door', useSimulatedFeed: true,
+    suspiciousRules: 'Any unknown person approaching the door', useSimulatedFeed: true, aiAnalysis: true,
     connectivityStatus: 'unknown', maintenanceStatus: 'operational', onboardedVia: 'manual'
   };
 }
@@ -526,7 +526,7 @@ export default function App() {
           webhookUrl: data.webhookUrl || '', useRemoteFeed: !!data.useRemoteFeed, remoteStreamUrl: data.remoteStreamUrl || '',
           facingMode: data.facingMode || 'user', suspiciousRules: data.suspiciousRules || '',
           useSimulatedFeed: !!data.useSimulatedFeed,
-          serverAnalysis: !!data.serverAnalysis, lastAnalysisError: data.lastAnalysisError || undefined,
+          serverAnalysis: !!data.serverAnalysis, aiAnalysis: data.aiAnalysis !== false, lastAnalysisError: data.lastAnalysisError || undefined,
           lastAnalysisTime: data.lastAnalysisTime?.toDate ? data.lastAnalysisTime.toDate() : data.lastAnalysisTime,
           location: data.location, department: data.department, departmentId: typeof data.departmentId === 'string' ? data.departmentId : undefined, ownership: data.ownership,
           adapter: typeof data.adapter === 'string' ? data.adapter : undefined, sourceId: typeof data.sourceId === 'string' ? data.sourceId : undefined,
@@ -923,9 +923,9 @@ export default function App() {
           knownFaces: knownFaces.slice(0, 6).map(f => ({ name: f.name, imageData: f.imageData })),
           watchlist: watchlist.map(w => w.plate),
           camera: {
-            name: camera.name, sensitivity: camera.sensitivity,
+            id: camera.id, name: camera.name, sensitivity: camera.sensitivity,
             peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold,
-            suspiciousRules: camera.suspiciousRules
+            suspiciousRules: camera.suspiciousRules, aiAnalysis: camera.aiAnalysis
           }
         })
       });

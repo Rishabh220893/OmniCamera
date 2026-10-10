@@ -425,6 +425,11 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
         </div>
 
+        <div className="space-y-2">
+          <label className="flex items-center gap-2 text-xs font-bold text-ink"><input type="checkbox" checked={activeCamera.aiAnalysis !== false} onChange={(e) => onUpdateActiveCamera({ aiAnalysis: e.target.checked })} aria-label="Analyze with AI" /> Analyze with AI</label>
+          <p className="text-[11px] text-ink-muted">{activeCamera.aiAnalysis !== false ? 'The AI model describes the scene, counts people and vehicles and reads faces. Plates are read by the local plate reader either way.' : 'No AI model is used. The server watches this camera locally for movement, movement in a zone and movement across a line, plate reads and offline/online changes. People, faces and scene judgements need AI.'}</p>
+        </div>
+
         <div className="space-y-4">
           <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-critical" strokeWidth={1.75} /> Suspicious rules</label>
           <textarea value={activeCamera.suspiciousRules} onChange={(e) => onUpdateActiveCamera({ suspiciousRules: e.target.value })} className="input min-h-[90px] resize-none" placeholder="e.g. Someone wearing a red hoodie, a package left unattended..." />

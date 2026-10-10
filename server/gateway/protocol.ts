@@ -124,6 +124,9 @@ export interface AssignedCamera {
   department?: string;
   /** The department the camera was given to; its faces and watchlist apply to the camera. */
   departmentId?: string;
+  /** False: no AI model for this camera; the local detector watches it. */
+  aiAnalysis?: boolean;
+  analyzers?: Record<string, unknown>;
   location?: { lat: number; lng: number };
 }
 export interface AssignmentResponse { version: string; cameras: AssignedCamera[] }

@@ -2,11 +2,13 @@ import type { PlateRead } from '../anprClient';
 import { createAnprAnalyzer, createGeminiSceneAnalyzer, createSceneFinalizer, type GenerateFn } from './builtin';
 import { createAnalyzerPipeline, type AnalyzerPipeline } from './pipeline';
 import { createTamperAnalyzer } from './tamper';
+import { createLocalDetectorAnalyzer } from './localDetector';
 import type { Analyzer } from './types';
 
 export * from './types';
 export { createAnalyzerPipeline, mergeFields, safeDrafts, type AnalyzerPipeline } from './pipeline';
 export { createTamperAnalyzer, judgeFingerprint } from './tamper';
+export { createLocalDetectorAnalyzer, detectLocal } from './localDetector';
 export { createGeminiSceneAnalyzer, createAnprAnalyzer, createSceneFinalizer } from './builtin';
 
 export interface DefaultPipelineDeps {
@@ -25,6 +27,7 @@ export function createDefaultPipeline(d: DefaultPipelineDeps): AnalyzerPipeline 
   const analyzers: Analyzer[] = [createGeminiSceneAnalyzer({ generate: d.generate, log: d.log })];
   if (d.anpr && !off.has('anpr-plates')) analyzers.push(createAnprAnalyzer(d.anpr));
   if (!off.has('camera-tamper')) analyzers.push(createTamperAnalyzer());
+  if (!off.has('local-detector')) analyzers.push(createLocalDetectorAnalyzer());
   analyzers.push(...(d.extra ?? []));
   return createAnalyzerPipeline({ analyzers, finalize: createSceneFinalizer(d.log), log: d.log });
 }

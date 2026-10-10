@@ -126,3 +126,18 @@ Postgres when `DATABASE_URL` is set (tables `platform_events`, `alert_rules`, `a
 - **The frame gate** skips unchanged scenes, so analyzers see only frames the gate lets through (a blocked camera is re-checked at the gate's heartbeat, 10 minutes by default).
 - **Events from the browser loop** (cameras not analysed on the server) are not produced; only the server worker emits events.
 - No screen in the app uses these yet; they are reachable through the API.
+
+## Local detector (AI analysis off)
+
+A camera with `aiAnalysis: false` (Settings > "Analyze with AI") is not sent to the model. The Gemini analyzer skips it and
+`local-detector` (`server/analytics/localDetector.ts`) watches it instead, from the difference between two 64x36 greyscale frames:
+`vms.motion`, `vms.intrusion` (movement inside a zone) and `vms.line_crossing` (movement on both sides of a line). The plate reader
+(ANPR service) is independent of the switch, so `plate.*` events and watchlist hits still work. `camera.offline` and `camera.online`
+come from the worker's run history (3 failed runs in a row, then the first good run), for every camera whatever the switch.
+
+Optional per-camera settings, on the camera document: `analyzers: { 'local-detector': { zone: {x,y,w,h}, line: {x1,y1,x2,y2}, motionPercent } }`
+(fractions of the picture). There is no screen to draw them yet. Without them only motion is reported.
+
+Limits: it cannot tell a person from a vehicle or a branch, cannot follow an object between frames, and frames arrive seconds apart, so
+"line crossing" means movement touching the line from both sides. People, faces, scene and unusual-activity events need AI. `vms.alarm`
+comes only from a recorder. Verified with synthetic fingerprints and a fake model (`tests/localDetector.test.ts`); never run on real footage.

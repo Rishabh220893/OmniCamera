@@ -34,6 +34,10 @@ export interface WorkerCamera {
   /** The department an administrator gave this camera to (a real allotment, unlike the free-text `department`). Its faces and watchlist apply, and its logs carry it. */
   departmentId?: string;
   location?: LatLng;
+  /** False: the AI model is not used for this camera; the local detector (no AI) watches it. Absent means on. */
+  aiAnalysis?: boolean;
+  /** Per-camera settings for analyzers (zones and lines of the local detector). */
+  analyzers?: Record<string, unknown>;
 }
 
 export interface UserContext {
@@ -129,6 +133,9 @@ export interface WorkerStatus {
   }>;
 }
 
+/** In a row, how many failed runs make a camera "offline" for alerting. It is reported once, and "online" once when a run works again. */
+export const OFFLINE_AFTER_FAILURES = 3;
+
 const MIN_INTERVAL_S = 5;
 /** A camera is never re-run sooner than this after a run finishes, even if its run took longer than its interval. */
 const MIN_GAP_AFTER_RUN_MS = 2_000;
@@ -197,6 +204,15 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     try { return await executeInner(job); } finally { executing.delete(job.camera.id); }
   }
 
+  /** camera.offline / camera.online from the run history itself (no AI). The job carries the failure count, so any worker reports the change exactly once. */
+  function reportReachability(camera: WorkerCamera, state: 'offline' | 'online', summary: string, failures: number) {
+    if (!deps.emitEvents) return;
+    try {
+      const ev = makeEvent({ type: `camera.${state}`, summary, severity: state === 'offline' ? 'warning' : 'info', data: { failedRuns: failures }, tags: ['reachability'], dedupeKey: state }, { source: 'analysis-worker', camera: { id: camera.id, name: camera.name, userId: camera.userId, department: camera.department, location: camera.location }, ts: new Date(deps.now()) });
+      deps.emitEvents([ev]).catch((err) => deps.log.warn(`[ANALYSIS] Could not record the ${state} event for ${camera.name}:`, err));
+    } catch (err) { deps.log.warn(`[ANALYSIS] Could not build the ${state} event for ${camera.name}:`, err); }
+  }
+
   async function executeInner(job: AnalysisJob): Promise<JobOutcome> {
     const { camera } = job;
 
@@ -255,6 +271,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       }
 
       const recovered = lastError !== null;
+      if (job.failures >= OFFLINE_AFTER_FAILURES) reportReachability(camera, 'online', `${camera.name} is back online`, job.failures);
       failures = 0;
       lastError = null;
       ok = true;
@@ -273,6 +290,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       const changed = lastError !== message;
       failures++;
       lastError = message;
+      if (failures === OFFLINE_AFTER_FAILURES) reportReachability(camera, 'offline', `${camera.name} went offline: ${message}`.slice(0, 300), failures);
       deps.log.warn(`[ANALYSIS] "${camera.name}" failed (attempt ${failures}): ${message}`);
       // Only persist when the error text changes — a camera that stays down
       // must not write to Firestore every retry.

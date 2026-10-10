@@ -16,6 +16,7 @@ export function createGeminiSceneAnalyzer(deps: { generate: GenerateFn; log?: Pi
     label: 'Gemini scene analysis',
     description: 'Describes the scene, counts people and vehicles, recognises known faces, reads brands and judges whether anything is unusual.',
     required: true,
+    appliesTo: (camera) => camera.aiAnalysis !== false,
     async analyze({ camera, frame, user }) {
       const faces = (user.knownFaces || []).slice(0, 6);
       const faceDataParts = faces.map((face) => ({

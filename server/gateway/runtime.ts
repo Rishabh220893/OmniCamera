@@ -43,7 +43,7 @@ export function createGatewayRuntime(d: GatewayRuntimeDeps): GatewayRuntime {
     gate: d.gate,
     analyze: async ({ imageBase64, camera, knownFaces, watchlist }) => {
       const r = await d.pipeline.analyze({
-        camera: { id: camera.id, name: camera.name, userId: camera.userId, department: camera.department, location: camera.location, sensitivity: camera.sensitivity, peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold, suspiciousRules: camera.suspiciousRules },
+        camera: { id: camera.id, name: camera.name, userId: camera.userId, department: camera.department, location: camera.location, sensitivity: camera.sensitivity, peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold, suspiciousRules: camera.suspiciousRules, aiAnalysis: camera.aiAnalysis, analyzers: camera.analyzers },
         frame: { jpeg: Buffer.from(imageBase64, 'base64'), base64: imageBase64 }, user: { knownFaces, watchlist }, now: new Date(),
       });
       return { ...r.result, events: r.events, analyzers: r.outcomes };
