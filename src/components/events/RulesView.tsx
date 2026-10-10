@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Pencil, Plus, Send, Trash2 } from 'lucide-react';
 import { eventsApi, ruleInputOf, SEVERITIES, type RuleInput, type RuleRow, type Severity } from '../../lib/eventsApi';
 import { ErrorBox, errText } from './shared';
+import { EVENT_TYPE_OPTIONS, KNOWN_EVENT_TYPES, useDepartmentNames } from './options';
 
 const REDACTED = '********';
 const csv = (s: string) => [...new Set(s.split(',').map((x) => x.trim()).filter(Boolean))];
@@ -44,6 +45,12 @@ export default function RulesView() {
   const [notice, setNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
+  const deptNames = useDepartmentNames();
+  const toggleType = (t: string) => setDraft((d) => {
+    if (!d) return d;
+    const cur = csv(d.types);
+    return { ...d, types: (cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]).join(', ') };
+  });
 
   const load = useCallback(async () => {
     try { setRules(await eventsApi.rules()); setError(null); }
@@ -90,15 +97,38 @@ export default function RulesView() {
           <h3 className="sm:col-span-2 text-sm font-bold text-ink">{draft.id ? 'Edit rule' : 'New rule'}</h3>
           <label className="space-y-1 sm:col-span-2"><span className="text-ink-muted">Name</span>
             <input className="input w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} maxLength={80} required aria-label="Rule name" /></label>
-          <label className="space-y-1"><span className="text-ink-muted">Event types (comma separated; plate.* means every plate event; empty means any)</span>
-            <input className="input w-full" value={draft.types} onChange={(e) => setDraft({ ...draft, types: e.target.value })} aria-label="Event types" /></label>
+          <fieldset className="space-y-1 sm:col-span-2"><legend className="text-ink-muted">Which events (tick any; none ticked means every event)</legend>
+            <div className="grid sm:grid-cols-3 gap-3 pt-1">
+              {EVENT_TYPE_OPTIONS.map((g) => (
+                <div key={g.group} className="space-y-1"><p className="font-semibold text-ink">{g.group}</p>
+                  {g.items.map((i) => (
+                    <label key={i.value} className="flex items-center gap-2"><input type="checkbox" checked={csv(draft.types).includes(i.value)} onChange={() => toggleType(i.value)} aria-label={i.label} /> {i.label}</label>
+                  ))}
+                </div>
+              ))}
+              {csv(draft.types).filter((t) => !KNOWN_EVENT_TYPES.has(t)).length > 0 && (
+                <div className="space-y-1"><p className="font-semibold text-ink">Other (kept as set)</p>
+                  {csv(draft.types).filter((t) => !KNOWN_EVENT_TYPES.has(t)).map((t) => (
+                    <label key={t} className="flex items-center gap-2"><input type="checkbox" checked onChange={() => toggleType(t)} aria-label={t} /> {t}</label>
+                  ))}
+                </div>
+              )}
+            </div>
+          </fieldset>
           <label className="space-y-1"><span className="text-ink-muted">Minimum severity</span>
             <select className="input w-full" value={draft.minSeverity} onChange={(e) => setDraft({ ...draft, minSeverity: e.target.value as Severity | '' })} aria-label="Minimum severity">
               <option value="">Any</option>{SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}</select></label>
           <label className="space-y-1"><span className="text-ink-muted">Only events with these tags (optional)</span>
             <input className="input w-full" value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} aria-label="Tags" /></label>
           <label className="space-y-1"><span className="text-ink-muted">Department (blank = just your own cameras)</span>
-            <input className="input w-full" value={draft.department} disabled={!!draft.id} onChange={(e) => setDraft({ ...draft, department: e.target.value })} maxLength={64} aria-label="Department" /></label>
+            {deptNames ? (
+              <select className="input w-full" value={draft.department} disabled={!!draft.id} onChange={(e) => setDraft({ ...draft, department: e.target.value })} aria-label="Department">
+                <option value="">Just my own cameras</option>
+                {[...new Set([...deptNames, ...(draft.department ? [draft.department] : [])])].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            ) : (
+              <input className="input w-full" value={draft.department} disabled={!!draft.id} onChange={(e) => setDraft({ ...draft, department: e.target.value })} maxLength={64} aria-label="Department" />
+            )}</label>
           <label className="space-y-1"><span className="text-ink-muted">Fold repeats of</span>
             <select className="input w-full" value={draft.by} onChange={(e) => setDraft({ ...draft, by: e.target.value as Draft['by'] })} aria-label="Fold repeats of">
               {THROTTLE_BY.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}</select></label>

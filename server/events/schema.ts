@@ -63,6 +63,8 @@ export const EVENT_CATALOGUE: Array<{ type: string; severity: Severity; descript
   { type: 'plate.watchlist_match', severity: 'critical', description: 'A plate on the watchlist was seen.', data: 'plate' },
   { type: 'plate.vehicle_flagged', severity: 'warning', description: 'A connected vehicle registry flagged a plate that was read (stolen, blacklisted, insurance or fitness expired). Severity is the worst flag.', data: 'connector, mock, plate, vehicle, flags' },
   { type: 'plate.wanted', severity: 'critical', description: 'A plate that was read is named in an open police record.', data: 'connector, mock, plate, record, flags' },
+  { type: 'vehicle.seen', severity: 'info', description: 'The scene analysis counted one or more vehicles in the frame (whether or not a plate was readable).', data: 'count' },
+  { type: 'person.seen', severity: 'info', description: 'The scene analysis counted one or more people in the frame.', data: 'count' },
   { type: 'vms.motion', severity: 'info', description: 'A department video system reported motion on a camera.', data: 'system, vendorCode, vendorEventId' },
   { type: 'vms.line_crossing', severity: 'notice', description: 'A department video system reported a line crossing.', data: 'system, vendorCode, vendorEventId' },
   { type: 'vms.intrusion', severity: 'warning', description: 'A department video system reported an intrusion.', data: 'system, vendorCode, vendorEventId' },
@@ -118,7 +120,7 @@ function toJson(v: Record<string, unknown>): Record<string, unknown> {
  * The events that the existing log document already implies, so alerting works for the Gemini/ANPR analysis exactly as it will for a
  * new analyzer. Plate reads are one event each; the alert-worthy facts (watchlist, unknown person, unusual, alerts) get their own.
  */
-export function eventsFromLog(doc: Pick<LogDocument, 'detectedPlates' | 'plateReads' | 'plateSource' | 'detectedItems' | 'isUnusual' | 'unusualReason' | 'sentiment' | 'alerts' | 'isWatchlistMatch'>, watchlist: string[] = []): EventDraft[] {
+export function eventsFromLog(doc: Pick<LogDocument, 'detectedPlates' | 'plateReads' | 'plateSource' | 'detectedItems' | 'isUnusual' | 'unusualReason' | 'sentiment' | 'alerts' | 'isWatchlistMatch'> & Partial<Pick<LogDocument, 'counts'>>, watchlist: string[] = []): EventDraft[] {
   const out: EventDraft[] = [];
   const clean = (p: string) => String(p).toUpperCase().replace(/[^A-Z0-9]/g, '');
   const wl = new Set(watchlist.map(clean));
@@ -133,6 +135,8 @@ export function eventsFromLog(doc: Pick<LogDocument, 'detectedPlates' | 'plateRe
     });
     if (onList) out.push({ source: doc.plateSource, type: 'plate.watchlist_match', summary: `Watchlist plate ${plate} seen`, dedupeKey: plate, data: { plate, readBy: doc.plateSource }, confidence: r?.confidence, tags: ['watchlist'] });
   }
+  if ((doc.counts?.vehicles ?? 0) > 0) out.push({ source: 'gemini-scene', type: 'vehicle.seen', summary: `${doc.counts!.vehicles} vehicle${doc.counts!.vehicles === 1 ? '' : 's'} seen`, data: { count: doc.counts!.vehicles }, dedupeKey: 'vehicles' });
+  if ((doc.counts?.people ?? 0) > 0) out.push({ source: 'gemini-scene', type: 'person.seen', summary: `${doc.counts!.people} ${doc.counts!.people === 1 ? 'person' : 'people'} seen`, data: { count: doc.counts!.people }, dedupeKey: 'people' });
   const unknown = doc.detectedItems.filter((n) => n === 'Unknown Person');
   if (unknown.length) out.push({ source: 'gemini-scene', type: 'person.unknown', summary: 'An unknown person was seen', data: { names: unknown } });
   for (const name of doc.detectedItems) if (name && name !== 'Unknown Person' && name !== 'N/A') out.push({ source: 'gemini-scene', type: 'person.known', summary: `${name} recognised`, dedupeKey: name, data: { name } });

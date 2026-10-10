@@ -165,12 +165,16 @@ export function createAlertEngine(deps: AlertEngineDeps) {
       return a;
     },
 
-    /** Sends a made-up event through a rule's channels, so the receiver can be checked. Nothing is stored. */
+    /** Sends a made-up event through a rule's channels, so the receiver can be checked. The test event and an open alert titled "TEST" are stored, so the test shows in the Events and Alerts tabs. */
     async test(rule: AlertRule, camera: { id: string; name: string }): Promise<Delivery[]> {
       const ts = now().toISOString();
-      const event: PlatformEvent = { id: `test-${newId()}`, type: 'system.test', source: 'rule-test', severity: 'info', userId: rule.userId, cameraId: camera.id, cameraName: camera.name, ts, summary: `Test of rule "${rule.name}"`, data: { test: true }, tags: [] };
-      const alert: Alert = { id: `test-${newId()}`, userId: rule.userId, ruleId: rule.id, ruleName: rule.name, key: 'test', state: 'open', severity: 'info', title: event.summary, cameraId: camera.id, cameraName: camera.name, firstEventId: event.id, lastEventId: event.id, eventCount: 1, createdAt: ts, lastEventAt: ts, deliveries: [] };
-      return deliver(rule, alert, event);
+      const event: PlatformEvent = { id: `test-${newId()}`, type: 'system.test', source: 'rule-test', severity: 'info', userId: rule.userId, cameraId: camera.id, cameraName: camera.name, ts, summary: `Test of rule "${rule.name}"`, data: { test: true }, tags: ['test'], ...(rule.department ? { department: rule.department } : {}) };
+      const alert: Alert = { id: `test-${newId()}`, userId: rule.userId, ruleId: rule.id, ruleName: rule.name, key: 'test', state: 'open', severity: 'info', title: `TEST: ${event.summary}`, cameraId: camera.id, cameraName: camera.name, ...(rule.department ? { department: rule.department } : {}), firstEventId: event.id, lastEventId: event.id, eventCount: 1, createdAt: ts, lastEventAt: ts, deliveries: [] };
+      const deliveries = await deliver(rule, alert, event);
+      alert.deliveries = deliveries;
+      try { await deps.store.saveEvents([event]); await deps.store.saveAlert(alert); }
+      catch (e) { log.warn(`[ALERT] Could not store the test of rule "${rule.name}":`, e instanceof Error ? e.message : e); }
+      return deliveries;
     },
 
     redactRule,

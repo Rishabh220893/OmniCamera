@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, RefreshCw, Search, X } from 'lucide-react';
 import { eventsApi, SEVERITIES, type EventRow, type Severity } from '../../lib/eventsApi';
 import { ErrorBox, SeverityBadge, errText, when } from './shared';
+import { useDepartmentNames } from './options';
 
 const GROUPS = [
   { value: '', label: 'All types' }, { value: 'plate.*', label: 'Plates' }, { value: 'person.*', label: 'People' }, { value: 'scene.*', label: 'Scene' },
@@ -23,6 +24,7 @@ export default function EventsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const deptNames = useDepartmentNames();
 
   const filters = useMemo(() => ({
     q, types: group ? [group] : undefined, minSeverity: minSeverity || undefined, tag, department,
@@ -67,7 +69,13 @@ export default function EventsView() {
           <option value="">Any severity</option>{SEVERITIES.map((s) => <option key={s} value={s}>{s} and above</option>)}
         </select>
         <input className="input" placeholder="Tag" value={tag} onChange={(e) => setTag(e.target.value)} maxLength={40} aria-label="Tag" />
-        <input className="input" placeholder="Department" value={department} onChange={(e) => setDepartment(e.target.value)} maxLength={64} aria-label="Department" />
+        {deptNames ? (
+          <select className="input" value={department} onChange={(e) => setDepartment(e.target.value)} aria-label="Department">
+            <option value="">All departments</option>{deptNames.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        ) : (
+          <input className="input" placeholder="Department" value={department} onChange={(e) => setDepartment(e.target.value)} maxLength={64} aria-label="Department" />
+        )}
         <select className="input" value={rangeMs} onChange={(e) => setRangeMs(Number(e.target.value))} aria-label="Time range">{RANGES.map((r) => <option key={r.label} value={r.ms}>{r.label}</option>)}</select>
         <div className="flex gap-2 sm:col-span-2 lg:col-span-5 items-center text-xs text-ink-muted">
           <span>{loading ? 'Searching...' : total === undefined ? '' : `${total.toLocaleString()} matching event${total === 1 ? '' : 's'}`}</span>

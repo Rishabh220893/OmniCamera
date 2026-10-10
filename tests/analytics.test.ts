@@ -276,10 +276,11 @@ test('a new detector added to the pipeline reaches a webhook alert through the u
   assert.equal(logs.length, 1, 'the log is written as before');
   assert.equal(logs[0].detectedPlates.length, 0);
   const events = await store.queryEvents({ userId: 'u1' });
-  assert.deepEqual(events.map((e) => e.type).sort(), ['zone.intrusion']);
-  assert.equal(events[0].source, 'zone-intrusion');
-  assert.equal(events[0].department, 'Logistics');
-  assert.equal(events[0].cameraId, 'cam07');
+  assert.deepEqual(events.map((e) => e.type).sort(), ['person.seen', 'vehicle.seen', 'zone.intrusion'], 'the scene counts also become events');
+  const zoneEvent = events.find((e) => e.type === 'zone.intrusion')!;
+  assert.equal(zoneEvent.source, 'zone-intrusion');
+  assert.equal(zoneEvent.department, 'Logistics');
+  assert.equal(zoneEvent.cameraId, 'cam07');
   assert.equal(hooks.length, 1, 'exactly one webhook');
   assert.equal(hooks[0].url, 'https://hooks.example.org/z');
   assert.equal(hooks[0].body.event.type, 'zone.intrusion');
@@ -304,7 +305,7 @@ test('worker: events come from the existing Gemini/ANPR result with no analyzer 
   worker._applyCameras([{ id: 'c1', userId: 'u1', name: 'Gate', remoteStreamUrl: 'https://x.test/c', interval: 10, sensitivity: 5, peopleThreshold: 5, vehicleThreshold: 2, suspiciousRules: '', webhookUrl: '' }]);
   worker._tick();
   await worker._idle();
-  assert.deepEqual(got.map((e) => `${e.type}:${e.source}`), ['plate.read:anpr', 'plate.watchlist_match:anpr', 'plate.read:anpr', 'person.unknown:gemini-scene', 'scene.unusual:gemini-scene', 'scene.alert:gemini-scene', 'zone.entered:z']);
+  assert.deepEqual(got.map((e) => `${e.type}:${e.source}`), ['plate.read:anpr', 'plate.watchlist_match:anpr', 'plate.read:anpr', 'vehicle.seen:gemini-scene', 'person.seen:gemini-scene', 'person.unknown:gemini-scene', 'scene.unusual:gemini-scene', 'scene.alert:gemini-scene', 'zone.entered:z']);
   assert.equal(got.find((e) => e.type === 'plate.watchlist_match').severity, 'critical');
   assert.equal(got.every((e) => e.ts === logs[0].timestamp.toISOString()), true, 'events carry the time of the frame');
   assert.equal(new Set(got.map((e) => e.id)).size, got.length);

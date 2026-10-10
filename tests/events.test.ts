@@ -393,13 +393,16 @@ test('engine: a new rule is seen once the cache is invalidated; a failed store r
   assert.equal((await e2.ingest([ev({ summary: 'e', data: { plate: 'E' } }, CAM, at(4000))])).alerts.length, 1, 'recovers on the next batch');
 });
 
-test('engine: test() delivers a made-up event and stores nothing', async () => {
+test('engine: test() delivers a made-up event and stores a labelled test event and alert so it can be seen', async () => {
   const x = engineWith([mkRule()]); await x.ready;
   const d = await x.engine.test((await x.store.getRule('u1', 'rule1'))!, { id: 'c', name: 'Test camera' });
   assert.deepEqual(d.map((y) => y.ok), [true]);
   assert.equal(x.delivered.length, 1);
-  assert.equal((await x.store.queryEvents({ userId: 'u1' })).length, 0);
-  assert.equal((await x.store.listAlerts({ userId: 'u1' })).length, 0);
+  const events = await x.store.queryEvents({ userId: 'u1' });
+  assert.deepEqual(events.map((e) => [e.type, e.tags]), [['system.test', ['test']]]);
+  const alerts = await x.store.listAlerts({ userId: 'u1' });
+  assert.equal(alerts.length, 1);
+  assert.match(alerts[0].title, /^TEST: /);
 });
 
 // ---- stores -------------------------------------------------------------------------------------------------------
