@@ -1,8 +1,10 @@
-# Session summary (2026-10-10: sessions 2 and 3) and open items
+# Session summary (sessions 2 to 4, 2026-10-10 and 2026-10-11) and open items
 
 Continues `docs/session-handoff.md` and `docs/gap-list.md` (status log). The plan is `docs/federation-plan.md`. Session 2 built the foundations;
-session 3 (the long chat after it) chose **Profile 3 (federation middleware)** as the first demo target and built plan steps 1 to 3. Both
-sessions are in this file. Persistent notes for the assistant are in its memory folder (see "How to start the next session").
+session 3 chose **Profile 3 (federation middleware)** as the first demo target and built plan steps 1 to 3; session 4 (the longest) finished
+step 4, built A8 incidents, a local no-AI detector, the Analyze / Analyze All buttons and a grid guard, and found and fixed the reasons the
+AI analysis and the alert rules appeared dead. All of it is committed on `main` (last commit: "Wire the grid guard into the analysis frame
+grab and add GET /api/grid/status"). Persistent notes for the assistant are in its memory folder (see "How to start the next session").
 
 ## Where it started
 
@@ -37,19 +39,52 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 
 **Test status:** the last full run, on the finished code: **622 tests, 592 passed, 1 failed, 0 cancelled, 29 skipped** (Postgres, Redis, the emulator and `sh`-dependent tests need environment). The one failure was a test that listed the registered connector types and did not expect the three new ones; it was fixed and re-run (`tests/vmsService.test.ts`, `tests/vmsConnectors.test.ts`: 19 of 19 pass), but the whole suite was not run a second time, so confirm with a fresh full run. After step 2 the suite had been 575 tests, 546 passed, 0 failed. Step 3 added 47 tests (24 + 10 + 13). `tsc --noEmit` reports only the two old errors (`AnalyticsTab.tsx` `Clock`, `MonitorTab.tsx` argument count).
 
-## Session 4 (2026-10-11): step 4 finished, local detector, incidents
+## Session 4 (2026-10-11): what was done
 
-| Area | Built | Where | Verified how |
-|---|---|---|---|
-| Events tab (step 4) | Search API, tags, Events / Alerts / Rules / Health. **Rules and filters now use lists**: event types are tick boxes with plain names, departments a dropdown (text box for non-admins). New events `vehicle.seen` and `person.seen` (from the AI's counts). **The rule Test button now leaves a labelled TEST event and alert** (it used to store nothing). Fixed the Logs-screen crash (`Clock` not imported) | `src/components/events/*`, `server/events/{schema,alertEngine}.ts` | Tests; browser-checked by the user. Postgres half of the event store **passed on Neon** (user ran it) |
-| AI switch + local detector | Per-camera "Analyze with AI" (Settings). Off = no model call; `local-detector` reports motion, movement in a zone, movement across a line from frame differences (`docs/analytics.md`). `camera.offline` / `camera.online` from the worker's run history (3 failed runs, then recovery) for every camera | `server/analytics/localDetector.ts`, `server/analysisWorker.ts` | `tests/localDetector.test.ts` (synthetic frames, fake model). Never on real footage. Zones and lines have no drawing screen yet |
-| Why nothing analysed | **Frame capture was timing out**: one RTSP grab of a grid camera measured at ~15 s against a 7 s limit. Timeouts now 25 s / 30 s (`FRAME_RTSP_TIMEOUT_MS`, `FRAME_HLS_TIMEOUT_MS`), `ANALYSIS_CONCURRENCY=4`, `ANPR_TIMEOUT_MS=20000` (all in `scale.local`). Gemini retired 2.5/2.0 models: defaults and `scale.local` now use the cheapest family models (`gemini-3.5-flash-lite`, fallback `gemini-3.1-flash-lite`). The cheap model sometimes returns slightly broken JSON: repaired (`server/analytics/modelJson.ts`) | `server/frameSource.ts`, `server/llm.ts` | Key and models tested against Google; capture timing measured once. The user's last log showed analyses starting; end-to-end alerts **not yet confirmed** |
-| Department video descriptor | Retention days and storage (cloud/local/mixed) per department; admin panel; Events marks older events "video likely no longer held" | `server/admin/*`, `AdminUsersPanel.tsx` | Tests (memory directory + routes); Firebase implementation not run |
-| **A8 incidents** | Correlation engine, three rules (plate on 2+ cameras, watchlist hit, two systems on one camera), department-scoped API, Events > Incidents | `server/incidents/`, `docs/incidents.md` | `tests/incidents.test.ts` (11, with synthetic events); `tests/incidentStorePg.test.ts` **not yet run on Neon** (creates `platform_incidents`: needs the user's yes) |
+| # | Area | What was built or fixed | Where | Verified how |
+|---|---|---|---|---|
+| 1 | **Events tab finished** | Search API and tags (from 2026-10-10), Events / Alerts / Incidents / Rules / Health. Rules use **lists, not codes**: event types are tick boxes with plain names, departments a dropdown (a text box for non-admins). New events `vehicle.seen` and `person.seen` (from the AI's counts). **The rule Test button now leaves a labelled TEST event and alert** (it used to store nothing, so it could never show). Fixed the Logs-screen crash (`Clock` not imported) | `src/components/events/*`, `server/events/{schema,alertEngine}.ts` | Tests; the user used it. Postgres half of the event store **passed on Neon** |
+| 2 | **AI switch + local detector** | Per-camera "Analyze with AI" (Settings). Off = no model call; `local-detector` reports motion, movement in a zone and across a line from frame differences. `camera.offline` / `camera.online` from the worker's run history, **reported once, 30-minute gap against flapping** (it had produced 130 events in 3 hours) | `server/analytics/localDetector.ts`, `server/analysisWorker.ts`, `docs/analytics.md` | `tests/localDetector.test.ts` (synthetic frames). Never on real footage |
+| 3 | **Department video descriptor** | Retention days and storage (cloud / local / mixed) per department; admin panel; the Events tab marks older events "video likely no longer held" (admins) | `server/admin/*`, `AdminUsersPanel.tsx`, `docs/admin-users.md` | Tests (memory directory and routes). The Firebase implementation was not run |
+| 4 | **A8 incidents** | Correlation engine with three rules: the same plate on 2+ cameras within an hour, a watchlist/wanted hit, two different systems on one camera within 3 minutes. Department-scoped API and the Events > Incidents screen (timeline, notes, close/reopen; a department sees that other departments' events exist, not their content) | `server/incidents/`, `docs/incidents.md` | `tests/incidents.test.ts` (11); **`tests/incidentStorePg.test.ts` passed on Neon**; screen checked in the in-app browser with mock data |
+| 5 | **Why no AI results: capture and model** | One grid RTSP grab measured at ~15 s against a 7 s limit: timeouts now 25 s / 30 s (`FRAME_RTSP_TIMEOUT_MS`, `FRAME_HLS_TIMEOUT_MS`), `ANALYSIS_CONCURRENCY=4`, `ANPR_TIMEOUT_MS=20000` (in `scale.local`). Gemini 2.5 and 2.0 are **retired** for this key: defaults and `scale.local` now use the cheapest family models (`gemini-3.5-flash-lite`, fallback `gemini-3.1-flash-lite`). The cheap model sometimes returned broken JSON: now asked for **structured output (a response schema)** with a repair step behind it | `server/frameSource.ts`, `server/llm.ts`, `server/analytics/{builtin,modelJson}.ts` | Key and models tested against Google (8 of 8 calls valid); capture timing measured once |
+| 6 | **Why no alerts: identity bug** | `scripts/demo.mjs` sets `MEDIA_ALLOW_GUESTS=true`, and the permissions code then treated **every request as the guest `demo`**, even with a valid Google sign-in. Rules, the Events tab and incidents looked at `demo`'s data while the AI events (739 stored) belonged to the real account. **Fixed**: a valid sign-in keeps its identity; guest only without one. The user's old rule was **moved from `demo` to their account in Neon** (with their request) | `server/authz/authz.ts` | `tests/authz.test.ts`; read-only database queries showed the cause |
+| 7 | **Analyze / Analyze All** | Replaced the Scope selector and "Activate Guard". **Analyze** covers exactly the ticked cameras (disabled at 0); **Analyze All** covers every camera (confirms above 10); **Stop analysis**. The camera in focus is **no longer added silently**. Cause of "1-2 ticked but 18-30 analysed": `serverAnalysis` flags persist in Firestore (30 were flagged) and the worker analyses every flagged camera. Starting now makes the flagged set exactly the targets; Stop releases all; opening the app never changes a flag; **`scripts/demo.mjs up` clears leftover flags** (`--keep-analysis` opts out) | `src/lib/guardSync.ts`, `src/App.tsx`, `src/components/Header.tsx`, `scripts/demo.mjs` | `tests/guardSync.test.ts`; behaviour checked in the in-app browser (guest mode) |
+| 8 | **Grid guard** | The camera grid caps each account's viewing time and refuses the account (HLS 403 "watch time limit", RTSP/WHEP 401) for a cooldown. Now: at most `GRID_GRABS_PER_MIN` (default 10) analysis grabs a minute (extra ones wait); a refusal pauses all analysis grabs 5 min, doubling to 30; **a pause is not a failure** (no failure count, no offline event, no back-off); state shared through Redis; `GET /api/grid/status` | `server/gridGuard.ts`, `server.ts`, `server/frameSource.ts`, `server/analysisWorker.ts` | `tests/gridGuard.test.ts` (fake clock and store). **Never against the real grid** |
+| 9 | **Per-camera AI status** | Feed camera list: "AI: Analysed 3 min ago / Waiting for its first analysis / Paused, resumes by itself / Not working right now" (hover for the reason); "Ongoing context" shows the actual reason; **Events > Health "AI analysis and the camera grid"**: whether the grid refuses the account, grab usage, and a table of every analysed camera | `src/lib/analysisStatus.ts`, `MonitorTab.tsx`, `HealthView.tsx` | Unit tests for the wording; grid part and Feed list checked in the browser (guest mode). The camera table with real records was not shown |
+| 10 | **Checks run** | Full suite, the incident store on Neon, read-only database queries, an RTSP grab test, in-app browser checks on an isolated dev server (`PORT=3199 SERVER_ANALYSIS=false`, so the user's grid account was not touched) | | see Test status |
 
-**Test status:** the last full run (before the A8 and descriptor work) was 635 tests, 602 passed, 30 skipped, 3 failed: the rule-test route test (since fixed), the synthetic camera lab (known timeout on this laptop) and one `h265` test (passes alone; load-sensitive). Related files re-run since: all pass. **Run the full suite once more** before relying on these numbers. `tsc` shows only the old `MonitorTab.tsx` error.
+**Findings worth remembering**
+- The AI analysis **was working** (hundreds of events in Postgres) while the user believed it was not: check `platform_events` by `user_id` and `type` before guessing.
+- The grid's watch-time cap, shared by analysis and the live wall, is the main reason cameras show "Could not capture a frame". The grid's real allowance is unknown.
+- `FIRESTORE_LOG_MODE=notable` means the Logs tab shows only notable frames; the Events tab reads Postgres. `scripts/demo.mjs up --all-logs` shows every analysis in Logs (more Firestore writes).
+- A full suite run loads the 2-core laptop: do not run it while the user is testing live. A `grep -l` that matches nothing inside `node --test $(...)` runs the **whole** suite.
 
-**Next:** A7 federation service (identities, quotas, session caps); A10/A26 (video wall layouts, federated report); a screen to draw zones/lines for the local detector; plate sightings per department; confirm end-to-end that rules fire once frames are analysed; run `incidentStorePg` on Neon.
+**Test status:** last full run **655 tests, 624 passed, 0 failed, 0 cancelled, 31 skipped** (Postgres, Redis, the emulator and `sh`-dependent tests need environment), 12.9 minutes. It started before the grid-guard edits; the 46 related tests were re-run on the finished code and all pass, but **the full suite was not run again after them**. `tsc --noEmit` shows only the old `MonitorTab.tsx` argument-count error (the `Clock` error is fixed).
+
+## Completed and left to do (the short list)
+
+**Completed in session 4**
+- Events tab with rules as tick boxes, `vehicle.seen` / `person.seen`, a visible rule Test, department dropdowns; Logs crash fixed
+- Per-camera AI on/off with the local motion / zone / line detector; offline/online events de-flooded
+- Department video descriptor (retention, storage) and the "video likely no longer held" marker
+- A8 incidents: engine, store (Postgres run on Neon), API, screen, docs
+- Capture timeouts, cheaper Gemini models, structured output, JSON repair
+- Identity bug (everything filed under `demo`) fixed; the old rule moved to the user's account
+- Analyze / Analyze All / Stop; no hidden focus camera; stale server flags released (also at launcher start)
+- Grid guard (rate limit, pause on refusal, shared state, `/api/grid/status`)
+- Per-camera AI status in the Feed and on the Health tab
+- Docs: `docs/incidents.md`, new sections in `docs/analytics.md`, `docs/admin-users.md`, `docs/openapi.yaml`, this file
+
+**Still to do (in the order I would take them)**
+1. **Confirm end to end on the real grid:** restart through `scripts/demo.mjs`, sign in with Google, tick 1-2 cameras, press Analyze; check that the "Vehicle seen" rule raises an alert, that Events > Incidents fills when a plate appears on two cameras, and that Events > Health shows the grid state. Delete the duplicate rule (the database holds two rules under the user's account).
+2. Run the **full suite once more** (and record the numbers here).
+3. **A7 federation service**: department and connector identities (API keys or mTLS), quotas, session caps.
+4. **A10 / A26**: video wall layouts and session control; federated analytics report.
+5. A **screen to draw zones and lines** for the local detector (without it only motion is reported).
+6. **Plate sightings per department** (still per-owner), then **A18** statewide tracking and route reconstruction.
+7. Small follow-ups: a department picker for people in several departments; an all-department view of faces, plates and logs for organisation-wide admins (needs a server route); an indexed plate column for incident lookups (they use the text search); incident notifications (webhook / e-mail); a sealed store for department-system logins; key rotation for `SOURCE_SECRET_KEY`; linking a runner's discovered cameras to the Registry; onboarded cameras assigned to a regional gateway; Kafka bus if needed; low-disk alert for recordings; automatic holds from alerts; signed evidence manifests; e-mail/SMS alert channels; pinning the wrong-camera tile's root cause.
+8. **Profile 1 only** (deliberately later): A16, A17, A21 to A25 (edge recording, GPU analyzers, encryption and per-user stream tokens, DR, Kubernetes, the 80,000-camera load test, architecture and security documents).
 
 ## Decisions and facts from the user (session 3)
 
@@ -59,7 +94,7 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 - Writing throwaway test rows to the Neon database (and creating `camera_sources`) was approved for tests; rows are removed after each run.
 - The "needs you" items 1 to 5 from the session 2 list were reported done and tested by the user; #6 (the State's questions) is unanswerable for now.
 
-## Session 4 (2026-10-10): step 4, search API and Events tab
+## Step 4 (2026-10-10): search API and Events tab (early session 4)
 
 Built the event search API (text, tags, department, source, cursor paging, total) and tag editing, and a new **Events tab** with Events, Alerts, Rules and Health (details in `docs/gap-list.md` and `docs/analytics.md`).
 Everything from sessions 2 to 4 was committed and pushed to `main`; `.gitignore` now also excludes keys, certificates, env files, service accounts and `live-grid-report-*` (their network captures contain the camera grid's login).
@@ -73,28 +108,24 @@ re-run it alone to confirm. `tsc --noEmit`: only the two old errors.
 ## Open items
 
 ### Needs you
-1. **Back up `SOURCE_SECRET_KEY`** (in `scale.local`) somewhere safe. **Restart the server through your launcher** (`scripts/demo.mjs`) so it picks up the key and all the new routes; the server on port 3000 was the old built bundle when last checked.
-2. **Confirm the deployed `firestore.rules` include the step 1 changes** (faces, watchlist, logs per department): `firebase deploy --only firestore:rules` together with the new app build. You reported items 1 to 5 done; this is the one thing that changed after the original list.
-3. **Questions only the State can answer** (still open): which VMS/NVR brands, hardware and bandwidth budget, who may query VAHAN/SARTHI/eGujCop/AFIS/NAFIS and on what legal basis, whether departments will give read-only accounts, and whether the three models are alternatives. (Retention and storage: answered in part, above.)
-4. If you want AI costs down: collect ~100 frames in `bench-frames/` and run `npm run ai:bench` (needs the provider keys; see `docs/ai-providers.md`).
+1. **Restart through your launcher** (`node scripts/demo.mjs up`; it rebuilds and clears the cameras left flagged for analysis), hard-reload the page, sign in with **Google** (not the guest bypass), tick the cameras, press **Analyze**. Until you restart, the old server keeps analysing all the flagged cameras.
+2. Delete the duplicate "Vehicle" rule in the Rules tab (two rules now exist under your account).
+3. **Questions only the State can answer** (still open): which VMS/NVR brands, hardware and bandwidth budget, who may query VAHAN/SARTHI/eGujCop/AFIS/NAFIS and on what legal basis, whether departments will give read-only accounts, and whether the three models are alternatives.
+4. Optional: `--all-logs` on `up` to see every analysis in the Logs tab; collect ~100 frames in `bench-frames/` and run `npm run ai:bench` to compare models (see `docs/ai-providers.md`).
+5. Done by you earlier and still needed to keep true: `SOURCE_SECRET_KEY` backed up, `firestore.rules` deployed with the current app build.
+6. The working tree holds `docs/*.pptx` / `.docx` changes that are not part of this work (a deleted old deck, a new deck and speaker notes): decide whether to commit them.
 
 ### Built but never run against the real thing
-- **Real devices:** ONVIF, Hikvision and Dahua (adapters, onboarding, and now the three event connectors); the webhook receiver with a real sender.
-- **Firebase on a real project:** claims, the admin directory, Email/Password sign-in, the new face/watchlist/log listeners and Settings notes in a browser, the Registry document write for onboarded cameras.
-- **Infrastructure:** Redis bus (and Kafka, not written); Ceph/MinIO/AWS; a gateway on another machine over HTTPS; capacity on server-class hardware (all figures from one shared 1.1 GHz Celeron).
-- **AI and video:** a real Gemini key at scale and the frame gate's real pass rate; the AI provider switch and benchmark on real keys; ANPR on CPU/GPU; H.265 re-encode of onboarded cameras on Quick Sync; viewer scale; the analysis worker's frame grab from a stored source on a real camera.
-- Now run (were not before): Postgres stores on Neon, the Firestore rules in the emulator, the media path with two real MediaMTX servers.
+- **Real devices:** ONVIF, Hikvision and Dahua (adapters, onboarding, event connectors); the webhook receiver with a real sender.
+- **Firebase on a real project:** claims, the admin directory (including the new department retention fields), Email/Password sign-in, the new face/watchlist/log listeners, the Registry write for onboarded cameras.
+- **The camera grid:** the grid guard's refusal and pause paths (only fakes so far), the effect of `GRID_GRABS_PER_MIN`, the Analyze flag handling against real Firestore data (only guest mode was exercised in the browser).
+- **AI and video:** the local detector on real footage; incidents on real cameras; the Health camera table with real camera records; ANPR on GPU; H.265 re-encode on Quick Sync; viewer scale.
+- **Infrastructure:** Kafka (not written); Ceph/MinIO/AWS; a gateway on another machine over HTTPS; capacity on server-class hardware.
+- Now run (were not before): Postgres stores (events, alerts, sources, incidents) on Neon, the Firestore rules in the emulator, the media path with two real MediaMTX servers, the Redis bus.
 - The full list is in `docs/gap-list.md` "Not verified".
 
 ### Next build steps
-Done since session 2: A5 remainder (except plate sightings), A4, event connectors, webhook receiver, worker and gateway onto the bus.
-
-- **Step 4 (done, session 4): A9 search API and a thin A11 dashboard** (the Events tab). Still to do there: run its Postgres test, check it signed in, a per-department descriptor so Health can say "video no longer held".
-- **A8** correlation engine and incidents; **A18** statewide tracking and route reconstruction on shared data.
-- **A7** federation service: department and connector identities (API keys or mTLS), quotas, session caps (also for the new event connections: a recorder may allow only a few).
-- **A10** video wall layouts and session control; **A26** federated analytics report.
-- **Profile 1 only** (deliberately later): A16 edge recording with central clip fetch; A17 face/crowd/anomaly analyzers and a GPU service; A21 encryption, segmentation and per-user stream tokens; A22 DR design; A23 Kubernetes manifests; A24 the 80,000-camera load-test report; A25 the architecture, security and "departments unaffected" documents.
-- **Small follow-ups:** a per-department descriptor (retention days, storage type) so the dashboard can say "video no longer held"; a department picker for people in several departments; plate sightings per department (still per-owner); an all-department view of faces, plates and logs for organisation-wide admins (needs a server route); linking a runner's discovered cameras to the Registry; a sealed store for department-system logins (they are still in a plain file); onboarded cameras assigned to a regional gateway; key rotation for `SOURCE_SECRET_KEY`; Kafka bus if a department needs it; low-disk alert for recordings; automatic holds from alerts; signed evidence manifests; per-camera analyzer settings from the camera record; e-mail/SMS alert channels.
+See "Completed and left to do" above; the plan itself is `docs/federation-plan.md`. Done so far: A4, A5 (except plate sightings), A8, A9 and a thin A11 (the Events tab), event connectors, webhook receiver, worker and gateway on the bus, the grid guard.
 
 ### Known limits and quirks
 - **Video access is the media server's shared viewer password, not department-scoped.** A signed-in user who knew a camera's path name could play it. Names are random (`fed-<12 hex>`) and appear only in camera documents the person may read, but this is not access control (A21).
@@ -103,6 +134,11 @@ Done since session 2: A5 remainder (except plate sightings), A4, event connector
 - Video retention is the departments' own; the platform does not set it for Profile 3.
 - Two older tests (`mediaServerEntrypoint`, the synthetic camera lab) were never confirmed on a clean tree; the camera lab passed in the later full runs, and `mediaServerEntrypoint` is skipped without `sh` and its environment variables.
 - The wrong-camera tile's root cause was never pinned down (it cleared after re-onboarding).
+- **Grid watch-time cap** (see above): the guard's per-minute number is a guess; the live wall tiles and the playback proxy also use the account and are not limited by it. A wrong password also answers 401 and is treated as a refusal.
+- **Analyze, Stop and flags:** Stop and Analyze release every camera flagged for server analysis in the user's list, including ones flagged in Settings ("Analyze on server"); flags are changed only by those two actions and by the launcher at start.
+- **Guest / demo mode** is the shared user `demo` (no real identity); rules and events made there are not visible to a signed-in account.
+- **Incident lookups** use the text search on the events table (fine at demo scale); two server processes handling the first two sightings of a trail at the same instant can each open an incident.
+- Zones and lines for the local detector are set in the camera record (`analyzers['local-detector']`); there is no screen yet.
 
 ### Tooling notes
 - `src/App.tsx`, `server.ts`, `firestore.rules`, `server/mediaPaths.ts` and many other files mix CRLF and LF: scripted multi-line replaces must try both. **Write the patch script with the Write tool** (shell `node -e` and heredocs with backticks or `$` silently mangle code), pass replacements as functions (`String.replace` treats `$$` as one `$`), and re-run the tests after every scripted edit.
@@ -110,20 +146,28 @@ Done since session 2: A5 remainder (except plate sightings), A4, event connector
 - The user's server on port 3000 may be the built `dist/server.cjs` (old code). To check new server behaviour boot `tsx server.ts` with `PORT=3199` and stop it by its PID afterwards; for the UI use `preview_start` on another port (temporary `.claude/launch.json` entry with `autoPort`, then remove it). The dev server takes about a minute to start.
 - MediaMTX 1.21 binds MoQ on :8892 by default and writes TLS files into its working directory: tests set `moq: false` and give each MediaMTX its own cwd.
 - Node on Windows cannot read bash `/tmp` paths. Java, the firebase CLI and the Firestore emulator jar exist on this machine, so `npm run test:rules` works; the dev dependency `@firebase/rules-unit-testing@^5` was added (v6 needs firebase 13).
+- **Edit helper that keeps line endings:** a small `patch(file, pairs)` that tries the text as written, then with CRLF, and replaces with a function. Write the script with the Write tool, run it, delete it. Long shell heredocs with mixed quotes break the bash tool.
+- **In-app browser check without touching the grid:** add a temporary `verify-3199` entry to `.claude/launch.json` (`node --import tsx server.ts`, env `PORT=3199`, `SERVER_ANALYSIS=false`), start it with `preview_start` (about a minute), use the guest bypass, mock `fetch` for API answers, then stop it and restore `launch.json`.
+- **Read-only database checks** use `scale.local` (`DATABASE_URL`, `DATABASE_SSL=true`) with the `pg` package from a throwaway script; print counts only, never the connection string. Writing to Neon needs the user's yes each time.
+- Do not run the full suite while the user tests live; do not kill the user's `mediamtx.exe` or `scripts/demo.mjs` processes.
 
-## Commands and settings added in session 3
+## Commands and settings added in sessions 3 and 4
 
 | What | Where |
 |---|---|
 | `npm run ai:bench`, `npm run clear-cameras`, `npm run test:rules` | `package.json` |
-| `AI_PROVIDER`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AI_VISION_MODELS`, `AI_CHAT_MODELS` (also `AI_TIMEOUT_MS`, `AI_MAX_OUTPUT_TOKENS`, `OPENAI_JSON_MODE`, `OPENAI_OMIT_TEMPERATURE`) | `docs/ai-providers.md`, `.env.example` |
+| `AI_PROVIDER`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AI_VISION_MODELS`, `AI_CHAT_MODELS` (also `AI_TIMEOUT_MS`, `AI_MAX_OUTPUT_TOKENS`, `OPENAI_JSON_MODE`, `OPENAI_OMIT_TEMPERATURE`). Session 4: both model lists in `scale.local` are `gemini-3.5-flash-lite,gemini-3.1-flash-lite` | `docs/ai-providers.md`, `.env.example`, `scale.local` |
 | `SOURCE_SECRET_KEY` (needs `DATABASE_URL` and `FIREBASE_SERVICE_ACCOUNT` too) | `scale.local`, `docs/deployment.md` |
 | `WEBHOOK_ENABLED` (default on), `VMS_ENABLED`, `VMS_DATA_DIR`, `VMS_ALLOW_PRIVATE`, `EVENT_BUS=redis` + `REDIS_URL` | `docs/connectors-vms.md`, `.env.example` |
-| Environment-gated tests: `TEST_DATABASE_URL` (+ `TEST_DATABASE_SSL=true` for Neon) for the Postgres tests; the emulator via `npm run test:rules` | `tests/*Pg.test.ts`, `tests/firestoreRules.test.ts` |
+| `FRAME_RTSP_TIMEOUT_MS` (25000), `FRAME_HLS_TIMEOUT_MS` (30000), `ANPR_TIMEOUT_MS` (20000 in `scale.local`), `ANALYSIS_CONCURRENCY` (4 in `scale.local`), `GRID_GRABS_PER_MIN` (10), `HLS_COOLDOWN_MS` (5 min base for the pause) | `server/frameSource.ts`, `server/gridGuard.ts`, `docs/analytics.md` |
+| `node scripts/demo.mjs up [--keep-analysis] [--all-logs]`, `status`, `analysis-off --yes` | `scripts/demo.mjs` |
+| `GET /api/grid/status`, `GET|POST /api/incidents...`, `PATCH /api/admin/departments/{id}` | `docs/openapi.yaml`, `docs/incidents.md` |
+| Environment-gated tests: `TEST_DATABASE_URL` (+ `TEST_DATABASE_SSL=true` for Neon) for the Postgres tests (`tests/*Pg.test.ts`); the emulator via `npm run test:rules` | `tests/` |
 
 ## How to start the next session
 
-1. Re-run the full suite (`node --import tsx --test tests/*.test.ts`, about 10 minutes; do not run other heavy work alongside, some tests are load-sensitive) and `npx tsc --noEmit`; record the numbers here.
-2. Read this file, `docs/gap-list.md` (status log) and `docs/federation-plan.md` (gap stack and order), then the area you are changing (`docs/connectors-vms.md`, `docs/adapters.md`, `docs/admin-users.md`).
-3. Step 4 (A9 search API, thin A11 dashboard) is done. Start **A7** (federation service: identities, quotas, session caps), then A8 and A18, per "Next build steps".
-4. Say plainly what is not verified whenever you touch an area in "Built but never run".
+1. Read this file, `docs/gap-list.md` (status log) and `docs/federation-plan.md` (gap stack and order), then the area you are changing (`docs/incidents.md`, `docs/analytics.md`, `docs/connectors-vms.md`, `docs/adapters.md`, `docs/admin-users.md`). The assistant's memory folder has the same story in short form.
+2. Ask the user what they saw after restarting and pressing Analyze (the "Still to do" item 1). If rules still do not fire, check the database first: `platform_events` by `user_id`/`type`, `alert_rules` by `user_id`, and `node scripts/demo.mjs status` (cameras flagged, recent logs).
+3. Re-run the full suite (`node --import tsx --test tests/*.test.ts`, about 13 minutes, only when the user is not testing live) and `npx tsc --noEmit`; record the numbers here.
+4. Then take the next item from "Still to do": A7 (federation service), A10 / A26, the zone and line screen, plate sightings per department, A18.
+5. Say plainly what is not verified whenever you touch an area in "Built but never run".
