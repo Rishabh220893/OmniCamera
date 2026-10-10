@@ -52,7 +52,7 @@ export function registerFederationClientRoutes(app: Express, getService: () => F
   const raw = (limit: string) => express.raw({ type: () => true, limit });
   const text = (req: Request) => (Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '');
 
-  app.get('/api/federation/me', gate((svc, c, _req, res) => { res.json(svc.whoami(c)); }));
+  app.get('/api/federation/me', gate(async (svc, c, _req, res) => { res.json(await svc.whoami(c)); }));
 
   app.post('/api/federation/events', raw(MAX_BODY), gate(async (svc, c, req, res) => {
     const r = await svc.push(c, text(req));
@@ -62,26 +62,26 @@ export function registerFederationClientRoutes(app: Express, getService: () => F
     res.status(400).json({ error: r.error });
   }), tooBig);
 
-  app.post('/api/federation/sessions', raw('8kb'), gate((svc, c, req, res) => {
+  app.post('/api/federation/sessions', raw('8kb'), gate(async (svc, c, req, res) => {
     let what = 'session';
     try { const j = JSON.parse(text(req) || '{}'); if (typeof j?.what === 'string' && j.what.trim()) what = j.what; } catch { res.status(400).json({ error: 'The body is not valid JSON.' }); return; }
-    const r = svc.acquire(c, what);
+    const r = await svc.acquire(c, what);
     if (r.status === 'ok') { res.status(201).json({ lease: r.lease }); return; }
     if (r.status === 'forbidden') { res.status(403).json({ error: 'This key may not open sessions.' }); return; }
     if (r.status === 'cap') { res.setHeader('Retry-After', String(r.retryAfterS)); res.status(429).json({ error: `Session cap reached (${r.max}).` }); return; }
     res.status(404).json({ error: 'No such session.' });
   }), tooBig);
 
-  app.post('/api/federation/sessions/:id/renew', gate((svc, c, req, res) => {
+  app.post('/api/federation/sessions/:id/renew', gate(async (svc, c, req, res) => {
     const id = String(req.params.id);
-    const r = LEASE_RE.test(id) ? svc.renew(c, id) : { status: 'gone' as const };
+    const r = LEASE_RE.test(id) ? await svc.renew(c, id) : { status: 'gone' as const };
     if (r.status === 'ok') { res.json({ lease: r.lease }); return; }
     res.status(404).json({ error: 'That session is gone (it ran out or was released). Open a new one.' });
   }));
 
-  app.delete('/api/federation/sessions/:id', gate((svc, c, req, res) => {
+  app.delete('/api/federation/sessions/:id', gate(async (svc, c, req, res) => {
     const id = String(req.params.id);
-    if (!LEASE_RE.test(id) || !svc.release(c, id)) { res.status(404).json({ error: 'No such session.' }); return; }
+    if (!LEASE_RE.test(id) || !(await svc.release(c, id))) { res.status(404).json({ error: 'No such session.' }); return; }
     res.json({ status: 'ok' });
   }));
 }
@@ -102,12 +102,12 @@ export function registerFederationAdminRoutes(app: Express, ctx: FederationAdmin
 
   app.get('/api/federation/clients', async (req, res) => {
     if (!(await ctx.allow(req, res, 'vms.view'))) return;
-    res.json({ clients: ctx.service.list() });
+    res.json({ clients: await ctx.service.list() });
   });
 
   app.get('/api/federation/sessions', async (req, res) => {
     if (!(await ctx.allow(req, res, 'vms.view'))) return;
-    res.json({ sessions: ctx.service.sessions() });
+    res.json({ sessions: await ctx.service.sessions() });
   });
 
   app.post('/api/federation/clients', async (req, res) => {

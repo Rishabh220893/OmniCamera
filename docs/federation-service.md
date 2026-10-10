@@ -35,13 +35,28 @@ POST /api/federation/events    Authorization: Bearer fed_police-nvr.<secret>
 Settings: `FEDERATION_ENABLED` (default on; `false` switches the routes off), `FEDERATION_DEPARTMENT_SESSION_CAP` (unset = no department-wide cap),
 clients are kept in `<VMS_DATA_DIR or .data>/federation-clients.json` (mode 0600).
 
-## Not built (the rest of A7) and not verified
+## Screen
+
+Settings > **Department and connector access** (administrators who are signed in; not shown in guest mode): add a client (name, department, permissions, limits),
+see each client's use (events this minute / today against the limits, live sessions, last seen, refused requests), change limits, switch a client on or off,
+make a new key, remove. A key is shown once, with a Copy button. Code: `src/components/FederationPanel.tsx`, `src/lib/federationApi.ts`.
+**Type-checked and built, not opened in a browser** (the panel needs a real signed-in administrator; the in-app browser only had guest mode).
+
+## Shared counters (Redis)
+
+Counters and session leases live behind a `UsageStore` (`server/federation/usageStore.ts`). The default is in this process's memory. With
+`FEDERATION_STORE=redis` and `REDIS_URL` the quotas and caps hold across several server processes: events are counted in ten-second buckets over the last
+minute and per UTC day; a quota check and its count, and a session slot check and its take, are each one Lua script, so two servers cannot both take the
+last slot. A push the bus then refuses gives its count back. The same contract suite (`tests/federationUsage.test.ts`) runs on both stores.
+**The Redis store has never been run against a Redis** (none on this machine): set `TEST_REDIS_URL` and run that file first. The client list itself
+(`federation-clients.json`) is still a file per server, so with several servers create clients through one of them or share that file.
+
+## Not built and not verified
 
 - **mTLS identities.** Only API keys. mTLS belongs at the reverse proxy (it can map a certificate to a key header); nothing in the app reads certificates.
 - **Routing and sharing policy** (which department may see which other department's events or cameras, who may open whose video): not built. Event
   visibility stays as in `docs/admin-users.md` and `docs/incidents.md`. The **session cap counts slots but does not control video access**: the
   media server's shared viewer password is still the only video gate (A21).
-- **Counters and leases are in memory** per server process: a restart forgets them (leases simply end), and with several processes each keeps its own
-  count, so limits are per process. A Redis-backed counter is the follow-up if the service runs on more than one instance.
-- No screen yet: clients are managed through the API (a Settings panel like the webhook sources' is a small follow-up).
+- Without Redis, counters are per process and a restart forgets them (leases simply end).
+- Clients are not in `docs/openapi.yaml` yet.
 - Tested with fakes over real HTTP (a real Express app, real fetch); **never with a real department system**, never on the live server.

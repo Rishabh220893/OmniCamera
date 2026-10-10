@@ -79,7 +79,7 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 **Still to do (in the order I would take them)**
 1. **Confirm end to end on the real grid:** restart through `scripts/demo.mjs`, sign in with Google, tick 1-2 cameras, press Analyze; check that the "Vehicle seen" rule raises an alert, that Events > Incidents fills when a plate appears on two cameras, and that Events > Health shows the grid state. Delete the duplicate rule (the database holds two rules under the user's account).
 2. Run the **full suite once more** (and record the numbers here).
-3. **A7 federation service**: first slice built in session 5 (API-key identities, department stamp, quotas, session caps; `docs/federation-service.md`). Still to do: mTLS, sharing/routing policy, shared counters, a Settings screen.
+3. **A7 federation service**: first slice built in session 5 (API-key identities, department stamp, quotas, session caps; `docs/federation-service.md`). Settings screen and Redis counters added later in session 5 (Redis never run). Still to do: mTLS, sharing/routing policy.
 4. **A10 / A26**: video wall layouts and session control; federated analytics report.
 5. A **screen to draw zones and lines** for the local detector (without it only motion is reported).
 6. **Plate sightings per department** (still per-owner), then **A18** statewide tracking and route reconstruction.

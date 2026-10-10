@@ -104,7 +104,7 @@ test('quotas: the per-minute quota is all-or-nothing and moves on with the clock
   assert.equal(day.status === 'quota' && day.which === 'day', true);
   clock.t = Date.UTC(2026, 9, 12, 0, 0, 5);
   assert.equal((await svc.push(c, evs(5))).status, 'ok', 'a new day');
-  const u = svc.get('q')!.usage;
+  const u = (await svc.get('q'))!.usage;
   assert.deepEqual([u.eventsToday, u.received, u.rejected], [5, 13, 2]);
 });
 
@@ -122,39 +122,39 @@ test('sessions: a cap per client; slots come back on release and when a lease ru
   const { svc, clock } = setup();
   const a = svc.authenticate((await svc.create({ id: 'a', department: 'Traffic', scopes: ['sessions'], quotas: { maxSessions: 2 } }, 'u')).key)!;
   const b = svc.authenticate((await svc.create({ id: 'b', department: 'Traffic', scopes: ['sessions'], quotas: { maxSessions: 2 } }, 'u')).key)!;
-  const one = svc.acquire(a, 'wall A');
-  const two = svc.acquire(a, 'wall B');
+  const one = await svc.acquire(a, 'wall A');
+  const two = await svc.acquire(a, 'wall B');
   assert.equal(one.status === 'ok' && two.status === 'ok', true);
-  const third = svc.acquire(a, 'wall C');
+  const third = await svc.acquire(a, 'wall C');
   assert.deepEqual([third.status, third.status === 'cap' && third.max], ['cap', 2]);
-  assert.equal(svc.acquire(b, 'other client').status, 'ok', 'another client has its own cap');
-  assert.equal(svc.release(b, (one as any).lease.id), false, 'not b\'s lease');
-  assert.equal(svc.renew(b, (one as any).lease.id).status, 'gone');
-  assert.equal(svc.release(a, (one as any).lease.id), true);
-  assert.equal(svc.acquire(a, 'wall C').status, 'ok', 'a released slot is free');
+  assert.equal((await svc.acquire(b, 'other client')).status, 'ok', 'another client has its own cap');
+  assert.equal(await svc.release(b, (one as any).lease.id), false, 'not b\'s lease');
+  assert.equal((await svc.renew(b, (one as any).lease.id)).status, 'gone');
+  assert.equal(await svc.release(a, (one as any).lease.id), true);
+  assert.equal((await svc.acquire(a, 'wall C')).status, 'ok', 'a released slot is free');
   clock.t += 45_000;
-  assert.equal(svc.renew(a, (two as any).lease.id).status, 'ok');
+  assert.equal((await svc.renew(a, (two as any).lease.id)).status, 'ok');
   clock.t += 45_000; // the other leases (never renewed) are older than 60 s now, the renewed one is not
-  assert.equal(svc.get('a')!.usage.activeSessions, 1);
-  assert.equal(svc.acquire(a, 'again').status, 'ok');
+  assert.equal((await svc.get('a'))!.usage.activeSessions, 1);
+  assert.equal((await svc.acquire(a, 'again')).status, 'ok');
   clock.t += 120_000;
-  assert.equal(svc.renew(a, (two as any).lease.id).status, 'gone', 'a lease that ran out is gone');
-  assert.equal(svc.sessions().length, 0);
+  assert.equal((await svc.renew(a, (two as any).lease.id)).status, 'gone', 'a lease that ran out is gone');
+  assert.equal((await svc.sessions()).length, 0);
 });
 
 test('sessions: switching a client off or removing it drops its leases; the scope is checked; an optional department cap spans clients', async () => {
   const { svc } = setup({ depCap: 3 });
   const noScope = svc.authenticate((await svc.create({ id: 'n', department: 'Traffic' }, 'u')).key)!;
-  assert.equal(svc.acquire(noScope, 'x').status, 'forbidden');
+  assert.equal((await svc.acquire(noScope, 'x')).status, 'forbidden');
   const mkc = async (id: string, dept = 'Traffic') => svc.authenticate((await svc.create({ id, department: dept, scopes: ['sessions'], quotas: { maxSessions: 5 } }, 'u')).key)!;
   const a = await mkc('a'), b = await mkc('b'), other = await mkc('o', 'Police');
-  svc.acquire(a, '1'); svc.acquire(a, '2'); svc.acquire(b, '3');
-  assert.equal(svc.acquire(b, '4').status, 'cap', 'Traffic is at 3 in total');
-  assert.equal(svc.acquire(other, '5').status, 'ok', 'another department is not affected');
+  await svc.acquire(a, '1'); await svc.acquire(a, '2'); await svc.acquire(b, '3');
+  assert.equal((await svc.acquire(b, '4')).status, 'cap', 'Traffic is at 3 in total');
+  assert.equal((await svc.acquire(other, '5')).status, 'ok', 'another department is not affected');
   await svc.update('a', { enabled: false });
-  assert.equal(svc.acquire(b, '4').status, 'ok', 'a switched-off client\'s leases were dropped');
+  assert.equal((await svc.acquire(b, '4')).status, 'ok', 'a switched-off client\'s leases were dropped');
   await svc.remove('b');
-  assert.equal(svc.sessions().filter((l) => l.clientId === 'b').length, 0);
+  assert.equal((await svc.sessions()).filter((l) => l.clientId === 'b').length, 0);
 });
 
 test('update: quotas and scopes change; a bad value is refused and changes nothing', async () => {

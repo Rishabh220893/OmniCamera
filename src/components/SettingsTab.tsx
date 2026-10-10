@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import AdminUsersPanel from './AdminUsersPanel';
+import FederationPanel from './FederationPanel';
 import { CameraConfig, KnownFace, NotificationPrefs, WatchlistEntry } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 
@@ -192,6 +193,7 @@ export default function SettingsTab(props: SettingsTabProps) {
 
       {/* Administrators: users, departments and which cameras each department sees. Not for the offline guest (no account, no server session). */}
       {isAdmin && user && user.uid !== 'demo-guest' && <AdminUsersPanel />}
+      {isAdmin && user && user.uid !== 'demo-guest' && <FederationPanel />}
 
       {/* Cloud sync status */}
       <div className="card p-8 relative overflow-hidden">
