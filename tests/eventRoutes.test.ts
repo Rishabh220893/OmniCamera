@@ -161,15 +161,18 @@ test('routes: an event raises an alert that can be listed, acknowledged and reso
   });
 });
 
-test('routes: a rule can be tested without creating an alert, and a receiver that fails is reported', async () => {
+test('routes: a rule test leaves a labelled TEST event and alert (and no real one), and a receiver that fails is reported', async () => {
   await withApp(async (call, h) => {
     const id = (await call('u1', 'POST', '/api/alert-rules', RULE)).json.rule.id as string;
     const t = await call('u1', 'POST', `/api/alert-rules/${id}/test`);
     assert.equal(t.status, 200);
     assert.deepEqual(t.json.deliveries.map((d: { ok: boolean }) => d.ok), [true]);
     assert.equal((h.sent[0] as { event: string }).event, 'system.test');
-    assert.equal((await call('u1', 'GET', '/api/alerts')).json.alerts.length, 0);
-    assert.equal((await call('u1', 'GET', '/api/events')).json.events.length, 0);
+    const alerts = (await call('u1', 'GET', '/api/alerts')).json.alerts as Array<{ title: string }>;
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0].title, /^TEST: /);
+    const events = (await call('u1', 'GET', '/api/events')).json.events as Array<{ type: string }>;
+    assert.deepEqual(events.map((e) => e.type), ['system.test']);
   });
   await withApp(async (call) => {
     const id = (await call('u1', 'POST', '/api/alert-rules', RULE)).json.rule.id as string;

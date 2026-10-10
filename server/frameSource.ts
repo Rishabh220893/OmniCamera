@@ -16,6 +16,15 @@ export interface FrameResult {
 }
 
 /** The ffmpeg arguments that grab one still frame (shared with scripts/capacity so the benchmark runs exactly what the worker runs). */
+/**
+ * How long a grid snapshot may take. The grid is reached over the internet and a single RTSP grab has been measured at about 15 s from a
+ * busy laptop, so the old 7 s / 15 s limits made every capture fail before the model was ever called. Override with
+ * FRAME_RTSP_TIMEOUT_MS / FRAME_HLS_TIMEOUT_MS (milliseconds); a camera that is simply down still fails, after at most this long.
+ */
+const envMs = (name: string, fallback: number) => { const n = Number(process.env[name]); return Number.isFinite(n) && n >= 1_000 && n <= 120_000 ? n : fallback; };
+export const rtspTimeoutMs = () => envMs('FRAME_RTSP_TIMEOUT_MS', 25_000);
+export const hlsTimeoutMs = () => envMs('FRAME_HLS_TIMEOUT_MS', 30_000);
+
 export function buildFrameArgs(inputUrl: string, isRtsp: boolean): string[] {
   return [
     '-y',
@@ -133,18 +142,18 @@ export async function grabFrame(req: FrameRequest): Promise<Buffer> {
   let frame: Buffer | null = null;
   if (camId) {
     const rtsp = `rtsp://${encodeURIComponent(creds.email).replace(/@/g, '%40')}:${encodeURIComponent(creds.password)}@${gridRtspHost}/stream/${encodeURIComponent(camId)}`;
-    frame = await extractFrameWithFfmpeg(rtsp, true, 7_000);
+    frame = await extractFrameWithFfmpeg(rtsp, true, rtspTimeoutMs());
     if (!frame) {
       const proxied = `${localBaseUrl}/api/proxy-hls?url=${encodeURIComponent(url)}&password=${encodeURIComponent(creds.password)}&email=${encodeURIComponent(creds.email)}`;
-      frame = await extractFrameWithFfmpeg(proxied, false, 15_000);
+      frame = await extractFrameWithFfmpeg(proxied, false, hlsTimeoutMs());
     }
   } else if (url.startsWith('rtsp://')) {
-    frame = await extractFrameWithFfmpeg(url, true, 10_000);
+    frame = await extractFrameWithFfmpeg(url, true, rtspTimeoutMs());
   } else if (/\.(jpe?g|png)(\?|$)/i.test(url)) {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (res.ok) frame = Buffer.from(await res.arrayBuffer());
   } else {
-    frame = await extractFrameWithFfmpeg(url, false, 15_000);
+    frame = await extractFrameWithFfmpeg(url, false, hlsTimeoutMs());
   }
 
   if (!frame || frame.length < 500) throw new Error('Could not capture a frame from the camera stream');

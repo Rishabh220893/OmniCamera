@@ -52,7 +52,7 @@ export function aiConfigured(env: Env = process.env): boolean {
 }
 
 const DEFAULT_MODELS: Record<Provider, { vision: string[]; chat: string[] }> = {
-  gemini: { vision: ['gemini-3-flash-preview', 'gemini-3.6-flash'], chat: ['gemini-3.5-flash', 'gemini-3.6-flash'] },
+  gemini: { vision: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'], chat: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'] },
   anthropic: { vision: ['claude-haiku-5-5'], chat: ['claude-haiku-5-5'] },
   // There is no sensible default for "an OpenAI-compatible endpoint": the model name depends on who hosts it.
   openai: { vision: [], chat: [] },
