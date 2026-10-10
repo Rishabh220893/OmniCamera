@@ -45,6 +45,17 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 - Writing throwaway test rows to the Neon database (and creating `camera_sources`) was approved for tests; rows are removed after each run.
 - The "needs you" items 1 to 5 from the session 2 list were reported done and tested by the user; #6 (the State's questions) is unanswerable for now.
 
+## Session 4 (2026-10-10): step 4, search API and Events tab
+
+Built the event search API (text, tags, department, source, cursor paging, total) and tag editing, and a new **Events tab** with Events, Alerts, Rules and Health (details in `docs/gap-list.md` and `docs/analytics.md`).
+Everything from sessions 2 to 4 was committed and pushed to `main`; `.gitignore` now also excludes keys, certificates, env files, service accounts and `live-grid-report-*` (their network captures contain the camera grid's login).
+
+**Test status after step 4:** 626 tests, 594 passed, 2 failed, 30 skipped (Postgres, Redis, the emulator and `sh`-dependent tests need environment). The two failures are one test, `tests/cameraLab.test.ts`
+(`tall_h265: 1440p H.265 -> D`: the synthetic 1440p H.265 stream is software-encoded on the shared 1.1 GHz Celeron, falls behind real time during a 15-minute full run and closes early, so the probe answers F). It is load-related, not in code step 4 touched;
+re-run it alone to confirm. `tsc --noEmit`: only the two old errors.
+
+**Not verified:** the Postgres half of `tests/eventSearch.test.ts` (run with `TEST_DATABASE_URL`; it creates `platform_events_ts_id` and `platform_events_tags` on the database, so approve that first), a real signed-in session in the Events tab, Health against real gateways and department systems.
+
 ## Open items
 
 ### Needs you
@@ -64,7 +75,7 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 ### Next build steps
 Done since session 2: A5 remainder (except plate sightings), A4, event connectors, webhook receiver, worker and gateway onto the bus.
 
-- **Step 4: A9 search API** (Postgres, tag editing) and a **thin A11 dashboard** (events, alerts, rules, health): events, rules and alerts still have only an API, and a demo needs a screen. This is where to start.
+- **Step 4 (done, session 4): A9 search API and a thin A11 dashboard** (the Events tab). Still to do there: run its Postgres test, check it signed in, a per-department descriptor so Health can say "video no longer held".
 - **A8** correlation engine and incidents; **A18** statewide tracking and route reconstruction on shared data.
 - **A7** federation service: department and connector identities (API keys or mTLS), quotas, session caps (also for the new event connections: a recorder may allow only a few).
 - **A10** video wall layouts and session control; **A26** federated analytics report.
@@ -100,5 +111,5 @@ Done since session 2: A5 remainder (except plate sightings), A4, event connector
 
 1. Re-run the full suite (`node --import tsx --test tests/*.test.ts`, about 10 minutes; do not run other heavy work alongside, some tests are load-sensitive) and `npx tsc --noEmit`; record the numbers here.
 2. Read this file, `docs/gap-list.md` (status log) and `docs/federation-plan.md` (gap stack and order), then the area you are changing (`docs/connectors-vms.md`, `docs/adapters.md`, `docs/admin-users.md`).
-3. Start **step 4**: the search API (A9) and a thin dashboard (A11), per "Next build steps".
+3. Step 4 (A9 search API, thin A11 dashboard) is done. Start **A7** (federation service: identities, quotas, session caps), then A8 and A18, per "Next build steps".
 4. Say plainly what is not verified whenever you touch an area in "Built but never run".
