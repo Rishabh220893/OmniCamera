@@ -22,8 +22,8 @@ missing, a plain `up` carries on without it and says so; `up --anpr` stops inste
 Then in the browser at **http://localhost:3000**:
 
 1. Sign in with **Google** (not the offline demo; guest cameras can't be analysed by the server).
-2. Tick the cameras to analyse in the right-hand list. The header scope switches to **Selected**.
-3. Click **Activate Guard**. Those cameras are handed to the server automatically.
+2. Tick the cameras to analyse in the right-hand list. (Only the cameras you tick are analysed; the camera in focus is not added on its own.)
+3. Click **Analyze** (or **Analyze All** for every camera). Exactly those cameras are handed to the server, and any camera left flagged from an earlier run is released. **Stop analysis** ends it.
 4. Watch the `[status]` line in the `up` window (updates every 30 s).
 
 ## Day before / just before the demo
@@ -102,7 +102,7 @@ Logs of each process are written to `.demo-logs/` (`scheduler.log`, `worker1.log
 | Postgres `FAIL` | Neon may be waking up, retry once; or `up --no-pg` |
 | Camera grid `WARN` | Third-party outage. Retry later; nothing to fix here |
 | `up` stops with "did not come up" | Open `.demo-logs/scheduler.log` (or `worker1.log`, `media.log`) |
-| Cameras ticked but `status` shows 0 flagged | You are in guest mode, or Activate Guard is off; sign in with Google and activate |
+| Cameras ticked but `status` shows 0 flagged | You are in guest mode, or analysis is stopped; sign in with Google, tick cameras and press Analyze |
 | Flagged cameras but no server logs | Worker not running or cameras failing: `status` lists their errors |
 | Logs tab shows only a few entries | You started without `--all-logs` |
 | `check` says port 8000 rejects the key | An ANPR service started elsewhere is running. Put its key in `scale.local` as `ANPR_API_KEY=...`, or `node scripts/demo.mjs stop --anpr` |

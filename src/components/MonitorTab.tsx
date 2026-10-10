@@ -497,7 +497,8 @@ export default function MonitorTab({
   const mountedCameras = useMemo(() => {
     // The Full Panel loads nothing by itself; only cameras selected for the browser's analysis stay mounted (out of sight).
     if (viewMode === 'focus' || viewMode === 'panel') {
-      return cameras.filter(c => analysisCameraIds.has(c.id));
+      // The camera in focus is shown whether or not it is being analysed; analysed cameras stay mounted (out of sight) beside it.
+      return cameras.filter(c => c.id === activeCameraId || analysisCameraIds.has(c.id));
     }
     if (viewMode === 'matrix') {
       const matrixIds = new Set(matrixCameras.map(c => c.id));
@@ -708,9 +709,12 @@ export default function MonitorTab({
             naming a different camera entirely once more than one was selected. */}
         <div className="card p-7 flex flex-col gap-5">
           <h3 className="text-xs font-bold text-ink-muted uppercase tracking-widest">
-            Ongoing context{analysisCameraIds.size > 1 ? ` — ${analysisCameraIds.size} cameras` : ` — ${activeCamera.name}`}
+            Ongoing context{analysisCameraIds.size === 0 ? '' : analysisCameraIds.size > 1 ? ` — ${analysisCameraIds.size} cameras` : ` — ${cameras.find(c => analysisCameraIds.has(c.id))?.name ?? ''}`}
           </h3>
           <div className="flex flex-col gap-4">
+            {analysisCameraIds.size === 0 && (
+              <p className="text-base text-ink-muted italic">No camera is chosen for AI analysis. Tick the cameras you want, then press Analyze (or use Analyze All).</p>
+            )}
             {cameras.filter(cam => analysisCameraIds.has(cam.id)).map(cam => {
               const latest = logs.find(l => l.cameraId === cam.id);
               return (
@@ -721,7 +725,7 @@ export default function MonitorTab({
                   {latest ? (
                     <p className="text-base text-ink">{latest.summary}</p>
                   ) : !isCapturing ? (
-                    <p className="text-base text-ink-muted italic">Activate guard to begin analysis.</p>
+                    <p className="text-base text-ink-muted italic">Press Analyze to begin analysis.</p>
                   ) : analyzingCameraIds.has(cam.id) ? (
                     <div className="flex items-center gap-2 text-sm text-ink-muted">
                       <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" strokeWidth={1.75} />

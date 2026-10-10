@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canAnalyzeOnServer, GuardCamera, planGuardSync } from '../src/lib/guardSync';
+import { analysisTargets, canAnalyzeOnServer, GuardCamera, planGuardSync } from '../src/lib/guardSync';
 
 const cam = (id: string, over: Partial<GuardCamera> = {}): GuardCamera => ({ id, useRemoteFeed: true, remoteStreamUrl: `https://grid.example.com/${id}/index.m3u8`, serverAnalysis: false, ...over });
 const base = { guardFlaggedIds: new Set<string>(), failedIds: new Set<string>(), wasCapturing: false };
@@ -29,20 +29,28 @@ test('a camera already flagged is not written again', () => {
   assert.deepEqual(r, { enable: [], disable: [] });
 });
 
-test('deselecting a camera while the guard runs releases only cameras this guard flagged', () => {
-  const cameras = [cam('a', { serverAnalysis: true }), cam('b', { serverAnalysis: true }), cam('pre', { serverAnalysis: true })];
-  const r = planGuardSync({ ...base, isCapturing: true, targetIds: ['a'], cameras, guardFlaggedIds: new Set(['a', 'b']), wasCapturing: true });
-  assert.deepEqual(r.disable, ['b'], 'a stays (still selected); "pre" was flagged in Settings, not by the guard');
+test('a running analysis flags exactly its targets: deselected cameras and cameras left flagged by an earlier run are released', () => {
+  const cameras = [cam('a', { serverAnalysis: true }), cam('b', { serverAnalysis: true }), cam('left-over', { serverAnalysis: true }), cam('c')];
+  const r = planGuardSync({ ...base, isCapturing: true, targetIds: ['a', 'c'], cameras, guardFlaggedIds: new Set(['a', 'b']), wasCapturing: true });
+  assert.deepEqual(r.disable.sort(), ['b', 'left-over'], 'a stays (a target); b was deselected; left-over was flagged by an earlier session');
+  assert.deepEqual(r.enable, ['c']);
 });
 
-test('Pause Guard releases the flagged cameras and the ones it was targeting', () => {
-  const cameras = [cam('a', { serverAnalysis: true }), cam('b', { serverAnalysis: true }), cam('other', { serverAnalysis: true })];
+test('the stale-flag bug: ticking one camera while 30 are still flagged from before releases the other 29', () => {
+  const cameras = Array.from({ length: 30 }, (_, i) => cam(`c${i}`, { serverAnalysis: true }));
+  const r = planGuardSync({ ...base, isCapturing: true, targetIds: ['c7'], cameras, wasCapturing: false });
+  assert.equal(r.disable.length, 29);
+  assert.ok(!r.disable.includes('c7'));
+  assert.deepEqual(r.enable, []);
+});
+
+test('Stop releases every flagged camera so nothing keeps analysing in the background', () => {
+  const cameras = [cam('a', { serverAnalysis: true }), cam('b', { serverAnalysis: true }), cam('other', { serverAnalysis: true }), cam('idle')];
   const r = planGuardSync({ ...base, isCapturing: false, targetIds: ['a'], cameras, guardFlaggedIds: new Set(['b']), wasCapturing: true });
-  assert.deepEqual(r.disable.sort(), ['a', 'b']);
-  assert.ok(!r.disable.includes('other'), 'cameras outside the guard are untouched');
+  assert.deepEqual(r.disable.sort(), ['a', 'b', 'other']);
 });
 
-test('after the pause has been handled, later re-renders do not touch Settings-flagged cameras', () => {
+test('merely opening the app (not running, not just stopped) never changes a flag', () => {
   const r = planGuardSync({ ...base, isCapturing: false, targetIds: ['a'], cameras: [cam('a', { serverAnalysis: true })], wasCapturing: false });
   assert.deepEqual(r, { enable: [], disable: [] });
 });
@@ -73,4 +81,12 @@ test('in "all" scope a click changes nothing (every camera is already included)'
   const r = toggleGuardSelection('all', new Set(['x']), 'cam05');
   assert.equal(r.scope, 'all');
   assert.deepEqual([...r.selected], ['x']);
+});
+
+test('analysis targets: "all" is every camera; otherwise exactly the ticked ones, and the camera in focus is not added', () => {
+  const all = ['a', 'b', 'c', 'd'];
+  assert.deepEqual([...analysisTargets('all', ['b'], all)].sort(), all);
+  assert.deepEqual([...analysisTargets('selected', ['b'], all)], ['b']);
+  assert.deepEqual([...analysisTargets('selected', [], all)], [], 'nothing ticked means nothing to analyse');
+  assert.deepEqual([...analysisTargets('active', ['c'], all)], ['c']);
 });

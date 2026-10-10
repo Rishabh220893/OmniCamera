@@ -16,7 +16,7 @@ import { buildSightings, PlateSighting } from './lib/plateTracking';
 import { recordSightings } from './lib/plateStore';
 import { DEMO_GRID_CAMERAS } from './data/demoGridCameras';
 import { fetchSentinelCatalogue } from './lib/sentinelCatalogue';
-import { canAnalyzeOnServer, planGuardSync, toggleGuardSelection } from './lib/guardSync';
+import { canAnalyzeOnServer, planGuardSync, toggleGuardSelection, analysisTargets } from './lib/guardSync';
 import { chunk, describeSummary, ImportSummary, parseLatLng, planBulkImport, summarizePlan } from './lib/bulkImport';
 
 import OnboardingScreen from './components/OnboardingScreen';
@@ -129,7 +129,7 @@ export default function App() {
   const [auditTrail, setAuditTrail] = useState<RegistryAuditEntry[]>([]);
   const [activeTab, setActiveTab] = useState<TabId>('monitor');
   const [viewMode, setViewMode] = useState<ViewMode>('focus');
-  const [guardScope, setGuardScope] = useState<GuardScope>('active');
+  const [guardScope, setGuardScope] = useState<GuardScope>('selected');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [webhookStatus, setWebhookStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
@@ -266,17 +266,20 @@ export default function App() {
     if (next.scope !== guardScope) setGuardScope(next.scope);
     setExtraAnalysisCameraIds(next.selected);
   }, [guardScope, extraAnalysisCameraIds]);
-  const analysisCameraIds = useMemo(() => {
-    if (guardScope === 'all') {
-      return new Set(cameras.map(c => c.id));
+  // "Analyze" covers exactly the ticked cameras; "Analyze All" covers every camera. The camera in focus is NOT added on its own.
+  const analysisCameraIds = useMemo(
+    () => analysisTargets(guardScope, extraAnalysisCameraIds, cameras.map(c => c.id)),
+    [guardScope, cameras, extraAnalysisCameraIds],
+  );
+  const startAnalysis = useCallback((scope: GuardScope) => {
+    if (scope === 'all') {
+      const n = camerasRef.current.length;
+      if (n > 10 && !window.confirm(`Analyze all ${n} cameras with AI? On a shared camera account this can use up its viewing-time allowance quickly. To analyse only some, tick them and use Analyze.`)) return;
     }
-    if (guardScope === 'selected') {
-      const s = new Set(extraAnalysisCameraIds);
-      s.add(activeCameraId);
-      return s;
-    }
-    return new Set([activeCameraId]);
-  }, [guardScope, cameras, extraAnalysisCameraIds, activeCameraId]);
+    setGuardScope(scope);
+    setIsCapturing(true);
+  }, []);
+  const stopAnalysis = useCallback(() => setIsCapturing(false), []);
   const [analyzingCameraIds, setAnalyzingCameraIds] = useState<Set<string>>(new Set());
   const [analysisErrors, setAnalysisErrors] = useState<Map<string, string>>(new Map());
   const analysisError = analysisErrors.get(activeCameraId) || null;
@@ -1335,7 +1338,8 @@ export default function App() {
                 the nav instead of stopping above it. */}
             <div className="lg:pl-24 min-h-screen flex flex-col w-full pb-16 lg:pb-0">
               <Header
-                isCapturing={isCapturing} onToggleCapturing={() => setIsCapturing(!isCapturing)} user={user} onLogout={handleLogout}
+                isCapturing={isCapturing} onAnalyze={() => startAnalysis('selected')} onAnalyzeAll={() => startAnalysis('all')} onStopAnalysis={stopAnalysis}
+                tickedCount={extraAnalysisCameraIds.size} analysingCount={analysisCameraIds.size} user={user} onLogout={handleLogout}
                 camerasLive={camerasLive}
                 camerasTotal={cameras.length}
                 alertsToday={logs.filter(l => l.alerts.length > 0 && l.timestamp.toDateString() === new Date().toDateString()).length}
@@ -1344,7 +1348,6 @@ export default function App() {
                 theme={theme}
                 onToggleTheme={handleToggleTheme}
                 guardScope={guardScope}
-                onChangeGuardScope={setGuardScope}
               />
 
               <main className="flex-1 p-6 lg:p-10">

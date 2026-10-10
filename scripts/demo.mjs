@@ -15,6 +15,7 @@
  *                --no-anpr (leave out the plate reader: plates are then read by Gemini)   --anpr (insist on it: stop if it cannot be installed)
  *                --tunnel (anpr + public address for the deployed app)
  *                --no-media   --no-pg   --all-logs (show every analysis in the Logs tab, not only notable ones)
+ *                --keep-analysis (keep cameras flagged for analysis by an earlier run; by default `up` clears them, so only what you Analyze runs)
  *
  * Settings come from scale.local (and demo.local if present). Both are git-ignored. See DEMO.md.
  */
@@ -336,6 +337,24 @@ async function waitFor(what, fn, timeoutMs) {
   return false;
 }
 
+// Cameras stay flagged for server analysis in Firestore between runs, so a fresh start would analyse every camera flagged last time, whatever
+// is ticked now. Start clean: analysis begins only when someone presses Analyze (or Analyze All) in the app. --keep-analysis opts out.
+async function clearStaleAnalysisFlags(cfg) {
+  try {
+    const db = await adminDb(cfg);
+    const snap = await db.collection('cameras').where('serverAnalysis', '==', true).get();
+    if (snap.size === 0) { console.log(`${PASS}  no cameras are left flagged for analysis from an earlier run`); return; }
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const batch = db.batch();
+      snap.docs.slice(i, i + 400).forEach((d) => batch.update(d.ref, { serverAnalysis: false }));
+      await batch.commit();
+    }
+    console.log(`${PASS}  cleared ${snap.size} camera(s) left flagged for analysis by an earlier run. Analysis starts when you press Analyze in the app (use --keep-analysis to keep old flags).`);
+  } catch (e) {
+    console.log(`${WARN}  could not check for cameras left flagged for analysis (${String(e.message).slice(0, 80)}); if more cameras than you chose are analysed, run: node scripts/demo.mjs analysis-off --yes`);
+  }
+}
+
 // ---------------------------------------------------------------- up
 async function up() {
   ensureAnpr();
@@ -345,6 +364,7 @@ async function up() {
     for (let i = 0; i < 20 && !(await portFree(MEDIA_PORT) && await portFree(APP_PORT)); i++) await new Promise((r) => setTimeout(r, 500));
   }
   if (await check(cfg)) process.exit(1);
+  if (!flag('--keep-analysis')) await clearStaleAnalysisFlags(cfg);
 
   const dev = flag('--dev');
   if (!dev && (flag('--build') || distStale())) {

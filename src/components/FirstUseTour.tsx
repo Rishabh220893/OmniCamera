@@ -8,7 +8,7 @@ interface FirstUseTourProps {
 
 const STEPS = [
   { icon: Eye, title: 'This is your Live Grid', desc: 'Every camera you\'ve onboarded shows up here. Click a tile to focus it, or switch to grid view to watch several at once.' },
-  { icon: Camera, title: 'Hit Activate to start analysis', desc: 'The Activate Guard button starts the AI analysis loop. In grid view, check a camera\'s box to run more than one at a time.' },
+  { icon: Camera, title: 'Tick cameras, then Analyze', desc: 'Tick the cameras you want analysed with AI and press Analyze. Analyze All covers every camera instead. Stop analysis ends it.' },
   { icon: Bell, title: 'Alerts land here automatically', desc: 'Anything genuinely suspicious — or a watchlist plate match — shows up in the Alert Center, no need to babysit every feed yourself.' },
 ];
 

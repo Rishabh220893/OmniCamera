@@ -95,7 +95,7 @@ export default function CameraTrendChart({ camera, logs, onPointClick }: CameraT
           <div className="h-full flex flex-col items-center justify-center gap-1.5 text-xs text-ink-muted">
             <Activity className="w-6 h-6 text-ink-muted/40 mb-1" strokeWidth={1.5} />
             <p className="font-semibold text-ink">No trend data recorded</p>
-            <p className="text-[11px] text-ink-muted">Activate guard to start building this camera's trend.</p>
+            <p className="text-[11px] text-ink-muted">Press Analyze to start building this camera's trend.</p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">

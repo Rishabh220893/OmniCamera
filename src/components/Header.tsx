@@ -5,9 +5,15 @@ import { GuardScope } from '../types';
 
 interface HeaderProps {
   isCapturing: boolean;
-  onToggleCapturing: () => void;
+  /** Start AI analysis of the ticked cameras. */
+  onAnalyze: () => void;
+  /** Start AI analysis of every camera. */
+  onAnalyzeAll: () => void;
+  onStopAnalysis: () => void;
+  /** How many cameras are ticked, and how many the running analysis covers. */
+  tickedCount: number;
+  analysingCount: number;
   guardScope: GuardScope;
-  onChangeGuardScope: (scope: GuardScope) => void;
   user: FirebaseUser | null;
   onLogout: () => void;
   camerasLive: number;
@@ -20,7 +26,7 @@ interface HeaderProps {
 }
 
 export default function Header({
-  isCapturing, onToggleCapturing, guardScope, onChangeGuardScope,
+  isCapturing, onAnalyze, onAnalyzeAll, onStopAnalysis, tickedCount, analysingCount, guardScope,
   user, onLogout, camerasLive, camerasTotal, alertsToday, geminiHealthy, onOpenSearch,
   theme, onToggleTheme
 }: HeaderProps) {
@@ -56,53 +62,35 @@ export default function Header({
 
         {/* Guard Patrol Trigger & Scope Selector */}
         <div className="flex items-center gap-2.5">
-          {/* Scope Selector */}
-          <div className="hidden sm:flex items-center bg-surface-muted p-1 rounded-xl border border-border text-[11px] font-semibold">
-            <span className="text-[9px] uppercase tracking-wider text-ink-muted px-2 font-mono">Scope</span>
+          {isCapturing ? (
             <button
-              onClick={() => onChangeGuardScope('active')}
-              className={cn(
-                'px-3.5 py-1.5 rounded-lg transition-all active:scale-95 whitespace-nowrap min-h-[30px] flex items-center justify-center',
-                guardScope === 'active' ? 'bg-surface text-ink shadow-xs border border-border/80 font-bold' : 'text-ink-muted hover:text-ink'
-              )}
-              title="Monitor focused camera only"
+              onClick={onStopAnalysis}
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-xs tracking-wide transition-all duration-150 active:scale-95 shadow-xs whitespace-nowrap min-h-[38px] bg-critical text-white hover:bg-critical/90 shadow-critical/20"
+              title="Stop AI analysis. Nothing keeps analysing in the background."
             >
-              Active
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" strokeWidth={2} />
+              <span>Stop analysis ({analysingCount})</span>
             </button>
-            <button
-              onClick={() => onChangeGuardScope('selected')}
-              className={cn(
-                'px-3.5 py-1.5 rounded-lg transition-all active:scale-95 whitespace-nowrap min-h-[30px] flex items-center justify-center',
-                guardScope === 'selected' ? 'bg-surface text-ink shadow-xs border border-border/80 font-bold' : 'text-ink-muted hover:text-ink'
-              )}
-              title="Monitor manually selected AI tiles"
-            >
-              Selected
-            </button>
-            <button
-              onClick={() => onChangeGuardScope('all')}
-              className={cn(
-                'px-3.5 py-1.5 rounded-lg transition-all active:scale-95 whitespace-nowrap min-h-[30px] flex items-center justify-center',
-                guardScope === 'all' ? 'bg-surface text-ink shadow-xs border border-border/80 font-bold' : 'text-ink-muted hover:text-ink'
-              )}
-              title="Monitor all perimeter cameras"
-            >
-              Perimeter
-            </button>
-          </div>
-
-          <button
-            onClick={onToggleCapturing}
-            className={cn(
-              'inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-xs tracking-wide transition-all duration-150 active:scale-95 shadow-xs whitespace-nowrap min-h-[38px]',
-              isCapturing ? 'bg-critical text-white hover:bg-critical/90 shadow-critical/20' : 'btn-primary shadow-accent/20'
-            )}
-            title="Toggle autonomous Guard monitoring (Hotkey: Space)"
-          >
-            {isCapturing ? <RefreshCw className="w-3.5 h-3.5 animate-spin" strokeWidth={2} /> : <Camera className="w-3.5 h-3.5" strokeWidth={2} />}
-            <span className="hidden xs:inline">{isCapturing ? 'Pause Guard' : 'Activate Guard'}</span>
-            <span className="inline xs:hidden">{isCapturing ? 'Pause' : 'Activate'}</span>
-          </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onAnalyze}
+                disabled={tickedCount === 0}
+                className="btn-primary inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs tracking-wide transition-all duration-150 active:scale-95 shadow-xs shadow-accent/20 whitespace-nowrap min-h-[38px] disabled:opacity-50 disabled:cursor-not-allowed"
+                title={tickedCount === 0 ? 'Tick the cameras you want analysed with AI first' : `Analyze the ${tickedCount} ticked camera${tickedCount === 1 ? '' : 's'} with AI`}
+              >
+                <Camera className="w-3.5 h-3.5" strokeWidth={2} />
+                <span>Analyze{tickedCount > 0 ? ` (${tickedCount})` : ''}</span>
+              </button>
+              <button
+                onClick={onAnalyzeAll}
+                className="btn-secondary inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-xs tracking-wide transition-all duration-150 active:scale-95 whitespace-nowrap min-h-[38px]"
+                title="Analyze every camera with AI"
+              >
+                <span>Analyze All</span>
+              </button>
+            </div>
+          )}
 
           {/* Theme Quick Toggle */}
           {onToggleTheme && (
@@ -157,9 +145,9 @@ export default function Header({
           <Shield className={cn('w-3.5 h-3.5', isCapturing ? 'text-accent animate-pulse' : 'text-ink-muted')} strokeWidth={2} />
           <span className="telemetry-tag text-ink-muted">
             {isCapturing ? (
-              <span className="text-accent font-bold">GUARD ACTIVE · {guardScope.toUpperCase()}</span>
+              <span className="text-accent font-bold">ANALYSING {analysingCount} CAMERA{analysingCount === 1 ? '' : 'S'}{guardScope === 'all' ? ' · ALL' : ''}</span>
             ) : (
-              'GUARD STANDBY'
+              'AI ANALYSIS OFF'
             )}
           </span>
         </div>

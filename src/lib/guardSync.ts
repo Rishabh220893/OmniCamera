@@ -1,8 +1,13 @@
 import { isSafeCameraUrl } from './cameraUrl';
 
 /**
- * "Activate Guard" hands the cameras it targets to the server worker (serverAnalysis: true in Firestore),
- * and "Pause Guard" takes them back. This decides which cameras to flag or unflag; App.tsx does the writes.
+ * "Analyze" and "Analyze All" hand the cameras they target to the server worker (serverAnalysis: true in Firestore),
+ * and "Stop analysis" takes them back. This decides which cameras to flag or unflag; App.tsx does the writes.
+ *
+ * The flags are saved in the database, so they outlive a session. Starting an analysis therefore makes the set of flagged cameras
+ * EXACTLY the targets: a camera flagged by an earlier run (or by "Analyze on server" in Settings) that is not a target is released,
+ * otherwise the worker would keep analysing cameras the person did not choose this time. Only an explicit Start or Stop does this;
+ * merely opening the app never changes a flag.
  */
 export interface GuardCamera {
   id: string;
@@ -28,6 +33,14 @@ export interface GuardSyncInput {
 export const canAnalyzeOnServer = (c: GuardCamera): boolean =>
   Boolean(c.useRemoteFeed) && c.remoteStreamUrl.trim() !== '' && isSafeCameraUrl(c.remoteStreamUrl);
 
+/**
+ * The cameras an analysis covers. "all": every camera. Otherwise exactly the ticked ones: the camera in focus is NOT added on its own,
+ * so a person who ticks one camera gets one camera.
+ */
+export function analysisTargets(scope: 'active' | 'selected' | 'all', ticked: Iterable<string>, allIds: Iterable<string>): Set<string> {
+  return scope === 'all' ? new Set(allIds) : new Set(ticked);
+}
+
 export function planGuardSync(input: GuardSyncInput): { enable: string[]; disable: string[] } {
   const byId = new Map(input.cameras.map((c) => [c.id, c] as const));
   const targets = new Set(input.targetIds);
@@ -38,13 +51,15 @@ export function planGuardSync(input: GuardSyncInput): { enable: string[]; disabl
 
   let disable: string[];
   if (input.isCapturing) {
-    // Deselected while running: release only what this guard flagged.
-    disable = [...input.guardFlaggedIds].filter((id) => !wanted.has(id) && byId.get(id)?.serverAnalysis === true);
+    // Running: the flagged set is exactly the targets. Anything else still flagged (this run's deselections, or flags left by an
+    // earlier run or by Settings) is released.
+    disable = input.cameras.filter((c) => c.serverAnalysis === true && !wanted.has(c.id)).map((c) => c.id);
+  } else if (input.wasCapturing) {
+    // The stop itself: nothing stays flagged, so nothing keeps analysing in the background.
+    disable = input.cameras.filter((c) => c.serverAnalysis === true).map((c) => c.id);
   } else {
-    // Paused: release what this guard flagged, and (on the pause itself) the cameras it was targeting.
-    const release = new Set(input.guardFlaggedIds);
-    if (input.wasCapturing) for (const id of targets) release.add(id);
-    disable = [...release].filter((id) => byId.get(id)?.serverAnalysis === true);
+    // Not running and not just stopped (for example the app was only opened): leave every flag as it is.
+    disable = [];
   }
   return { enable, disable };
 }

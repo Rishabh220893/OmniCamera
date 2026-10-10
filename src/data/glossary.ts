@@ -49,7 +49,7 @@ export const OPERATING_STEPS: OperatingStep[] = [
   { step: 3, title: 'Choose a feed source', description: 'Point the camera at your device camera, paste a Remote Link URL for an RTSP/IP camera, or switch on the Simulated Feed to try it without hardware.', tab: 'Settings' },
   { step: 4, title: 'Set thresholds and rules', description: 'Tune Sensitivity, People/Vehicle thresholds, and write any Suspicious Rules specific to that camera\'s view.', tab: 'Settings' },
   { step: 5, title: 'Complete the registry record', description: 'Fill in department, ownership, camera type, coordinates, and storage details so the camera is correctly placed and reportable in Registry.', tab: 'Settings' },
-  { step: 6, title: 'Activate Guard', description: 'Press "Activate Guard" in the header to start the analysis loop. Watch the live feed and Alert Center for results.', tab: 'Feed' },
+  { step: 6, title: 'Analyze', description: 'Tick the cameras you want, then press "Analyze" in the header (or "Analyze All" for every camera). Watch the live feed and Alert Center for results.', tab: 'Feed' },
   { step: 7, title: 'Review activity and search a plate', description: 'Use Logs to browse the archive, export a CSV, or search a specific vehicle plate and view its route on the Registry map.', tab: 'Logs' },
   { step: 8, title: 'Check the registry health', description: 'Filter and search the fleet in Registry, run the gap-analysis report, and review the audit trail (Admin) for recent changes.', tab: 'Registry' },
   { step: 9, title: 'Manage known faces and the watchlist', description: 'Upload reference photos so people are identified by name, and add plates you want flagged on sight.', tab: 'Settings' },
