@@ -5,6 +5,7 @@
 import { mergePlates } from '../plateMerge';
 import type { PlateRead } from '../anprClient';
 import type { AnalysisResult } from '../logEntry';
+import { parseModelJson } from './modelJson';
 import type { Analyzer, FinalizeContext, Finalizer } from './types';
 
 export type GenerateFn = (params: { contents: { parts: unknown[] }; config?: Record<string, unknown> }) => Promise<{ text?: string }>;
@@ -87,7 +88,7 @@ export function createGeminiSceneAnalyzer(deps: { generate: GenerateFn; log?: Pi
         },
         config: { responseMimeType: 'application/json' },
       });
-      return { fields: JSON.parse(response.text || '{}') as Partial<AnalysisResult> };
+      return { fields: parseModelJson(response.text) as Partial<AnalysisResult> };
     },
   };
 }

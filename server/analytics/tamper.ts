@@ -52,7 +52,7 @@ export function createTamperAnalyzer(deps: { fingerprint?: (jpeg: Buffer) => Pro
     id: 'camera-tamper',
     label: 'Camera blocked or dark',
     description: 'Flags a picture with no detail, an almost black or almost white picture, from pixel statistics alone (no model call).',
-    timeoutMs: 6000,
+    timeoutMs: 20_000, // generous: on a busy laptop the ffmpeg fingerprint can wait behind other work
     async analyze({ frame }) {
       const fp = await fingerprint(frame.jpeg);
       if (!fp) return {};

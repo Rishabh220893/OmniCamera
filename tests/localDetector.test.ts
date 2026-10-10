@@ -109,3 +109,16 @@ test('worker: a camera that keeps failing is reported offline once, and online o
   t += 10 * 60_000; worker._tick(); await worker._idle();
   assert.equal(emitted.length, 2, 'no repeat once it is back');
 });
+
+// ---- reading the model's JSON ------------------------------------------------------------------------------------------
+
+import { parseModelJson } from '../server/analytics/modelJson.ts';
+
+test('model JSON: clean answers pass through; fences, surrounding text and trailing commas are repaired; real garbage still throws', () => {
+  assert.deepEqual(parseModelJson('{"a":1}'), { a: 1 });
+  assert.deepEqual(parseModelJson(undefined), {}, 'an empty answer is an empty object, as before');
+  assert.deepEqual(parseModelJson('```json\n{"a":1,"b":[1,2,],}\n```'), { a: 1, b: [1, 2] });
+  assert.deepEqual(parseModelJson('Here you go: {"summary":"x","counts":{"vehicles":2,},} Hope that helps'), { summary: 'x', counts: { vehicles: 2 } });
+  assert.throws(() => parseModelJson('{"a": nonsense'));
+  assert.throws(() => parseModelJson('[1,2,3]'));
+});
