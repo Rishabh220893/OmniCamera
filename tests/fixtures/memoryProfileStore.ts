@@ -22,6 +22,11 @@ export function memoryProfileStore(initial: ProbeReport[] = []) {
     async history(site, id, limit = 20) { return runs.filter((r) => r.site === site && r.cameraId === id).sort((a, b) => b.probedAt.localeCompare(a.probedAt)).slice(0, limit); },
     async setHealFloor(site, id, floor: HealFloor | null) { const r = rows.get(key(site, id)); if (r) r.healFloor = floor; },
     async recordChange(c) { changes.push(c); },
+    async removeProfile(site, id) {
+      rows.delete(key(site, id));
+      for (let i = runs.length - 1; i >= 0; i--) if (runs[i].site === site && runs[i].cameraId === id) runs.splice(i, 1);
+      for (let i = changes.length - 1; i >= 0; i--) if (changes[i].site === site && changes[i].cameraId === id) changes.splice(i, 1);
+    },
     async changes(site, id, limit = 50) { return changes.filter((c) => c.site === site && (id === null || c.cameraId === id)).sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit); },
   };
   return { store, rows, runs, changes };

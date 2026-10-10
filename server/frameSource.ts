@@ -15,26 +15,31 @@ export interface FrameResult {
   stderrTail: string;
 }
 
+/** The ffmpeg arguments that grab one still frame (shared with scripts/capacity so the benchmark runs exactly what the worker runs). */
+export function buildFrameArgs(inputUrl: string, isRtsp: boolean): string[] {
+  return [
+    '-y',
+    '-loglevel', 'error',
+    // RTSP: the stream's codec details come with the session setup, so a long probe only delays the first
+    // frame (ffmpeg's default analyses up to 5 s of video before decoding anything).
+    // - skip_frame nokey: decode only keyframes. Joining a stream mid-sequence otherwise decodes every
+    //   frame (and prints "co located POCs unavailable" / "reference picture missing") until the next
+    //   keyframe, which on a small CPU is most of the time these snapshots were taking.
+    // - allowed_media_types video: do not set up the audio track at all.
+    ...(isRtsp ? ['-rtsp_transport', 'tcp', '-allowed_media_types', 'video', '-fflags', 'nobuffer', '-analyzeduration', '1000000', '-probesize', '500000', '-skip_frame', 'nokey'] : []),
+    '-i', inputUrl,
+    '-vframes', '1',
+    '-f', 'image2',
+    '-q:v', '3',
+    'pipe:1',
+  ];
+}
+
 /** Like extractFrameWithFfmpeg but also reports how long it took and why it failed. */
 export function extractFrameDetailed(inputUrl: string, isRtsp: boolean, timeoutMs = 8_000): Promise<FrameResult> {
   return new Promise((resolve) => {
     const started = Date.now();
-    const args = [
-      '-y',
-      '-loglevel', 'error',
-      // RTSP: the stream's codec details come with the session setup, so a long probe only delays the first
-      // frame (ffmpeg's default analyses up to 5 s of video before decoding anything).
-      // - skip_frame nokey: decode only keyframes. Joining a stream mid-sequence otherwise decodes every
-      //   frame (and prints "co located POCs unavailable" / "reference picture missing") until the next
-      //   keyframe, which on a small CPU is most of the time these snapshots were taking.
-      // - allowed_media_types video: do not set up the audio track at all.
-      ...(isRtsp ? ['-rtsp_transport', 'tcp', '-allowed_media_types', 'video', '-fflags', 'nobuffer', '-analyzeduration', '1000000', '-probesize', '500000', '-skip_frame', 'nokey'] : []),
-      '-i', inputUrl,
-      '-vframes', '1',
-      '-f', 'image2',
-      '-q:v', '3',
-      'pipe:1',
-    ];
+    const args = buildFrameArgs(inputUrl, isRtsp);
     const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     let stderr = '';

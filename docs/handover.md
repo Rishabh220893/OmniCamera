@@ -1,5 +1,11 @@
 # Handover: what changed, what to check, what is left
 
+> **Status note, 2026-10-10.** The checklists and the table in section 3 below were written before the media server,
+> camera profiles, self-healing, scheduled re-probing, WHEP playback, background tracking (Feed > Full Panel) and the source
+> adapters existed, so several rows are out of date (for example item 2 now has an adapter interface and ONVIF, and the "health
+> probing" part of item 1 exists as camera profiles). `docs/gap-list.md` is the current list of what is left and in what order;
+> `docs/adapters.md` and `docs/openapi.yaml` describe the adapter layer and the server API. Read the sections below as history.
+
 Companion to `docs/deployment.md` (how to deploy). Tab names below are the ones in the sidebar: **Feed, Logs, Registry, Settings, Guide**.
 
 ---

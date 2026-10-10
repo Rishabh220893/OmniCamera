@@ -17,12 +17,15 @@ const FINGERPRINT_BYTES = FINGERPRINT_W * FINGERPRINT_H;
 
 export type Fingerprint = Uint8Array;
 
+/** The ffmpeg arguments that reduce an image on stdin to the fingerprint on stdout. */
+export const FINGERPRINT_ARGS = ['-loglevel', 'error', '-i', 'pipe:0', '-vf', `scale=${FINGERPRINT_W}:${FINGERPRINT_H}:flags=area,format=gray`, '-frames:v', '1', '-f', 'rawvideo', 'pipe:1'];
+
 /** Reduces a JPEG/PNG to a 64x36 greyscale fingerprint with ffmpeg. Null if it can't be decoded. */
 export function ffmpegFingerprint(frame: Buffer, timeoutMs = 5_000): Promise<Fingerprint | null> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn('ffmpeg', ['-loglevel', 'error', '-i', 'pipe:0', '-vf', `scale=${FINGERPRINT_W}:${FINGERPRINT_H}:flags=area,format=gray`, '-frames:v', '1', '-f', 'rawvideo', 'pipe:1'], { stdio: ['pipe', 'pipe', 'ignore'] });
+      child = spawn('ffmpeg', FINGERPRINT_ARGS, { stdio: ['pipe', 'pipe', 'ignore'] });
     } catch { resolve(null); return; }
     const chunks: Buffer[] = [];
     let done = false;

@@ -65,6 +65,7 @@ Google AI Studio → *Get API key* → create a key → this is `GEMINI_API_KEY`
 | `ANPR_API_KEY` | With `ANPR_SERVICE_URL` | Same secret you gave the ANPR service |
 | `ANPR_MIN_CONFIDENCE` | Optional | Drop plate reads below this (default 0.6) — tune on real footage |
 | `ANPR_TIMEOUT_MS` | Optional | Per-call timeout (default 8000) |
+| `SOURCE_SECRET_KEY` | For cameras that need a login | 64 hex characters (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`). Seals the logins of cameras onboarded through ONVIF, Hikvision, Dahua or RTSP (`docs/adapters.md`, "Onboarding"). Keep it with the other secrets: without it those logins cannot be stored or read back. Needs `DATABASE_URL` and `FIREBASE_SERVICE_ACCOUNT` too. |
 | `MEDIA_SERVER_URL`, `MEDIA_VIEWER_PASSWORD`, `MEDIA_MAX_LIVE_TILES` | Optional | Live video from the media server (`docs/media-server.md`). Tiles play from it for signed-in users; unset = the app's own route. |
 | `GOOGLE_SHEETS_CREDENTIALS`, `GOOGLE_SHEETS_SPREADSHEET_ID` | Optional | Sheets export (step 6) |
 

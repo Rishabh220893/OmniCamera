@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import { AlertTriangle, CheckCircle2, Loader2, Maximize2, Minimize2, RefreshCw, X, XCircle, Circle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig } from '../types';
-import { gridCamId, mediaAuthHeader, mediaPlaylistUrl, useMediaConfig, type MediaConfig } from '../lib/mediaServer';
+import { gridCamId, mediaPathId, mediaAuthHeader, mediaPlaylistUrl, useMediaConfig, type MediaConfig } from '../lib/mediaServer';
 import { startWhep } from '../lib/whepClient';
 import { plannedRecipes, RECIPE_LABEL, type RecipeId } from '../lib/panelTiles';
 import type { TrackAlert } from '../lib/tracking';
@@ -35,7 +35,7 @@ function waitForPlaying(video: HTMLVideoElement, ms: number): { promise: Promise
   return { promise, cancel };
 }
 
-interface Ctx { camera: CameraConfig; camId: string | null; media: MediaConfig | null; email: string; password: string; video: HTMLVideoElement; setStill: (url: string | null) => void }
+interface Ctx { camera: CameraConfig; camId: string | null; mediaId: string | null; media: MediaConfig | null; email: string; password: string; video: HTMLVideoElement; setStill: (url: string | null) => void }
 
 function startHls(video: HTMLVideoElement, src: string, headers: Record<string, string>, ms: number): Attempt {
   const hls = new Hls({ manifestLoadingTimeOut: 35_000, manifestLoadingMaxRetry: 2, levelLoadingTimeOut: 35_000, fragLoadingTimeOut: 40_000, fragLoadingMaxRetry: 3, liveSyncDurationCount: 3, capLevelToPlayerSize: true,
@@ -49,8 +49,8 @@ function startHls(video: HTMLVideoElement, src: string, headers: Record<string, 
 }
 
 function startRecipe(recipe: RecipeId, c: Ctx): Attempt {
-  if (recipe === 'media' && c.media && c.camId) {
-    return startHls(c.video, mediaPlaylistUrl(c.media, c.camId), { Authorization: mediaAuthHeader(c.media) }, RECIPE_TIMEOUT_MS.media);
+  if (recipe === 'media' && c.media && c.mediaId) {
+    return startHls(c.video, mediaPlaylistUrl(c.media, c.mediaId), { Authorization: mediaAuthHeader(c.media) }, RECIPE_TIMEOUT_MS.media);
   }
   if (recipe === 'proxy') {
     const src = `/api/proxy-hls?url=${encodeURIComponent(c.camera.remoteStreamUrl)}&password=${encodeURIComponent(c.password)}&email=${encodeURIComponent(c.email)}`;
@@ -112,11 +112,12 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
   const [round, setRound] = useState(0);
   const [full, setFull] = useState(false);
   const camId = gridCamId(camera.remoteStreamUrl);
+  const mediaId = mediaPathId(camera.remoteStreamUrl);
   const hasLogin = !!(streamAccessEmail && streamAccessPassword);
 
   const recipes = useMemo(
-    () => (media === null ? null : plannedRecipes({ camId, url: camera.remoteStreamUrl, hlsSupported: Hls.isSupported(), media, hasLogin })),
-    [media, camId, camera.remoteStreamUrl, hasLogin],
+    () => (media === null ? null : plannedRecipes({ camId, mediaId, url: camera.remoteStreamUrl, hlsSupported: Hls.isSupported(), media, hasLogin })),
+    [media, camId, mediaId, camera.remoteStreamUrl, hasLogin],
   );
 
   const goFullscreen = useCallback(() => { rootRef.current?.requestFullscreen?.().catch(() => { /* needs a click: the overlay still fills the window */ }); }, []);
@@ -148,7 +149,7 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
     (async () => {
       for (let i = 0; i < recipes.length && !cancelled; i++) {
         mark(i, 'trying');
-        const attempt = startRecipe(recipes[i], { camera, camId, media, email: streamAccessEmail, password: streamAccessPassword, video, setStill });
+        const attempt = startRecipe(recipes[i], { camera, camId, mediaId, media, email: streamAccessEmail, password: streamAccessPassword, video, setStill });
         cleanup = attempt.cleanup;
         try {
           await attempt.ready;
@@ -174,7 +175,7 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
       }
     })();
     return () => { cancelled = true; cleanup?.(); };
-  }, [recipes, round, camera, camId, media, streamAccessEmail, streamAccessPassword]);
+  }, [recipes, round, camera, camId, mediaId, media, streamAccessEmail, streamAccessPassword]);
 
   const allFailed = recipes !== null && steps.length > 0 && steps.every((s) => s.state === 'failed');
   const title = (camId ?? camera.name).toUpperCase();

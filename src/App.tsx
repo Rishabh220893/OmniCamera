@@ -3,8 +3,10 @@ import { RefreshCw } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 
 import { auth, db, googleProvider } from './lib/firebase';
-import { signInWithPopup, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch, DocumentReference } from 'firebase/firestore';
+import { signInWithPopup, signInWithEmailAndPassword, onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
+import { normaliseUsername, usernameToEmail } from './lib/username';
+import { doc, getDoc, setDoc, updateDoc, collection, addDoc, onSnapshot, serverTimestamp, deleteDoc, query, where, writeBatch, DocumentReference, type DocumentData, type Query, type QueryDocumentSnapshot } from 'firebase/firestore';
+import { subscribeMerged, type Listen } from './lib/mergedQueries';
 
 import { CameraConfig, LogEntry, LogSentiment, RoutePoint, KnownFace, NotificationPrefs, UserPreferences, WatchlistEntry, RegistryAuditEntry, TabId, CameraMediaRefs, ViewMode, GuardScope } from './types';
 import { detectStreamType, buildSnapshotUrl } from './lib/streamAdapters';
@@ -25,6 +27,7 @@ import Header from './components/Header';
 import MonitorTab from './components/MonitorTab';
 import type { FeedStatus } from './components/CameraFeed';
 import AnalyticsTab from './components/AnalyticsTab';
+import EventsTab from './components/EventsTab';
 import SettingsTab from './components/SettingsTab';
 import RegistryTab from './components/RegistryTab';
 import GuideTab from './components/GuideTab';
@@ -175,7 +178,12 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [userDepartment, setUserDepartment] = useState('');
-  const [userRole, setUserRole] = useState<'operator' | 'admin'>('admin');
+  const [userRole, setUserRole] = useState<'viewer' | 'operator' | 'admin'>('operator');
+  // The departments an administrator put this account in (from its sign-in token). Empty for everyone else. An account with some is
+  // "managed": it sees its departments' cameras and never gets the starter camera the first sign-in of a personal account creates.
+  const [departmentIds, setDepartmentIds] = useState<string[]>([]);
+  // False until the account's role and departments have been read, so the camera list is not fetched (or seeded) with the wrong ones.
+  const [roleLoaded, setRoleLoaded] = useState(false);
   const [routePlate, setRoutePlate] = useState<string | null>(null);
   const [routePoints, setRoutePoints] = useState<RoutePoint[]>([]);
   const [highlightLogId, setHighlightLogId] = useState<string | null>(null);
@@ -241,6 +249,15 @@ export default function App() {
 
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const isAdmin = userRole === 'admin';
+  // The departments this person works for (not the all-department '*' of an organisation-wide administrator, who sees their own here and
+  // the platform-wide view through events and alerts). Faces, the watchlist and logs shared with them are listed beside their own.
+  const memberDepartments = useMemo(() => departmentIds.filter(d => d && d !== '*').slice(0, 10), [departmentIds]);
+  const memberKey = memberDepartments.join('|');
+  // With exactly one department, new faces and plates are saved for it so the whole department sees them: faces by an Operator or Admin,
+  // plates by an Admin (the Firestore rules enforce the same). Anyone else saves for themselves, as before.
+  const soleDepartment = memberDepartments.length === 1 ? memberDepartments[0] : undefined;
+  const faceDepartment = soleDepartment && (userRole === 'operator' || userRole === 'admin') ? soleDepartment : undefined;
+  const watchDepartment = soleDepartment && userRole === 'admin' ? soleDepartment : undefined;
 
   // ---------- Multi-camera analysis selection ----------
   const [extraAnalysisCameraIds, setExtraAnalysisCameraIds] = useState<Set<string>>(new Set());
@@ -326,7 +343,13 @@ export default function App() {
             // to match the login email.
             setStreamAccessEmail(data.streamAccessEmail || localStorage.getItem('omni_stream_email') || '');
             setUserDepartment(data.department || '');
-            setUserRole(data.role || 'admin');
+            // The role comes from the account's custom claim (set with `npm run set-role`). Until an account has one, the old self-set field
+            // still counts, as it does on the server (AUTHZ_LEGACY_ROLE); an account with neither is an operator.
+            const claimRole = (await firebaseUser.getIdTokenResult().catch(() => null))?.claims.role;
+            setUserRole(claimRole === 'viewer' || claimRole === 'operator' || claimRole === 'admin' ? claimRole : data.role === 'admin' ? 'admin' : 'operator');
+            const claimDepts = (await firebaseUser.getIdTokenResult().catch(() => null))?.claims.departments;
+            setDepartmentIds(Array.isArray(claimDepts) ? claimDepts.filter((d): d is string => typeof d === 'string' && d !== '*') : []);
+            setRoleLoaded(true);
             localStorage.setItem(`user-${firebaseUser.uid}-googleSheetsId`, data.googleSheetsId || '');
             if (data.notificationPrefs) localStorage.setItem(`user-${firebaseUser.uid}-notificationPrefs`, JSON.stringify(data.notificationPrefs));
             setIsOfflineMode(false);
@@ -336,9 +359,10 @@ export default function App() {
               await setDoc(doc(db, 'users', firebaseUser.uid), {
                 theme: 'dark', notificationPrefs: DEFAULT_NOTIFICATION_PREFS, googleSheetsId: '', streamAccessPassword: '',
                 streamAccessEmail: firebaseUser.email || '',
-                department: '', role: 'admin', updatedAt: serverTimestamp()
+                department: '', updatedAt: serverTimestamp()
               });
               setStreamAccessEmail(firebaseUser.email || '');
+              setRoleLoaded(true);
               // Camera seeding happens once in the cameras registry listener
               // below (it fires for both brand-new users and any existing
               // account that has zero camera docs) — not duplicated here.
@@ -347,11 +371,13 @@ export default function App() {
             } catch (err) {
               console.warn('Firestore initialize user settings failed (falling back to offline local model):', err);
               setIsOfflineMode(true);
+              setRoleLoaded(true);
             }
           }
         } catch (error: unknown) {
           console.warn('Firestore user config load failed - falling back to offline cache backup:', error);
           setIsOfflineMode(true);
+          setRoleLoaded(true);
           setDbError(error instanceof Error ? error.message : String(error));
 
           const localSheetsId = localStorage.getItem(`user-${firebaseUser.uid}-googleSheetsId`);
@@ -378,6 +404,8 @@ export default function App() {
         setGoogleSheetsId('');
         setUserDepartment('');
         setUserRole('admin');
+        setRoleLoaded(false);
+        setDepartmentIds([]);
         setNotificationPrefs(DEFAULT_NOTIFICATION_PREFS);
         setCameras([createDefaultCamera('cam-1', 'Main Entrance')]);
         setActiveCameraId('cam-1');
@@ -389,70 +417,109 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // ---------- Known faces, watchlist and logs: the person's own, plus those shared with their departments ----------
+  // One query for the person's own documents and one equality query per department (`departmentId`), merged by document id.
+  const listenQuery = <T,>(q: Query, map: (d: QueryDocumentSnapshot<DocumentData>) => T): Listen<T> => (onItems, onError) =>
+    onSnapshot(q, (snapshot) => { const items: Array<[string, T]> = []; snapshot.forEach(d => items.push([d.id, map(d)])); onItems(items); }, onError);
+  const sharedListens = <T,>(name: 'faces' | 'watchlist' | 'logs', uid: string, map: (d: QueryDocumentSnapshot<DocumentData>) => T): Listen<T>[] => [
+    listenQuery(query(collection(db, name), where('userId', '==', uid)), map),
+    ...memberDepartments.map(dep => listenQuery(query(collection(db, name), where('departmentId', '==', dep)), map)),
+  ];
+
   // ---------- Known faces ----------
   useEffect(() => {
-    if (!user || user.uid === 'demo-guest') return;
-    const q = query(collection(db, 'faces'), where('userId', '==', user.uid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const faces: KnownFace[] = [];
-      snapshot.forEach(d => { const data = d.data(); faces.push({ id: d.id, name: data.name, imageData: data.imageData }); });
-      setKnownFaces(faces);
-    }, (error) => handleListenerError('faces', error));
-    return () => unsub();
-  }, [user]);
+    if (!user || user.uid === 'demo-guest' || !roleLoaded) return;
+    return subscribeMerged<KnownFace>(
+      sharedListens('faces', user.uid, d => { const data = d.data(); return { id: d.id, name: data.name, imageData: data.imageData, departmentId: typeof data.departmentId === 'string' ? data.departmentId : undefined }; }),
+      setKnownFaces,
+      (error) => handleListenerError('faces', error),
+    );
+  }, [user, roleLoaded, memberKey]);
 
   // ---------- Watchlist ----------
   useEffect(() => {
-    if (!user || user.uid === 'demo-guest') return;
-    const q = query(collection(db, 'watchlist'), where('userId', '==', user.uid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const entries: WatchlistEntry[] = [];
-      snapshot.forEach(d => {
+    if (!user || user.uid === 'demo-guest' || !roleLoaded) return;
+    return subscribeMerged<WatchlistEntry>(
+      sharedListens('watchlist', user.uid, d => {
         const data = d.data();
-        entries.push({ id: d.id, plate: data.plate, reason: data.reason || '', addedBy: data.userId, createdAt: data.createdAt?.toDate?.() || new Date() });
-      });
-      setWatchlist(entries);
-    }, (error) => handleListenerError('watchlist', error));
-    return () => unsub();
-  }, [user]);
+        return { id: d.id, plate: data.plate, reason: data.reason || '', addedBy: data.userId, createdAt: data.createdAt?.toDate?.() || new Date(), departmentId: typeof data.departmentId === 'string' ? data.departmentId : undefined };
+      }),
+      setWatchlist,
+      (error) => handleListenerError('watchlist', error),
+    );
+  }, [user, roleLoaded, memberKey]);
 
   // ---------- Logs ----------
   useEffect(() => {
-    if (!user || user.uid === 'demo-guest') return;
-    const q = query(collection(db, 'logs'), where('userId', '==', user.uid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const dbLogs: LogEntry[] = [];
-      snapshot.forEach(d => {
+    if (!user || user.uid === 'demo-guest' || !roleLoaded) return;
+    return subscribeMerged<LogEntry>(
+      sharedListens('logs', user.uid, d => {
         const data = d.data({ serverTimestamps: 'estimate' });
         let ts: Date;
         if (data.timestamp && typeof data.timestamp.toDate === 'function') ts = data.timestamp.toDate();
         else if (data.timestamp) { const p = new Date(data.timestamp); ts = isNaN(p.getTime()) ? new Date() : p; }
         else ts = new Date();
-        dbLogs.push({
+        return {
           id: d.id, cameraId: data.cameraId || '', cameraName: data.cameraName || 'Unknown Camera', timestamp: ts,
           summary: data.summary || '', counts: data.counts || { people: 0, vehicles: 0, other: 0 },
           sentiment: (['calm', 'neutral', 'tense', 'critical'] as const).includes(data.sentiment) ? data.sentiment as LogSentiment : 'neutral',
           isUnusual: data.isUnusual || false, unusualReason: data.unusualReason || undefined, alerts: data.alerts || [],
           detectedPlates: data.detectedPlates || [], isWatchlistMatch: data.isWatchlistMatch || false,
-        });
-      });
-      dbLogs.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-      setLogs(dbLogs.slice(0, 100));
-    }, (error) => handleListenerError('logs', error));
-    return () => unsub();
-  }, [user]);
+        };
+      }),
+      (dbLogs) => setLogs([...dbLogs].sort((x, y) => y.timestamp.getTime() - x.timestamp.getTime()).slice(0, 100)),
+      (error) => handleListenerError('logs', error),
+    );
+  }, [user, roleLoaded, memberKey]);
 
   // ---------- Camera registry (Model 1 — central registry, mandatory foundation) ----------
   const hasSeededCameraRef = useRef(false);
+  // Which cameras an account sees: its own; for an administrator, every camera; for a person in a department, also that department's
+  // (the Firestore rules enforce the same). Each source is its own query, and the results are merged by camera id.
+  const departmentKey = departmentIds.join('|');
+  // Set when the server's Firestore rules refuse an administrator the all-cameras query (rules not deployed yet): the app then keeps
+  // working on the administrator's own cameras, exactly as it did before departments existed.
+  const [adminAllDenied, setAdminAllDenied] = useState(false);
+  useEffect(() => { setAdminAllDenied(false); }, [user?.uid]);
   useEffect(() => {
-    if (!user || user.uid === 'demo-guest') return;
+    if (!user || user.uid === 'demo-guest' || !roleLoaded) return;
     hasSeededCameraRef.current = false;
-    const q = query(collection(db, 'cameras'), where('userId', '==', user.uid));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const cams: CameraConfig[] = [];
+    const sources: Array<{ key: string; q: Query }> = isAdmin && !adminAllDenied
+      ? [{ key: 'all', q: query(collection(db, 'cameras')) }]
+      : [{ key: 'own', q: query(collection(db, 'cameras'), where('userId', '==', user.uid)) }];
+    // One equality query per department (not an `in` list): the Firestore rules can prove an equality query is allowed.
+    if (!isAdmin || adminAllDenied) for (const dep of departmentIds.slice(0, 10)) sources.push({ key: `dept:${dep}`, q: query(collection(db, 'cameras'), where('departmentId', '==', dep)) });
+    const parts = new Map<string, Map<string, CameraConfig>>();
+    const managed = departmentIds.length > 0 && !isAdmin;
+    const publish = () => {
+      if (parts.size < sources.length) return; // wait until every source has answered once
+      const merged = new Map<string, CameraConfig>();
+      for (const part of parts.values()) for (const [id, cam] of part) merged.set(id, cam);
+      const cams = [...merged.values()];
+      if (cams.length > 0) {
+        const deduped = dedupeCamerasByStreamUrl(cams);
+        setCameras(deduped);
+        if (!deduped.find(c => c.id === activeCameraId)) setActiveCameraId(deduped[0].id);
+      } else if (!hasSeededCameraRef.current && !managed) {
+        // Covers both brand-new accounts and any existing account whose users/{uid} doc predates the registry migration and therefore
+        // never got a camera document created for it. Accounts an administrator created do not get one: they are given cameras.
+        hasSeededCameraRef.current = true;
+        addDoc(collection(db, 'cameras'), {
+          ...defaultCameraFields('Main Entrance'), userId: user.uid,
+          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
+        }).then(ref => logRegistryAudit(ref.id, 'Main Entrance', 'create', 'manual'))
+          .catch(err => console.error('Failed to seed a default camera:', err));
+      } else if (managed) {
+        // Nothing given to this person's department (yet): show an empty placeholder, never an empty list (the screens assume one camera).
+        setCameras([createDefaultCamera('cam-1', 'No cameras given to your department yet')]);
+        setActiveCameraId('cam-1');
+      }
+    };
+    const unsubs = sources.map(({ key, q }) => onSnapshot(q, (snapshot) => {
+      const part = new Map<string, CameraConfig>();
       snapshot.forEach(d => {
         const data = d.data();
-        cams.push({
+        part.set(d.id, {
           id: d.id, name: data.name || 'Unnamed Camera',
           peopleThreshold: data.peopleThreshold ?? 5, vehicleThreshold: data.vehicleThreshold ?? 2,
           sensitivity: data.sensitivity ?? 5, interval: data.interval ?? 60,
@@ -461,33 +528,28 @@ export default function App() {
           useSimulatedFeed: !!data.useSimulatedFeed,
           serverAnalysis: !!data.serverAnalysis, lastAnalysisError: data.lastAnalysisError || undefined,
           lastAnalysisTime: data.lastAnalysisTime?.toDate ? data.lastAnalysisTime.toDate() : data.lastAnalysisTime,
-          location: data.location, department: data.department, ownership: data.ownership,
+          location: data.location, department: data.department, departmentId: typeof data.departmentId === 'string' ? data.departmentId : undefined, ownership: data.ownership,
+          adapter: typeof data.adapter === 'string' ? data.adapter : undefined, sourceId: typeof data.sourceId === 'string' ? data.sourceId : undefined,
           cameraType: data.cameraType, connectivityStatus: data.connectivityStatus || 'unknown',
           maintenanceStatus: data.maintenanceStatus || 'operational', installDate: data.installDate,
           storageDetails: data.storageDetails, onboardedVia: data.onboardedVia || 'manual',
         });
       });
-      if (cams.length > 0) {
-        const deduped = dedupeCamerasByStreamUrl(cams);
-        setCameras(deduped);
-        if (!deduped.find(c => c.id === activeCameraId)) setActiveCameraId(deduped[0].id);
-      } else if (!hasSeededCameraRef.current) {
-        // Covers both brand-new accounts and any existing account whose
-        // users/{uid} doc predates the registry migration and therefore
-        // never got a camera document created for it.
-        hasSeededCameraRef.current = true;
-        addDoc(collection(db, 'cameras'), {
-          ...defaultCameraFields('Main Entrance'), userId: user.uid,
-          createdAt: serverTimestamp(), updatedAt: serverTimestamp()
-        }).then(ref => logRegistryAudit(ref.id, 'Main Entrance', 'create', 'manual'))
-          .catch(err => console.error('Failed to seed a default camera:', err));
+      parts.set(key, part);
+      publish();
+    }, (error) => {
+      if (key === 'all' && (error as { code?: string }).code === 'permission-denied') {
+        console.warn('The all-cameras query was refused by the Firestore rules (deploy firestore.rules); showing your own cameras instead.');
+        setAdminAllDenied(true);
+        return;
       }
-    }, (error) => handleListenerError('cameras', error));
-    return () => unsub();
+      handleListenerError('cameras', error);
+    }));
+    return () => unsubs.forEach(u => u());
     // activeCameraId and logRegistryAudit intentionally omitted: re-subscribing
     // this listener on every camera switch would be wasteful, and reading a
     // slightly-stale activeCameraId here self-corrects on the next snapshot.
-  }, [user]);
+  }, [user, roleLoaded, isAdmin, departmentKey, adminAllDenied]);
 
   // ---------- Registry audit trail (admin-only) ----------
   useEffect(() => {
@@ -514,6 +576,18 @@ export default function App() {
     setLoginError(null);
     setIsSigningIn(true);
     try { await signInWithPopup(auth, googleProvider); }
+    catch (error: unknown) { setLoginError(error instanceof Error ? error.message : String(error)); }
+    finally { setIsSigningIn(false); }
+  };
+
+  // Username + password: an account an administrator created. Firebase identifies accounts by e-mail, so the username is mapped to one
+  // (src/lib/username.ts); the person never sees it.
+  const handlePasswordLogin = async (rawUsername: string, password: string) => {
+    setLoginError(null);
+    const username = normaliseUsername(rawUsername);
+    if (!username || !password) { setLoginError('invalid-username'); return; }
+    setIsSigningIn(true);
+    try { await signInWithEmailAndPassword(auth, usernameToEmail(username), password); }
     catch (error: unknown) { setLoginError(error instanceof Error ? error.message : String(error)); }
     finally { setIsSigningIn(false); }
   };
@@ -585,16 +659,20 @@ export default function App() {
 
     try {
       await setDoc(doc(db, 'users', user.uid), {
-        theme, notificationPrefs, googleSheetsId, streamAccessPassword, streamAccessEmail, department: userDepartment, role: userRole, updatedAt: serverTimestamp()
-      });
+        theme, notificationPrefs, googleSheetsId, streamAccessPassword, streamAccessEmail, department: userDepartment, updatedAt: serverTimestamp()
+      }, { merge: true }); // merge: an older account keeps its stored role field, which this page never writes
 
-      const batch = writeBatch(db);
-      cameras.forEach(cam => {
-        const { id, ...fields } = cam;
-        batch.update(doc(db, 'cameras', id), { ...fields, updatedAt: serverTimestamp() });
-      });
-      await batch.commit();
-      cameras.forEach(cam => logRegistryAudit(cam.id, cam.name, 'update', 'manual'));
+      // 'cam-1' is the on-screen placeholder (not a stored camera). Batches are chunked: an administrator's list can be longer than one batch allows.
+      const stored = cameras.filter(cam => cam.id !== 'cam-1');
+      for (let i = 0; i < stored.length; i += 400) {
+        const batch = writeBatch(db);
+        stored.slice(i, i + 400).forEach(cam => {
+          const { id, ...fields } = cam;
+          batch.update(doc(db, 'cameras', id), { ...fields, updatedAt: serverTimestamp() });
+        });
+        await batch.commit();
+      }
+      stored.forEach(cam => logRegistryAudit(cam.id, cam.name, 'update', 'manual'));
 
       setIsSaveLoading(false); setSaveSuccess(true); setIsOfflineMode(false); setDbError(null);
       setTimeout(() => setSaveSuccess(null), 3000);
@@ -664,7 +742,7 @@ export default function App() {
         setKnownFaces(prev => [...prev, { id: `guest-face-${Date.now()}`, name, imageData: base64 }]);
         return;
       }
-      try { await addDoc(collection(db, 'faces'), { name, imageData: base64, userId: user.uid, createdAt: serverTimestamp() }); }
+      try { await addDoc(collection(db, 'faces'), { name, imageData: base64, userId: user.uid, createdAt: serverTimestamp(), ...(faceDepartment ? { departmentId: faceDepartment } : {}) }); }
       catch (error) { handleFirestoreError(error, OperationType.CREATE, 'faces'); }
     };
     reader.readAsDataURL(file);
@@ -682,7 +760,7 @@ export default function App() {
       setWatchlist(prev => [...prev, { id: `guest-watch-${Date.now()}`, plate, reason, addedBy: user.uid, createdAt: new Date() }]);
       return;
     }
-    try { await addDoc(collection(db, 'watchlist'), { plate, reason, userId: user.uid, createdAt: serverTimestamp() }); }
+    try { await addDoc(collection(db, 'watchlist'), { plate, reason, userId: user.uid, createdAt: serverTimestamp(), ...(watchDepartment ? { departmentId: watchDepartment } : {}) }); }
     catch (error) { handleFirestoreError(error, OperationType.CREATE, 'watchlist'); }
   };
 
@@ -692,9 +770,8 @@ export default function App() {
     catch (error) { handleFirestoreError(error, OperationType.DELETE, `watchlist/${id}`); }
   };
 
-  const updateUserProfile = (updates: { department?: string; role?: 'operator' | 'admin' }) => {
+  const updateUserProfile = (updates: { department?: string }) => {
     if (updates.department !== undefined) setUserDepartment(updates.department);
-    if (updates.role !== undefined) setUserRole(updates.role);
   };
 
   // ---------- Fullscreen ----------
@@ -884,6 +961,7 @@ export default function App() {
         addDoc(collection(db, 'logs'), {
           cameraId: camera.id, cameraName: camera.name, summary: summaryWithExtra,
           detectedItems: data.people_identified || [], timestamp: new Date(), userId: user.uid,
+          ...(camera.departmentId ? { departmentId: camera.departmentId } : {}),
           counts: data.counts || { people: 0, vehicles: 0, other: 0 }, sentiment, isUnusual: newEntry.isUnusual,
           unusualReason: newEntry.unusualReason || '', alerts, detectedPlates, isWatchlistMatch,
           plateReads: data.plate_reads || [], plateSource: data.plate_source || 'gemini'
@@ -1247,7 +1325,7 @@ export default function App() {
         ) : showOnboarding ? (
           <OnboardingScreen onComplete={handleCompleteOnboarding} />
         ) : !isAuthenticated ? (
-          <AuthScreen loginError={loginError} isSigningIn={isSigningIn} onGoogleLogin={handleGoogleLogin} onGuestBypass={handleGuestBypass} />
+          <AuthScreen loginError={loginError} isSigningIn={isSigningIn} onGoogleLogin={handleGoogleLogin} onPasswordLogin={handlePasswordLogin} onGuestBypass={handleGuestBypass} />
         ) : (
           <div className="flex flex-col lg:flex-row min-h-screen">
             <Sidebar activeTab={activeTab} onChangeTab={setActiveTab} onLogout={handleLogout} />
@@ -1313,6 +1391,7 @@ export default function App() {
                   {activeTab === 'analytics' && (
                     <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} userId={user && user.uid !== 'demo-guest' ? user.uid : null} decidedBy={user?.email || user?.uid || 'unknown'} localSightings={guestSightings} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
                   )}
+                  {activeTab === 'events' && <EventsTab />}
                   {activeTab === 'map' && (
                     <RegistryTab
                       cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={handleSelectCameraFromRegistry}
@@ -1335,7 +1414,7 @@ export default function App() {
                       onAddCamera={addCamera} onRemoveCamera={removeCamera} onUpdateActiveCamera={updateActiveCamera}
                       onOpenSetupGuides={() => setShowDVRGuide(true)} webhookStatus={webhookStatus} onTestWebhook={testWebhook}
                       knownFaces={knownFaces} onFaceUpload={handleFaceUpload} onRemoveFace={removeKnownFace}
-                      watchlist={watchlist} onAddWatchlistEntry={addWatchlistEntry} onRemoveWatchlistEntry={removeWatchlistEntry}
+                      watchlist={watchlist} onAddWatchlistEntry={addWatchlistEntry} onRemoveWatchlistEntry={removeWatchlistEntry} faceDepartment={faceDepartment} watchDepartment={watchDepartment}
                       userDepartment={userDepartment} userRole={userRole} onUpdateUserProfile={updateUserProfile} isAdmin={isAdmin}
                     />
                   )}

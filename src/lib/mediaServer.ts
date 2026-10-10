@@ -36,7 +36,7 @@ export function noteMediaFailure(cameraId: string, fallbackUsable: boolean): boo
 /** The media-server stream played: forget earlier failures. */
 export function noteMediaPlaying(cameraId: string): void { mediaFailureCounts.delete(cameraId); }
 
-export { gridCamId } from './gridCamId';
+export { gridCamId, mediaPathId } from './gridCamId';
 
 export function mediaPlaylistUrl(cfg: MediaConfig, camId: string): string {
   // MediaMTX answers the first playlist request with a one-time redirect to "?cookieCheck=1", and a browser

@@ -1,5 +1,6 @@
 import { decide, type Decision, type EncoderKind, type Recipe } from './cameraRecipe';
 import type { ProfileRow } from './cameraProfile';
+import { policyReader, recordingEnv } from './recording/env';
 import { buildPaths, type PathBuildOptions, type PathPlan } from './mediaPaths';
 import { credentialResolver } from './siteSecrets';
 
@@ -16,8 +17,8 @@ export function planMedia(rows: ProfileRow[], o: { encoder: EncoderKind; build: 
     override: row.override,
     decision: decide(row.report, { encoder: o.encoder, force: (row.override as Recipe | null) ?? undefined, heal: row.healFloor ?? null }),
   }));
-  const { paths, skipped } = buildPaths(decisions, o.build);
-  return { decisions, paths, skipped, managed: decisions.map((d) => d.cameraId) };
+  const { paths, skipped, notRecorded } = buildPaths(decisions, o.build);
+  return { decisions, paths, skipped, notRecorded, managed: decisions.map((d) => d.cameraId) };
 }
 
 /**
@@ -33,5 +34,6 @@ export function pathBuildOptionsFromEnv(site: string, env: Record<string, string
       publishPort: Number(env.MEDIA_TRANSCODE_RTSP_PORT || 18554), scaleFilter: env.MEDIA_SCALE_FILTER || null,
     },
     startTimeout: env.SOURCE_START_TIMEOUT || '60s', encodeStartTimeout: env.MEDIA_ENCODE_START_TIMEOUT || '120s', closeAfter: env.SOURCE_CLOSE_AFTER || '5s',
+    recording: (() => { const r = recordingEnv(env); return r ? { dir: r.dir, policy: policyReader(r.policyFile) } : undefined; })(),
   };
 }

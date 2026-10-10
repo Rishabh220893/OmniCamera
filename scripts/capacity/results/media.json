@@ -1,0 +1,148 @@
+{
+  "when": "2026-10-09T20:42:38.368Z",
+  "machine": {
+    "cores": 2,
+    "cpu": "Intel(R) Celeron(R) N4020 CPU @ 1.10GHz",
+    "mhz": 1094,
+    "ramGB": 8.2,
+    "freeRamMBAtStart": 2320
+  },
+  "clip": {
+    "size": "1280x720",
+    "fps": 15,
+    "gop": 30,
+    "bitrateKbps": 1603
+  },
+  "stagesMeasuredAt": "2026-10-09T20:31:39.113Z",
+  "baselineBusyCoresDuringStages": 0.351,
+  "stages": [
+    {
+      "cameras": 5,
+      "alive": 5,
+      "label": "5 cameras publishing",
+      "seconds": 15,
+      "mediaServerCpuPct": 3.2,
+      "mediaServerMB": 39,
+      "publishersCpuPct": 3.4,
+      "publishersMB": 107,
+      "readersCpuPct": 0,
+      "machineBusyCores": 0.64,
+      "freeRamMB": 2438
+    },
+    {
+      "cameras": 5,
+      "readers": 2,
+      "label": "5 cameras publishing, 2 readers",
+      "seconds": 15,
+      "mediaServerCpuPct": 5.8,
+      "mediaServerMB": 39,
+      "publishersCpuPct": 3.9,
+      "publishersMB": 108,
+      "readersCpuPct": 1.5,
+      "machineBusyCores": 1.19,
+      "freeRamMB": 2412
+    },
+    {
+      "cameras": 10,
+      "alive": 10,
+      "label": "10 cameras publishing",
+      "seconds": 15,
+      "mediaServerCpuPct": 9.9,
+      "mediaServerMB": 42,
+      "publishersCpuPct": 7.4,
+      "publishersMB": 215,
+      "readersCpuPct": 0,
+      "machineBusyCores": 1.24,
+      "freeRamMB": 2367
+    },
+    {
+      "cameras": 10,
+      "readers": 5,
+      "label": "10 cameras publishing, 5 readers",
+      "seconds": 15,
+      "mediaServerCpuPct": 14.6,
+      "mediaServerMB": 43,
+      "publishersCpuPct": 8.4,
+      "publishersMB": 216,
+      "readersCpuPct": 4.5,
+      "machineBusyCores": 1.64,
+      "freeRamMB": 2276
+    },
+    {
+      "cameras": 20,
+      "alive": 20,
+      "label": "20 cameras publishing",
+      "seconds": 15,
+      "mediaServerCpuPct": 22.3,
+      "mediaServerMB": 55,
+      "publishersCpuPct": 23.8,
+      "publishersMB": 429,
+      "readersCpuPct": 0,
+      "machineBusyCores": 1.67,
+      "freeRamMB": 2211
+    },
+    {
+      "cameras": 20,
+      "readers": 10,
+      "label": "20 cameras publishing, 10 readers",
+      "seconds": 15,
+      "mediaServerCpuPct": 28.5,
+      "mediaServerMB": 46,
+      "publishersCpuPct": 24.7,
+      "publishersMB": 430,
+      "readersCpuPct": 11.5,
+      "machineBusyCores": 1.95,
+      "freeRamMB": 2028
+    },
+    {
+      "cameras": 30,
+      "alive": 30,
+      "label": "30 cameras publishing",
+      "seconds": 15,
+      "mediaServerCpuPct": 24.8,
+      "mediaServerMB": 50,
+      "publishersCpuPct": 33,
+      "publishersMB": 643,
+      "readersCpuPct": 0,
+      "machineBusyCores": 1.84,
+      "freeRamMB": 2093
+    },
+    {
+      "cameras": 30,
+      "readers": 15,
+      "label": "30 cameras publishing, 15 readers",
+      "seconds": 15,
+      "mediaServerCpuPct": 49.3,
+      "mediaServerMB": 73,
+      "publishersCpuPct": 42.6,
+      "publishersMB": 647,
+      "readersCpuPct": 18.1,
+      "machineBusyCores": 1.58,
+      "freeRamMB": 1984
+    }
+  ],
+  "capture": {
+    "grabs": 12,
+    "medianMs": 1841,
+    "maxMs": 2054,
+    "cpuSecondsPerGrab": 0.016,
+    "peakMB": 46,
+    "frameKB": 54,
+    "note": "ffmpeg -benchmark on the worker's exact frame-grab arguments, new RTSP session each time. Wall time is affected by other load on the machine; CPU seconds are the process's own."
+  },
+  "gate": {
+    "runs": 12,
+    "medianMs": 146,
+    "cpuSecondsPerRun": 0,
+    "peakMB": 22
+  },
+  "probe": {
+    "sampleSec": 8,
+    "elapsedS": 14,
+    "frames": 120,
+    "ok": true,
+    "sampleCpuSeconds": 0.69,
+    "peakMB": 37,
+    "note": "CPU is the ffmpeg sample run (the ffprobe describe step is small beside it). A real probe uses 30 s samples, so CPU grows with the sample length."
+  }
+}

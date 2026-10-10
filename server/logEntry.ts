@@ -20,6 +20,10 @@ export interface AnalysisResult {
   plate_reads?: Array<{ plate: string; confidence: number; formatValid: boolean; corrected: boolean }>;
   plate_source?: string;
   sentiment?: string;
+  /** Findings the analyzers reported beyond the log fields (see server/analytics). Not part of the stored log document. */
+  events?: Array<import('./events/schema').EventDraft>;
+  /** How each analyzer fared on this frame. */
+  analyzers?: Array<{ id: string; ok: boolean; ms: number; skipped?: boolean; error?: string }>;
 }
 
 export interface CameraForLog {
@@ -27,6 +31,8 @@ export interface CameraForLog {
   name: string;
   sensitivity: number;
   userId: string;
+  /** The department the camera was given to: its members can read the log. */
+  departmentId?: string;
 }
 
 export function buildLogDocument(camera: CameraForLog, data: AnalysisResult, now: Date) {
@@ -49,6 +55,7 @@ export function buildLogDocument(camera: CameraForLog, data: AnalysisResult, now
     detectedItems: people,
     timestamp: now,
     userId: camera.userId,
+    ...(camera.departmentId ? { departmentId: camera.departmentId } : {}),
     counts: data.counts ?? { people: 0, vehicles: 0, other: 0 },
     sentiment,
     isUnusual,

@@ -15,42 +15,96 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    // Pilot-scale RBAC stand-in: role lives on the user's own profile doc,
-    // not a real Firebase custom claim. See Sentinel Mesh roadmap for the
-    // production version (custom claims / OIDC).
+    // Roles are Firebase custom claims, set only with the Admin SDK (`npm run set-role`, docs/authz.md).
+    // Accounts that predate claims keep working through the `role` field already stored on their user
+    // document; nobody can write that field from a client any more (see /users below), so it can only
+    // shrink as accounts are moved to claims.
     function isAdmin() {
-      return isSignedIn() &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+      return isSignedIn() && (
+        request.auth.token.get('role', '') == 'admin' ||
+        (request.auth.token.get('role', '') == '' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'admin'));
     }
 
-    // User Profile Rules
+    // Departments. A person works for the departments in their `departments` claim (set by an administrator, server/admin).
+    function inMyDepartment(departmentId) {
+      return departmentId is string && departmentId in request.auth.token.get('departments', []);
+    }
+    function mayEditByRole() {
+      return request.auth.token.get('role', '') in ['operator', 'admin'];
+    }
+    // An administrator by claim (not the old self-set field) with no department listed, or '*', covers every department.
+    function isClaimsAdmin() {
+      return isSignedIn() && request.auth.token.get('role', '') == 'admin';
+    }
+    function coversDepartment(departmentId) {
+      return departmentId is string && (inMyDepartment(departmentId)
+        || (isClaimsAdmin() && (request.auth.token.get('departments', []).size() == 0 || '*' in request.auth.token.get('departments', []))));
+    }
+
+    // User Profile Rules. The owner edits their own settings but can never set or change `role`.
+    // `managed`, `username` and `departmentId` belong to accounts an administrator created (server/admin): set by the server only.
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && !('role' in request.resource.data) && !('managed' in request.resource.data)
+        && !('departmentId' in request.resource.data) && !('username' in request.resource.data);
+      allow update: if isOwner(userId)
+        && request.resource.data.get('role', null) == resource.data.get('role', null)
+        && request.resource.data.get('managed', null) == resource.data.get('managed', null)
+        && request.resource.data.get('departmentId', null) == resource.data.get('departmentId', null)
+        && request.resource.data.get('username', null) == resource.data.get('username', null);
+      allow delete: if isOwner(userId) && resource.data.get('managed', false) != true;
     }
 
-    // Face Rules
+    // Departments are managed by the server only (administrators, through /api/admin/departments).
+    match /departments/{departmentId} {
+      allow read, write: if false;
+    }
+
+    // Face Rules. A face may be shared with a department (`departmentId`): its members read it, and its operators and administrators
+    // add, change and remove the department's faces. Without `departmentId` it is the owner's, as before. Sharing is set when the face is
+    // created and not changed afterwards.
+    function mayShareFaces(departmentId) {
+      return coversDepartment(departmentId) && mayEditByRole();
+    }
     match /faces/{faceId} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || inMyDepartment(resource.data.get('departmentId', null)));
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (!('departmentId' in request.resource.data) || mayShareFaces(request.resource.data.departmentId));
+      allow update: if isSignedIn() && request.resource.data.userId == resource.data.userId
+        && request.resource.data.get('departmentId', null) == resource.data.get('departmentId', null)
+        && (resource.data.userId == request.auth.uid || mayShareFaces(resource.data.get('departmentId', null)));
+      allow delete: if isSignedIn() && (resource.data.userId == request.auth.uid || mayShareFaces(resource.data.get('departmentId', null)));
     }
 
-    // Log Rules
+    // Log Rules. A log carries the `departmentId` of its camera, so that department's members can read it. The value must be the one on the
+    // camera's own document, so a log cannot be tagged into a department it does not belong to.
+    function logDepartmentIsCameras() {
+      return request.resource.data.departmentId == get(/databases/$(database)/documents/cameras/$(request.resource.data.cameraId)).data.get('departmentId', null);
+    }
     match /logs/{logId} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || inMyDepartment(resource.data.get('departmentId', null)));
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (!('departmentId' in request.resource.data) || logDepartmentIsCameras());
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid
+        && request.resource.data.get('departmentId', null) == resource.data.get('departmentId', null);
       allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
 
-    // Watchlist Rules — readable by the owning user (needed for plate
-    // matching), writable only by an Admin-role account.
+    // Watchlist Rules — readable by the owning user (needed for plate matching), writable only by an Admin-role account. A plate may be
+    // shared with a department (`departmentId`): its members read it, and only an administrator who covers that department changes it.
+    function mayShareWatchlist(departmentId) {
+      return coversDepartment(departmentId) && isClaimsAdmin();
+    }
+    function watchlistWritable(data) {
+      return data.get('departmentId', null) == null ? (data.userId == request.auth.uid && isAdmin()) : mayShareWatchlist(data.departmentId);
+    }
     match /watchlist/{entryId} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && isAdmin();
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid && isAdmin();
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid && isAdmin();
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || inMyDepartment(resource.data.get('departmentId', null)));
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid && watchlistWritable(request.resource.data);
+      allow update: if isSignedIn() && request.resource.data.userId == resource.data.userId
+        && request.resource.data.get('departmentId', null) == resource.data.get('departmentId', null) && watchlistWritable(resource.data);
+      allow delete: if isSignedIn() && watchlistWritable(resource.data);
     }
 
     // Central Camera Registry (Sentinel Mesh Model 1 — mandatory foundation).
@@ -58,11 +112,22 @@ service cloud.firestore {
     // API-based onboarding route in server.ts writes here via the Admin
     // SDK, which bypasses these rules by design — they only govern direct
     // client access (manual entry, bulk import, edits from the app).
+    //
+    // Who can see a camera: its owner; an administrator (all cameras); and the members of the department it was given to
+    // (`departmentId`, set by an administrator through /api/admin/cameras/allot; the department is in the person's `departments` claim).
+    // Department members with the operator role may edit it; viewers only look.
     match /cameras/{cameraId} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
-      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid && isAdmin();
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin() || inMyDepartment(resource.data.get('departmentId', null)));
+      // `gatewayId` hands a camera to a regional gateway (server/gateway), which will fetch the camera's URL from inside its own network,
+      // and `departmentId` gives it to a department. Only an admin may set or change either.
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (!('gatewayId' in request.resource.data) || isAdmin())
+        && (!('departmentId' in request.resource.data) || isAdmin());
+      allow update: if isSignedIn() && request.resource.data.userId == resource.data.userId
+        && (resource.data.userId == request.auth.uid || isAdmin() || (inMyDepartment(resource.data.get('departmentId', null)) && mayEditByRole()))
+        && (request.resource.data.get('gatewayId', null) == resource.data.get('gatewayId', null) || isAdmin())
+        && (request.resource.data.get('departmentId', null) == resource.data.get('departmentId', null) || isAdmin());
+      allow delete: if isSignedIn() && isAdmin();
     }
 
     // Registry Audit Trail — append-only. Every registry mutation writes

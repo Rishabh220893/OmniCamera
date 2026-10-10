@@ -1,0 +1,1033 @@
+openapi: 3.0.3
+info:
+  title: OmniSee server API
+  version: 0.1.0
+  description: |
+    The server-to-server surface of OmniSee: the camera registry, playback profiles, source adapters, events and analysis status.
+    Browser-only helper routes (proxies for frames, HLS and WHEP) are not part of this contract and may change.
+    Routes that need the registry API key read it from `X-Registry-Api-Key`. Routes marked "admin" take a Firebase ID token
+    (`Authorization: Bearer ...`) of a user whose profile role is `admin`.
+servers:
+  - url: http://localhost:3000
+paths:
+  /api/registry/cameras:
+    get:
+      summary: List a user's cameras
+      tags: [Registry]
+      security: [{ registryKey: [] }]
+      parameters:
+        - { name: userId, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Cameras, content: { application/json: { schema: { type: object, properties: { cameras: { type: array, items: { $ref: '#/components/schemas/Camera' } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '501': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Create a camera
+      tags: [Registry]
+      security: [{ registryKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Camera' }, { type: object, required: [userId, name], properties: { userId: { type: string } } }] } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { type: object, properties: { id: { type: string } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /api/registry/cameras/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    patch:
+      summary: Update fields of a camera
+      tags: [Registry]
+      security: [{ registryKey: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { allOf: [{ $ref: '#/components/schemas/Camera' }, { type: object, required: [userId], properties: { userId: { type: string } } }] } } }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Delete a camera
+      tags: [Registry]
+      security: [{ registryKey: [] }]
+      parameters:
+        - { name: userId, in: query, required: true, schema: { type: string } }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/adapters:
+    get:
+      summary: The registered source adapters
+      description: Admin. Each adapter is one kind of camera source (ONVIF, direct RTSP, HTTP stream, the grid).
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: Adapters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  allowPrivate: { type: boolean, description: Whether this server may contact private-network addresses. }
+                  adapters:
+                    type: array
+                    items:
+                      type: object
+                      properties: { kind: { type: string }, label: { type: string }, description: { type: string }, canDiscover: { type: boolean }, canReadDevice: { type: boolean }, canListChannels: { type: boolean } }
+  /api/adapters/discover:
+    post:
+      summary: Find devices on the server's own network
+      description: Admin. ONVIF uses WS-Discovery multicast, so it only sees the segment the server is on.
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { adapter: { type: string, default: onvif }, timeoutMs: { type: integer, minimum: 500, maximum: 15000, default: 3000 } } } } }
+      responses:
+        '200': { description: Devices, content: { application/json: { schema: { type: object, properties: { adapter: { type: string }, devices: { type: array, items: { $ref: '#/components/schemas/DiscoveredDevice' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '501': { $ref: '#/components/responses/Error' }
+  /api/adapters/device:
+    post:
+      summary: Make, model and firmware of a camera
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody: { $ref: '#/components/requestBodies/CameraRef' }
+      responses:
+        '200': { description: Device details, content: { application/json: { schema: { type: object, properties: { adapter: { type: string }, device: { $ref: '#/components/schemas/DeviceInfo' } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '501': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /api/adapters/endpoints:
+    post:
+      summary: The streams a camera offers
+      description: Logins are removed from the returned URLs.
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody: { $ref: '#/components/requestBodies/CameraRef' }
+      responses:
+        '200': { description: Endpoints, content: { application/json: { schema: { type: object, properties: { adapter: { type: string }, endpoints: { type: array, items: { $ref: '#/components/schemas/StreamEndpoint' } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /api/recordings/{cameraId}:
+    get:
+      summary: What is recorded for a camera in a time range
+      description: Needs `recording.view` and the camera (owner, or one of its departments). Up to 31 days. Only present when RECORDINGS_DIR is set; see docs/recording.md.
+      tags: [Recording]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: cameraId, in: path, required: true, schema: { type: string } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: Segments (start, end or null while being written, bytes, tier, held) and gaps with no recording
+          content: { application/json: { schema: { type: object, additionalProperties: true } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/recordings/{cameraId}/clip:
+    get:
+      summary: An MP4 of a time range (at most 15 minutes)
+      description: Copied from the recorded segments, not re-encoded; it starts at the keyframe at or before `from`. Headers `X-Clip-Actual-From` and `X-Clip-Gaps` say where it really starts and how many holes it spans. 429 when other clips are being cut.
+      tags: [Recording]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: cameraId, in: path, required: true, schema: { type: string } }
+        - { name: from, in: query, required: true, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: true, schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: The clip, content: { video/mp4: { schema: { type: string, format: binary } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /api/recordings/{cameraId}/export:
+    post:
+      summary: Export evidence (hashed, with a hold on the originals)
+      description: Needs `recording.export`. Up to one hour. Writes a manifest with SHA-256 of the clip and of every source segment, and holds the range against retention until an admin releases the hold.
+      tags: [Recording]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: cameraId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from, to, reason]
+              properties: { from: { type: string, format: date-time }, to: { type: string, format: date-time }, reason: { type: string, description: 'Case or FIR number.' } }
+      responses:
+        '201': { description: The manifest, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/recording-exports/{id}:
+    get:
+      summary: An export's manifest (add /file for the video, with X-Content-SHA256)
+      tags: [Recording]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Manifest, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/recording-policy:
+    get:
+      summary: Recording policies (admin)
+      description: "Also `PUT /api/recording-policy {default}`, `PUT|DELETE /api/recording-policy/{cameraId}` with `{mode: off|continuous, keepDays}`. Takes effect when the media configuration is next applied."
+      tags: [Recording]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: Policies, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+  /api/recordings/usage:
+    get:
+      summary: Disk use per camera and free space (admin)
+      description: Also `POST /api/recordings/retention?dryRun=1`, `GET /api/recording-holds`, `POST /api/recording-holds/{id}/release` (admin).
+      tags: [Recording]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: Usage, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+  /api/admin/users:
+    get:
+      summary: Accounts created through this API (never other accounts)
+      description: Admin (`user.manage`). Also `POST /api/admin/users` {username, password, role, departmentId}, `PATCH /api/admin/users/{uid}` {password?, role?, departmentId?, disabled?}, `DELETE /api/admin/users/{uid}`; `GET|POST /api/admin/departments`, `DELETE /api/admin/departments/{id}` (refused while it has users or cameras); `GET /api/admin/cameras`; `POST /api/admin/cameras/allot` {cameraIds, departmentId|null}. Passwords are never returned. See docs/admin-users.md.
+      tags: [Admin]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: Users, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/vms:
+    get:
+      summary: Department system connector types and the configured systems with live status
+      description: Needs `vms.view`. Only present with VMS_ENABLED=true; see docs/connectors-vms.md. Also `POST /api/vms/systems` (add; admin, `vms.manage`; body id, kind, baseUrl, credentials, ownerUserId, department, timezoneOffsetMinutes), `DELETE /api/vms/systems/{id}`, `POST /api/vms/systems/{id}/sync`, `GET /api/vms/systems/{id}/health`, `GET /api/vms/systems/{id}/cameras`. Logins are never returned.
+      tags: [Federation]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: Types and systems, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/connectors:
+    get:
+      summary: Connected outside systems and their health
+      description: Needs the `connector.query` permission (operator or admin). Only present when the server runs with CONNECTORS=mock; see docs/connectors.md.
+      tags: [Connectors]
+      security: [{ adminToken: [] }]
+      responses:
+        '200':
+          description: Connectors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  connectors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        label: { type: string }
+                        description: { type: string }
+                        mock: { type: boolean }
+                        queries: { type: array, items: { type: string } }
+                        state: { type: string, enum: [ok, failing, open] }
+                        stats: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/connectors/{id}/lookup:
+    post:
+      summary: Ask one connected system a question
+      description: Recorded in the access log. 422 when the connector does not answer that query type; 503 when it is paused after repeated failures or busy; 504 on timeout.
+      tags: [Connectors]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: vahan } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: object
+                  required: [type]
+                  properties:
+                    type: { type: string, enum: [vehicle, licence, wanted_vehicle] }
+                    plate: { type: string, description: 'For vehicle and wanted_vehicle.' }
+                    number: { type: string, description: 'For licence.' }
+      responses:
+        '200':
+          description: The answer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: object
+                    properties:
+                      connector: { type: string }
+                      query: { type: string }
+                      found: { type: boolean }
+                      flags: { type: array, items: { type: object, properties: { code: { type: string }, severity: { type: string }, text: { type: string } } } }
+                      data: { type: object, additionalProperties: true }
+                      queriedAt: { type: string }
+                      mock: { type: boolean }
+                      cached: { type: boolean }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+        '504': { $ref: '#/components/responses/Error' }
+  /api/access-log:
+    get:
+      summary: Recent refusals and sensitive uses
+      description: Admin. The last 2,000 entries held in memory, newest first. The durable copy is the Firestore collection `accessLog`.
+      tags: [Access]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: uid, in: query, schema: { type: string } }
+        - { name: allowed, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, maximum: 1000, default: 200 } }
+      responses:
+        '200':
+          description: Entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries: { type: array, items: { type: object, properties: { at: { type: string }, uid: { type: string }, role: { type: string }, source: { type: string }, permission: { type: string }, allowed: { type: boolean }, reason: { type: string }, method: { type: string }, path: { type: string }, department: { type: string } } } }
+                  droppedFromMemory: { type: integer }
+                  droppedBeforeSaving: { type: integer }
+                  saved: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/adapters/channels:
+    post:
+      summary: The cameras behind a recorder (NVR / DVR / encoder)
+      description: Admin. Only recorder adapters (`hikvision`, `dahua`) answer; others give 501. Each channel comes with a `camera` object ready to register or probe; the login is not echoed back, add it when registering.
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody: { $ref: '#/components/requestBodies/CameraRef' }
+      responses:
+        '200':
+          description: Channels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  adapter: { type: string }
+                  channels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        channel: { type: integer }
+                        name: { type: [string, 'null'] }
+                        online: { type: [boolean, 'null'], description: Null when the recorder does not report it. }
+                        address: { type: [string, 'null'], description: IP address of the camera behind the channel, when reported. }
+                        camera: { $ref: '#/components/schemas/CameraRef' }
+        '400': { $ref: '#/components/responses/Error' }
+        '501': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /api/adapters/probe:
+    post:
+      summary: Measure a camera and save its profile
+      description: Admin. Takes as long as the sample (5-120 s, default 30 s). At most three probes run at once.
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [camera]
+              properties: { camera: { $ref: '#/components/schemas/CameraRef' }, sampleSec: { type: integer, minimum: 5, maximum: 120, default: 30 } }
+      responses:
+        '200': { description: Probe report, content: { application/json: { schema: { type: object, properties: { adapter: { type: string }, saved: { type: boolean }, report: { $ref: '#/components/schemas/ProbeReport' } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
+  /api/camera-profiles:
+    get:
+      summary: Playback profiles of a site, with the recipe chosen for each
+      tags: [Profiles]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: site, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Profiles and summary, content: { application/json: { schema: { type: object, properties: { views: { type: array, items: { type: object } }, summary: { type: object }, heal: { type: object, nullable: true }, probe: { type: object }, canApplyMedia: { type: boolean }, encoder: { type: string } } } } } }
+        '501': { $ref: '#/components/responses/Error' }
+  /api/camera-profiles/probe:
+    post:
+      summary: Start a background probe of grid cameras
+      tags: [Profiles]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [cameraIds], properties: { site: { type: string }, cameraIds: { type: array, items: { type: string } }, sampleSec: { type: integer } } } } }
+      responses:
+        '202': { description: Started }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/camera-profiles/probe/stop:
+    post: { summary: Stop the running probe, tags: [Profiles], security: [{ adminToken: [] }], responses: { '200': { description: Status } } }
+  /api/camera-profiles/override:
+    post:
+      summary: Force a playback recipe for one camera (or clear it with null)
+      tags: [Profiles]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [cameraId, recipe], properties: { site: { type: string }, cameraId: { type: string }, recipe: { type: string, nullable: true, enum: [A, B, C, D, E, F, G, null] }, reason: { type: string } } } } }
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '400': { $ref: '#/components/responses/Error' }
+  /api/camera-profiles/changes:
+    get:
+      summary: History of recipe changes
+      tags: [Profiles]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: site, in: query, schema: { type: string } }
+        - { name: cameraId, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Changes, content: { application/json: { schema: { type: object, properties: { changes: { type: array, items: { type: object } } } } } } }
+  /api/camera-profiles/apply-media:
+    post:
+      summary: Turn profiles into media-server paths (dry run unless dryRun is false)
+      tags: [Profiles]
+      security: [{ adminToken: [] }]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { site: { type: string }, dryRun: { type: boolean, default: true } } } } }
+      responses:
+        '200': { description: Diff of paths added, replaced, removed }
+        '501': { $ref: '#/components/responses/Error' }
+
+  /api/events/logs:
+    get:
+      summary: Analysis log entries
+      tags: [Events]
+      parameters:
+        - { name: notable, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+      responses:
+        '200': { description: Logs, content: { application/json: { schema: { type: object, properties: { logs: { type: array, items: { type: object } } } } } } }
+  /api/events/plates/{plate}:
+    get:
+      summary: Sightings of one plate
+      tags: [Events]
+      parameters:
+        - { name: plate, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 200 } }
+      responses:
+        '200': { description: Sightings, content: { application/json: { schema: { type: object, properties: { sightings: { type: array, items: { type: object } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+  /api/analysis/config:
+    get:
+      summary: Whether server analysis, ANPR and ffmpeg are available
+      tags: [Analysis]
+      responses:
+        '200': { description: Config, content: { application/json: { schema: { type: object, properties: { enabled: { type: boolean }, anpr: { type: boolean }, ffmpeg: { type: boolean } } } } } }
+  /api/analysis/status:
+    get:
+      summary: Queue, backlog and ANPR health
+      tags: [Analysis]
+      security: [{ registryKey: [] }]
+      responses:
+        '200': { description: Status, content: { application/json: { schema: { type: object } } } }
+  /api/gateways:
+    get:
+      summary: Regional gateways with their state
+      description: Admin. See docs/regional-gateway.md.
+      tags: [Gateways]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: Gateways, content: { application/json: { schema: { type: object, properties: { gateways: { type: array, items: { $ref: '#/components/schemas/GatewayStatus' } } } } } } }
+    post:
+      summary: Create a gateway
+      description: Admin. The secret is returned once and cannot be read again.
+      tags: [Gateways]
+      security: [{ adminToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name, region], properties: { name: { type: string, maxLength: 80 }, region: { type: string, maxLength: 60 } } } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { type: object, properties: { gateway: { $ref: '#/components/schemas/GatewayStatus' }, secret: { type: string } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+  /api/gateways/{id}/rotate-secret:
+    post:
+      summary: Replace a gateway's secret
+      tags: [Gateways]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: New secret, content: { application/json: { schema: { type: object, properties: { secret: { type: string } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gateways/{id}/disable:
+    post:
+      summary: Switch a gateway off (its requests are refused; it keeps its backlog)
+      tags: [Gateways]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gateways/{id}/enable:
+    post:
+      summary: Switch a gateway back on
+      tags: [Gateways]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gateways/{id}:
+    delete:
+      summary: Remove a gateway
+      tags: [Gateways]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/gateway/heartbeat:
+    post:
+      summary: A gateway reports that it is alive
+      description: Signed by the gateway (X-Gateway-Id, -Time, -Nonce, -Signature). Not for browsers.
+      tags: [Gateways]
+      security: [{ gatewaySignature: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/GatewayHeartbeat' } } } }
+      responses:
+        '200': { description: Accepted, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, serverTime: { type: integer }, assignmentVersion: { type: string } } } } } }
+        '401': { $ref: '#/components/responses/GatewayRefused' }
+  /api/gateway/ingest:
+    post:
+      summary: A gateway delivers results (logs, plate sightings, events, camera status)
+      description: |
+        Signed. At most 500 items per call. Each item has a permanent unique `id`; items already applied are accepted again without being applied twice.
+        Items in neither list could not be applied yet and should be sent again.
+      tags: [Gateways]
+      security: [{ gatewaySignature: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                batchId: { type: string }
+                items: { type: array, maxItems: 500, items: { $ref: '#/components/schemas/GatewayItem' } }
+      responses:
+        '200': { description: Result per item, content: { application/json: { schema: { type: object, properties: { accepted: { type: array, items: { type: string } }, rejected: { type: array, items: { type: object, properties: { id: { type: string }, reason: { type: string } } } } } } } } }
+        '401': { $ref: '#/components/responses/GatewayRefused' }
+        '413': { $ref: '#/components/responses/Error' }
+  /api/gateway/cameras:
+    get:
+      summary: The cameras assigned to the calling gateway
+      description: Signed. Send If-None-Match with the last ETag to get 304 when nothing changed.
+      tags: [Gateways]
+      security: [{ gatewaySignature: [] }]
+      responses:
+        '200': { description: Assignment, content: { application/json: { schema: { type: object, properties: { version: { type: string }, cameras: { type: array, items: { type: object } } } } } } }
+        '304': { description: Unchanged }
+        '401': { $ref: '#/components/responses/GatewayRefused' }
+  /api/gateway/user-context:
+    get:
+      summary: Known faces and watchlist of a user who has a camera on the calling gateway
+      tags: [Gateways]
+      security: [{ gatewaySignature: [] }]
+      parameters:
+        - { name: userId, in: query, required: true, schema: { type: string } }
+        - { name: departmentId, in: query, description: 'Also return the faces and plates shared with this department. Allowed only when the gateway holds a camera of that user in that department.', schema: { type: string } }
+      responses:
+        '200': { description: Context, content: { application/json: { schema: { type: object, properties: { knownFaces: { type: array, items: { type: object } }, watchlist: { type: array, items: { type: string } } } } } } }
+        '403': { $ref: '#/components/responses/Error' }
+  /api/ingest/webhook/{id}:
+    post:
+      summary: Push events from a device or system (public, token-protected)
+      description: "No sign-in: a device cannot. The source's secret token goes in Authorization: Bearer, X-Webhook-Token, or ?token=. An unknown source and a wrong token answer identically (401). 512 KB at most (413 before the token is looked at); 200 requests per 10 s per source (429 with Retry-After); 5xx means try again. Formats: generic-json ({events:[{id?,camera,type?,at?,text?,plate?,confidence?,data?}]}) or hikvision-xml (the device's EventNotificationAlert)."
+      tags: [Events]
+      security: []
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json: { schema: { type: object } }
+          application/xml: { schema: { type: string } }
+      responses:
+        '202': { description: Accepted, content: { application/json: { schema: { type: object, properties: { accepted: { type: integer }, ignored: { type: array, items: { type: string } } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /api/webhooks:
+    get:
+      summary: Webhook sources (never their tokens)
+      tags: [Events]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: The sources and the formats, content: { application/json: { schema: { type: object } } } }
+    post:
+      summary: Make a webhook source; the token is returned once
+      tags: [Events]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [id], properties: { id: { type: string }, format: { type: string, enum: [generic-json, hikvision-xml] }, label: { type: string }, department: { type: string }, ownerUserId: { type: string }, timezoneOffsetMinutes: { type: integer } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { type: object, properties: { source: { type: object }, token: { type: string }, note: { type: string } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+  /api/webhooks/{id}/rotate:
+    post:
+      summary: Replace a source's token (the old one stops working at once)
+      tags: [Events]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: The new token, content: { application/json: { schema: { type: object } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/webhooks/{id}:
+    delete:
+      summary: Remove a webhook source
+      tags: [Events]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Removed }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/sources:
+    get:
+      summary: Cameras onboarded through adapters
+      description: Admin only. Needs DATABASE_URL and Firebase Admin (501 otherwise). Never returns a login.
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: The sources, content: { application/json: { schema: { type: object, properties: { keyConfigured: { type: boolean }, canApplyMedia: { type: boolean }, sources: { type: array, items: { $ref: '#/components/schemas/Source' } } } } } } }
+        '501': { $ref: '#/components/responses/Error' }
+  /api/sources/onboard:
+    post:
+      summary: Onboard one camera through an adapter
+      description: "Probes it, saves its profile and sealed source, and creates the Registry camera; undone if a step fails. A camera that is unreachable, refuses the login or sends no video is a 422 with the reason and nothing added (force: true adds it anyway). 409 when a login would have to be stored and SOURCE_SECRET_KEY is not set."
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [camera], properties: { camera: { type: object, description: A CameraRef as in /api/adapters }, name: { type: string }, departmentId: { type: string }, sampleSec: { type: integer }, force: { type: boolean }, location: { type: object, properties: { lat: { type: number }, lng: { type: number } } } } }
+      responses:
+        '201': { description: Added, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, cameraId: { type: string }, registryId: { type: string }, recipe: { type: string }, pathKind: { type: string }, warnings: { type: array, items: { type: string } } } } } } }
+        '422': { description: Not added, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, code: { type: string }, error: { type: string } } } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/sources/onboard-channels:
+    post:
+      summary: Onboard every connected channel of a recorder (a background job)
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [camera], properties: { camera: { type: object }, channels: { type: array, items: { type: integer } }, namePrefix: { type: string }, departmentId: { type: string }, sampleSec: { type: integer }, force: { type: boolean } } }
+      responses:
+        '202': { description: Started, content: { application/json: { schema: { type: object, properties: { jobId: { type: string }, total: { type: integer } } } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/sources/jobs/{id}:
+    get:
+      summary: Progress and results of a recorder job
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: The job, content: { application/json: { schema: { type: object } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/sources/{id}/reprobe:
+    post:
+      summary: Measure a source again from its stored address
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Result, content: { application/json: { schema: { type: object } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/sources/{id}:
+    delete:
+      summary: Take a source out (Registry camera, source and profile; the media path goes at the next apply)
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Removed }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/sources/apply-media:
+    post:
+      summary: Put the sources' paths on the running media server
+      description: Default is a dry run (shows what would change). Changes only the sources' paths on the running server; the generated paths file gets the grid's paths too.
+      tags: [Adapters]
+      security: [{ adminToken: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { dryRun: { type: boolean, default: true } } }
+      responses:
+        '200': { description: What changed or would change, content: { application/json: { schema: { type: object } } } }
+        '501': { $ref: '#/components/responses/Error' }
+  /api/events:
+    get:
+      summary: Typed events found by the analyzers
+      description: Signed-in user, newest first. A person sees the events on cameras they own; a person whose role is a claim with departments sees those departments' events whoever owns the cameras; an organisation-wide administrator sees every event, including cameras with no department.
+      tags: [Events]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: type, in: query, description: 'Event type or group ("plate.*"); repeat for several.', schema: { type: string } }
+        - { name: cameraId, in: query, schema: { type: string } }
+        - { name: minSeverity, in: query, schema: { $ref: '#/components/schemas/Severity' } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+        - { name: q, in: query, description: 'Free text, case-insensitive: matches the summary, camera name, type, source, tags and details (a plate, a name). At most 100 characters.', schema: { type: string } }
+        - { name: tag, in: query, description: 'Events carrying this tag; repeat to require several.', schema: { type: string } }
+        - { name: department, in: query, description: 'Narrows to one department inside what the caller may see; it never widens the scope.', schema: { type: string } }
+        - { name: source, in: query, description: 'The analyzer or connector that found the event.', schema: { type: string } }
+        - { name: cursor, in: query, description: 'The nextCursor of the previous page. Opaque.', schema: { type: string } }
+        - { name: count, in: query, description: 'Send 1 to also get "total", the number of matching events.', schema: { type: string, enum: ['1'] } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        '200': { description: 'Events, newest first. nextCursor is present when a full page came back.', content: { application/json: { schema: { type: object, properties: { events: { type: array, items: { $ref: '#/components/schemas/PlatformEvent' } }, nextCursor: { type: string }, total: { type: integer } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+  /api/events/{id}/tags:
+    put:
+      summary: Replace the tags of an event
+      description: Operators and administrators, for an event the caller may see (their own, or in their department). Tags are trimmed, lower-cased and de-duplicated; at most 20, each lower case letters, digits, space and _ : . - up to 40 characters.
+      tags: [Events]
+      security: [{ adminToken: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [tags], properties: { tags: { type: array, items: { type: string } } } } } } }
+      responses:
+        '200': { description: The event with its new tags, content: { application/json: { schema: { type: object, properties: { event: { $ref: '#/components/schemas/PlatformEvent' } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/event-types:
+    get:
+      summary: The events the platform defines
+      tags: [Events]
+      responses:
+        '200': { description: Catalogue, content: { application/json: { schema: { type: object, properties: { types: { type: array, items: { type: object, properties: { type: { type: string }, severity: { $ref: '#/components/schemas/Severity' }, description: { type: string }, data: { type: string } } } } } } } } }
+  /api/alert-rules:
+    get:
+      summary: The user's alert rules (secrets hidden)
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { description: Rules, content: { application/json: { schema: { type: object, properties: { rules: { type: array, items: { $ref: '#/components/schemas/AlertRule' } } } } } } }
+    post:
+      summary: Create an alert rule
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleInput' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { type: object, properties: { rule: { $ref: '#/components/schemas/AlertRule' } } } } } }
+        '400': { description: 'Invalid rule; "problems" lists every issue', content: { application/json: { schema: { type: object, properties: { error: { type: string }, problems: { type: array, items: { type: string } } } } } } }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/alert-rules/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    put:
+      summary: Replace a rule
+      description: Send the secret placeholder (********) to keep the stored webhook secret.
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/AlertRuleInput' } } } }
+      responses:
+        '200': { description: Updated, content: { application/json: { schema: { type: object, properties: { rule: { $ref: '#/components/schemas/AlertRule' } } } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Delete a rule
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/Ok' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/alert-rules/{id}/test:
+    post:
+      summary: Send a test event through the rule's channels
+      description: Stores nothing and opens no alert.
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Delivery results, content: { application/json: { schema: { type: object, properties: { deliveries: { type: array, items: { $ref: '#/components/schemas/Delivery' } } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/alerts:
+    get:
+      summary: Alerts raised by the rules
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: state, in: query, schema: { type: string, enum: [open, acknowledged, resolved] } }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
+      responses:
+        '200': { description: Alerts, content: { application/json: { schema: { type: object, properties: { alerts: { type: array, items: { $ref: '#/components/schemas/Alert' } } } } } } }
+  /api/alerts/{id}/acknowledge:
+    post:
+      summary: Acknowledge an alert
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: The alert, content: { application/json: { schema: { type: object, properties: { alert: { $ref: '#/components/schemas/Alert' } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { description: Already resolved, content: { application/json: { schema: { type: object, properties: { error: { type: string } } } } } }
+  /api/alerts/{id}/resolve:
+    post:
+      summary: Resolve an alert
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: The alert, content: { application/json: { schema: { type: object, properties: { alert: { $ref: '#/components/schemas/Alert' } } } } } }
+        '404': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    registryKey: { type: apiKey, in: header, name: X-Registry-Api-Key }
+    adminToken: { type: http, scheme: bearer, bearerFormat: Firebase ID token }
+    gatewaySignature:
+      type: apiKey
+      in: header
+      name: X-Gateway-Signature
+      description: 'HMAC-SHA256 of "time.nonce.METHOD.path.sha256(body)" with the gateway secret, sent with X-Gateway-Id, X-Gateway-Time (ms) and X-Gateway-Nonce. Requests more than 5 minutes off the centre clock, or repeating a nonce, are refused.'
+  requestBodies:
+    CameraRef:
+      required: true
+      content: { application/json: { schema: { type: object, required: [camera], properties: { camera: { $ref: '#/components/schemas/CameraRef' } } } } }
+  responses:
+    Ok: { description: Done, content: { application/json: { schema: { type: object, properties: { status: { type: string, example: ok } } } } } }
+    Error: { description: Error, content: { application/json: { schema: { type: object, properties: { error: { type: string } } } } } }
+    GatewayRefused: { description: 'The signature did not hold. "reason" is missing_headers, bad_signature, disabled, clock (with serverTime) or replay.', content: { application/json: { schema: { type: object, properties: { error: { type: string }, reason: { type: string }, serverTime: { type: integer } } } } } }
+  schemas:
+    Severity: { type: string, enum: [info, notice, warning, critical] }
+    GatewayStatus:
+      type: object
+      properties:
+        id: { type: string, example: gw-1a2b3c4d }
+        name: { type: string }
+        region: { type: string }
+        state: { type: string, enum: [never_seen, online, degraded, offline, disabled] }
+        problems: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+        lastHeartbeatAt: { type: string, format: date-time, nullable: true }
+        heartbeat: { $ref: '#/components/schemas/GatewayHeartbeat' }
+        assignedCameras: { type: integer, nullable: true }
+        rejectedItems: { type: integer }
+    GatewayHeartbeat:
+      type: object
+      required: [version, cameras, outbox, link]
+      properties:
+        version: { type: string }
+        region: { type: string }
+        sentAt: { type: integer }
+        uptimeS: { type: integer }
+        link: { type: string, enum: [online, degraded, offline] }
+        mediaUrl: { type: string }
+        concurrency: { type: integer }
+        cameras: { type: object, properties: { assigned: { type: integer }, failing: { type: integer } } }
+        outbox: { type: object, properties: { pending: { type: integer }, bytes: { type: integer }, oldestAgeS: { type: integer }, dropped: { type: integer } } }
+    GatewayItem:
+      type: object
+      required: [id, kind, payload]
+      properties:
+        id: { type: string, description: Unique forever; what makes redelivery harmless. }
+        kind: { type: string, enum: [log, sightings, events, camera] }
+        at: { type: integer }
+        payload: { description: 'log: a log document. sightings: { userId, sightings[] }. events: PlatformEvent[]. camera: { cameraId, patch: { lastAnalysisTime, lastAnalysisError } }.' }
+    PlatformEvent:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string, example: plate.watchlist_match }
+        source: { type: string, example: anpr }
+        severity: { $ref: '#/components/schemas/Severity' }
+        cameraId: { type: string }
+        cameraName: { type: string }
+        department: { type: string }
+        location: { type: object, properties: { lat: { type: number }, lng: { type: number } } }
+        ts: { type: string, format: date-time }
+        summary: { type: string }
+        data: { type: object, additionalProperties: true }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+        tags: { type: array, items: { type: string } }
+    AlertRuleInput:
+      type: object
+      required: [name, channels]
+      properties:
+        name: { type: string }
+        enabled: { type: boolean, default: true }
+        match:
+          type: object
+          properties:
+            types: { type: array, items: { type: string }, description: 'Exact types or groups such as "plate.*".' }
+            minSeverity: { $ref: '#/components/schemas/Severity' }
+            cameraIds: { type: array, items: { type: string } }
+            departments: { type: array, items: { type: string } }
+            sources: { type: array, items: { type: string } }
+            tags: { type: array, items: { type: string }, description: The event must carry all of them. }
+            where:
+              type: array
+              items:
+                type: object
+                required: [field, op]
+                properties:
+                  field: { type: string, example: data.plate }
+                  op: { type: string, enum: [eq, neq, in, contains, startsWith, gt, gte, lt, lte, exists] }
+                  value: {}
+        schedule:
+          type: object
+          properties:
+            days: { type: array, items: { type: integer, minimum: 0, maximum: 6 }, description: 0 = Sunday. }
+            from: { type: string, example: '22:00' }
+            to: { type: string, example: '06:00' }
+            tzOffsetMin: { type: integer, example: 330 }
+        throttle:
+          type: object
+          properties:
+            windowMs: { type: integer, default: 300000 }
+            by: { type: array, items: { type: string, enum: [camera, type, event, rule] }, default: [camera, type] }
+        channels:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            oneOf:
+              - { type: object, required: [type, url], properties: { type: { type: string, enum: [webhook] }, url: { type: string }, secret: { type: string } } }
+              - { type: object, required: [type], properties: { type: { type: string, enum: [log] } } }
+    Source:
+      type: object
+      properties:
+        cameraId: { type: string, description: The media-server path, fed-<hex> }
+        name: { type: string }
+        adapter: { type: string }
+        host: { type: string, nullable: true }
+        port: { type: integer, nullable: true }
+        departmentId: { type: string, nullable: true }
+        registryId: { type: string, nullable: true }
+        recipe: { type: string, nullable: true }
+        pathKind: { type: string, nullable: true }
+        failure: { type: string, nullable: true }
+        probedAt: { type: string, format: date-time, nullable: true }
+    AlertRule:
+      allOf:
+        - { $ref: '#/components/schemas/AlertRuleInput' }
+        - { type: object, properties: { id: { type: string }, userId: { type: string, description: "The owner: a person's id, or 'dept:<name>' for a department's rule." }, department: { type: string, description: "Set on a department's rule: it fires for events on that department's cameras whoever owns them." }, createdBy: { type: string, description: "Who made a department's rule." }, createdAt: { type: string, format: date-time }, updatedAt: { type: string, format: date-time } } }
+    Delivery:
+      type: object
+      properties: { channel: { type: string }, ok: { type: boolean }, at: { type: string, format: date-time }, attempts: { type: integer }, error: { type: string } }
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        ruleId: { type: string }
+        ruleName: { type: string }
+        state: { type: string, enum: [open, acknowledged, resolved] }
+        severity: { $ref: '#/components/schemas/Severity' }
+        title: { type: string }
+        cameraId: { type: string }
+        cameraName: { type: string }
+        firstEventId: { type: string }
+        lastEventId: { type: string }
+        eventCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        lastEventAt: { type: string, format: date-time }
+        ackBy: { type: string }
+        ackAt: { type: string, format: date-time }
+        resolvedBy: { type: string }
+        resolvedAt: { type: string, format: date-time }
+        deliveries: { type: array, items: { $ref: '#/components/schemas/Delivery' } }
+    Camera:
+      type: object
+      properties:
+        name: { type: string }
+        department: { type: string }
+        ownership: { type: string }
+        cameraType: { type: string, enum: [fixed, ptz, dome, bullet, other] }
+        connectivityStatus: { type: string, enum: [online, offline, degraded, unknown] }
+        maintenanceStatus: { type: string, enum: [operational, needs_maintenance, decommissioned] }
+        installDate: { type: string, format: date }
+        storageDetails: { type: string }
+        location: { type: object, properties: { lat: { type: number }, lng: { type: number } } }
+        remoteStreamUrl: { type: string }
+        useRemoteFeed: { type: boolean }
+        serverAnalysis: { type: boolean }
+    CameraRef:
+      type: object
+      required: [id]
+      description: How a camera is addressed. Give `url`, or `host` (and `port`), or name an `adapter`.
+      properties:
+        id: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' }
+        name: { type: string }
+        adapter: { type: string, example: onvif }
+        url: { type: string, example: 'rtsp://10.0.0.5:554/stream1' }
+        host: { type: string }
+        port: { type: integer }
+        site: { type: string }
+        credentials: { type: object, properties: { user: { type: string }, pass: { type: string } }, description: Used for the call only; never returned. }
+        options: { type: object, additionalProperties: true, description: 'Adapter-specific, e.g. { "profile": "main" } for ONVIF.' }
+    DiscoveredDevice:
+      type: object
+      properties:
+        adapter: { type: string }
+        address: { type: string }
+        serviceUrls: { type: array, items: { type: string } }
+        name: { type: string }
+        hardware: { type: string }
+        manufacturer: { type: string }
+        scopes: { type: array, items: { type: string } }
+    DeviceInfo:
+      type: object
+      properties:
+        manufacturer: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        firmware: { type: string, nullable: true }
+        serial: { type: string, nullable: true }
+        hardwareId: { type: string, nullable: true }
+    StreamEndpoint:
+      type: object
+      properties:
+        protocol: { type: string, enum: [rtsp, whep, hls, mjpeg, snapshot] }
+        role: { type: string, enum: [analysis, browser, snapshot] }
+        url: { type: string }
+        label: { type: string }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        codec: { type: string, nullable: true }
+    ProbeReport:
+      type: object
+      properties:
+        cameraId: { type: string }
+        site: { type: string }
+        transport: { type: string, enum: [tcp, udp] }
+        probedAt: { type: string, format: date-time }
+        reachable: { type: boolean }
+        failure: { type: string, nullable: true, enum: [unreachable, bad_credentials, no_describe, no_frame, null] }
+        failureDetail: { type: string, nullable: true }
+        describe: { type: object, nullable: true }
+        sample: { type: object, nullable: true }
+        flags: { type: array, items: { type: string } }
+        notes: { type: array, items: { type: string } }

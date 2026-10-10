@@ -6,7 +6,8 @@ import { writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { FAILURES_BEFORE_REPLACING_PROFILE, type ProfileRow, type ProfileStore, type ProbeReport } from './cameraProfile';
 import { allocateSlots, decide, type EncoderKind, type Recipe } from './cameraRecipe';
-import { renderPathsYaml } from './mediaPaths';
+import { renderPathsYaml, type PathConf } from './mediaPaths';
+import { SOURCE_PATH_PREFIX } from './sources/store';
 import { applyPaths } from './mediaApply';
 import { planMedia } from './mediaPlan';
 import { mergeProfileFiles } from './profileFiles';
@@ -76,6 +77,13 @@ export interface ApplyMediaOptions {
   /** The control API of the media server, e.g. http://127.0.0.1:9997. */
   api: string;
   dryRun: boolean;
+  /**
+   * More paths to serve and manage in the same apply and the same file: the cameras onboarded through adapters (server/sources/media.ts).
+   * Without them in the file a restart would bring back only this site's cameras.
+   */
+  extra?: { paths: Record<string, PathConf>; managed: string[]; skipped?: Array<{ cameraId: string; why: string }> };
+  /** With `extra`: change only the running server's `extra` paths (the file still gets everything). For adding a camera without re-applying the grid. */
+  extraOnly?: boolean;
   /** Also write this file, so a restart of the media server comes back the same. */
   pathsFile?: string;
   fetchImpl?: typeof fetch;
@@ -83,7 +91,10 @@ export interface ApplyMediaOptions {
 
 export async function applyToMedia(store: ProfileStore, o: ApplyMediaOptions): Promise<MediaApplyResponse> {
   const rows = await store.listProfiles(o.site);
-  const plan = planMedia(rows, { encoder: o.encoder, build: o.build });
+  const own = planMedia(rows, { encoder: o.encoder, build: o.build });
+  const plan = o.extra
+    ? { ...own, paths: { ...own.paths, ...o.extra.paths }, managed: [...own.managed, ...o.extra.managed], skipped: [...own.skipped, ...(o.extra.skipped ?? [])] }
+    : own;
   let fileWritten: string | null = null;
   if (!o.dryRun && o.pathsFile) {
     mkdirSync(path.dirname(o.pathsFile), { recursive: true });
@@ -91,6 +102,7 @@ export async function applyToMedia(store: ProfileStore, o: ApplyMediaOptions): P
     try { chmodSync(o.pathsFile, 0o600); } catch { /* not supported on this file system */ }
     fileWritten = o.pathsFile;
   }
-  const res = await applyPaths(plan.paths, plan.managed, { api: o.api, dryRun: o.dryRun, fetchImpl: o.fetchImpl });
+  const live = o.extra && o.extraOnly ? { paths: o.extra.paths, managed: o.extra.managed } : { paths: plan.paths, managed: plan.managed };
+  const res = await applyPaths(live.paths, live.managed, { api: o.api, dryRun: o.dryRun, fetchImpl: o.fetchImpl, managedPrefixes: o.extra ? [SOURCE_PATH_PREFIX] : undefined });
   return { dryRun: o.dryRun, ...res.diff, errors: res.errors, skipped: plan.skipped, fileWritten };
 }

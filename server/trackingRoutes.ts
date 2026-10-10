@@ -14,6 +14,7 @@ import type { Express, Request, Response } from 'express';
 import { createTracker, normalizeTrackedPlate, type PlateRead, type TrackCamera, type TrackDeps, type TrackOptions, type TrackSpec, type Tracker } from './tracking';
 import type { FrameGate } from './frameGate';
 import { isSafeCameraUrl } from '../src/lib/cameraUrl';
+import { aiConfigured, aiKeyVar } from './llm';
 
 type GeminiParams = { contents: { parts: unknown[] }; config?: Record<string, unknown> };
 
@@ -85,7 +86,7 @@ export function parseStartRequest(body: unknown, opts: { allowAnyUrl?: boolean }
 export function parseJsonAnswer(text: string | undefined): Record<string, unknown> {
   const raw = (text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try { const v = JSON.parse(raw); return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}; }
-  catch { throw new Error('Gemini did not answer in the expected format'); }
+  catch { throw new Error('The AI model did not answer in the expected format'); }
 }
 const clamp01 = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0; };
 const oneLine = (v: unknown, d: string) => (typeof v === 'string' && v.trim() ? v.trim().replace(/\s+/g, ' ').slice(0, 240) : d);
@@ -184,8 +185,8 @@ export function registerTrackingRoutes(app: Express, ctx: TrackingContext): { tr
     catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : 'Invalid request.' }); return; }
     const c = ctx.credentials(req);
     if (!allowAnyUrl && (!c.email || !c.password)) { res.status(401).json({ error: 'Stream access email and password are not set. Enter them under Settings → stream access, or set STREAM_EMAIL and STREAM_PASSWORD on the server.' }); return; }
-    if (parsed.spec.mode !== 'plate' && !ctx.env.GEMINI_API_KEY) { res.status(503).json({ error: 'Face and rule tracking need GEMINI_API_KEY on the server.' }); return; }
-    if (parsed.spec.mode === 'plate' && !ctx.anpr && !ctx.env.GEMINI_API_KEY) { res.status(503).json({ error: 'No plate reader is available: set ANPR_SERVICE_URL (node scripts/demo.mjs up --anpr) or GEMINI_API_KEY.' }); return; }
+    if (parsed.spec.mode !== 'plate' && !aiConfigured(ctx.env)) { res.status(503).json({ error: `Face and rule tracking need ${aiKeyVar(ctx.env)} on the server.` }); return; }
+    if (parsed.spec.mode === 'plate' && !ctx.anpr && !aiConfigured(ctx.env)) { res.status(503).json({ error: `No plate reader is available: set ANPR_SERVICE_URL (node scripts/demo.mjs up --anpr) or ${aiKeyVar(ctx.env)}.` }); return; }
     creds = c;
     tracker.start(parsed.spec, parsed.cameras);
     res.status(202).json({ started: true, cameras: parsed.cameras.length, rejected: parsed.rejected, plateReader: parsed.spec.mode === 'plate' ? (ctx.anpr ? 'anpr' : 'gemini') : null, status: tracker.status() });

@@ -9,6 +9,7 @@ import { CameraConfig, RoutePoint, RegistryAuditEntry } from '../types';
 import { GapAnalysisReport } from '../lib/registryReport';
 import MapTab from './MapTab';
 import CameraProfilesPanel from './CameraProfilesPanel';
+import SourcesPanel from './SourcesPanel';
 import { gridCamId } from '../lib/mediaServer';
 
 interface RegistryTabProps {
@@ -160,6 +161,9 @@ export default function RegistryTab({
 
       {/* How each camera is played, from what it was measured to do */}
       <CameraProfilesPanel isAdmin={isAdmin} registryGridIds={gridIds} />
+
+      {/* Cameras from ONVIF devices, Hikvision / Dahua recorders and plain RTSP addresses */}
+      <SourcesPanel isAdmin={isAdmin} />
 
       {/* GIS map */}
       <MapTab

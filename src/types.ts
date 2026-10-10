@@ -24,7 +24,7 @@ export interface UserPreferences {
    *  not a real custom-claims/OIDC role. See Sentinel Mesh roadmap for the
    *  production version of this. */
   department?: string;
-  role?: 'operator' | 'admin';
+  role?: 'viewer' | 'operator' | 'admin';
 }
 
 export type ConnectivityStatus = 'online' | 'offline' | 'degraded' | 'unknown';
@@ -57,14 +57,21 @@ export interface CameraConfig {
    *  via the registry API, and audited independently of the live app. */
   location?: { lat: number; lng: number };
   department?: string;
+  /** Set by an administrator: the department this camera was given to. People in that department see it. Read-only in the app. */
+  departmentId?: string;
   ownership?: string;
   cameraType?: CameraType;
   connectivityStatus?: ConnectivityStatus;
   maintenanceStatus?: MaintenanceStatus;
   installDate?: string; // ISO date string, e.g. "2022-04-01"
   storageDetails?: string;
+  /** The regional gateway that watches this camera (set by an administrator). Cameras with a gateway are analysed there, not at the centre. */
+  gatewayId?: string;
   /** How the record entered the registry — surfaced in the audit trail. */
-  onboardedVia?: 'manual' | 'bulk_import' | 'api';
+  onboardedVia?: 'manual' | 'bulk_import' | 'api' | 'adapter';
+  /** Set on a camera onboarded through an adapter (ONVIF, Hikvision, Dahua, RTSP): which one, and its media-server path (`fed-...`). */
+  adapter?: string;
+  sourceId?: string;
 }
 
 export type LogSentiment = 'calm' | 'neutral' | 'tense' | 'critical';
@@ -92,6 +99,8 @@ export interface KnownFace {
   id: string;
   name: string;
   imageData: string; // base64
+  /** Set when the face is shared with a department: its members all see it. */
+  departmentId?: string;
 }
 
 export interface WatchlistEntry {
@@ -100,6 +109,8 @@ export interface WatchlistEntry {
   reason: string;
   addedBy: string;
   createdAt: Date;
+  /** Set when the plate is shared with a department: its members all see it. */
+  departmentId?: string;
 }
 
 export type AuditAction = 'create' | 'update' | 'delete';
@@ -116,7 +127,7 @@ export interface RegistryAuditEntry {
 
 export interface RoutePoint { lat: number; lng: number; label: string; timestamp: Date; }
 
-export type TabId = 'monitor' | 'analytics' | 'settings' | 'map' | 'guide';
+export type TabId = 'monitor' | 'analytics' | 'events' | 'settings' | 'map' | 'guide';
 
 export type ViewMode = 'focus' | 'matrix' | 'grid' | 'panel';
 export type GuardScope = 'active' | 'selected' | 'all';

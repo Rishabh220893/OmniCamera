@@ -1,4 +1,4 @@
-import { ShieldCheck, Eye, BarChart2, Settings2, Map as MapIcon, BookOpen, LogOut } from 'lucide-react';
+import { ShieldCheck, Eye, BarChart2, Bell, Settings2, Map as MapIcon, BookOpen, LogOut } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { TabId } from '../types';
 
@@ -11,6 +11,7 @@ interface SidebarProps {
 export const NAV_ITEMS: { id: TabId; icon: typeof Eye; label: string }[] = [
   { id: 'monitor', icon: Eye, label: 'Feed' },
   { id: 'analytics', icon: BarChart2, label: 'Logs' },
+  { id: 'events', icon: Bell, label: 'Events' },
   { id: 'map', icon: MapIcon, label: 'Registry' },
   { id: 'settings', icon: Settings2, label: 'Settings' },
   { id: 'guide', icon: BookOpen, label: 'Guide' },

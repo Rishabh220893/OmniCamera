@@ -14,6 +14,11 @@ export interface ApplyOptions {
   dryRun?: boolean;
   fetchImpl?: typeof fetch;
   auth?: { user: string; pass: string };
+  /**
+   * Path names starting with one of these are managed too, whether or not they are in `managed`: a camera taken out of the Registry has no
+   * profile left to name its path, and the path would otherwise stay on the running server for good.
+   */
+  managedPrefixes?: string[];
 }
 
 export interface ApplyResult {
@@ -43,7 +48,9 @@ export async function listPaths(o: ApplyOptions): Promise<Array<Record<string, u
 
 export async function applyPaths(want: Record<string, PathConf>, managed: Iterable<string>, o: ApplyOptions): Promise<ApplyResult> {
   const f = o.fetchImpl ?? fetch;
-  const diff = diffPaths(await listPaths(o), want, managed);
+  const current = await listPaths(o);
+  const prefixed = o.managedPrefixes?.length ? current.map((p) => String(p.name)).filter((n) => o.managedPrefixes!.some((x) => n.startsWith(x))) : [];
+  const diff = diffPaths(current, want, [...managed, ...prefixed]);
   if (o.dryRun) return { diff, applied: false, errors: [] };
   const errors: string[] = [];
   const call = async (verb: 'add' | 'replace' | 'delete', id: string, conf?: PathConf) => {

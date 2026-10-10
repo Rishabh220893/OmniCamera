@@ -8,7 +8,7 @@ import {
 import { cn, sentimentEmoji } from '../lib/utils';
 import { hasCachedSnapshot } from '../lib/snapshotCache';
 import { sortByGridHealth } from '../lib/cameraHealth';
-import { useMediaConfig, mediaFailedCameras, gridCamId } from '../lib/mediaServer';
+import { useMediaConfig, mediaFailedCameras, mediaPathId } from '../lib/mediaServer';
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
@@ -101,7 +101,7 @@ function CameraTile({
   // on screen (`liveSlot`: 1 = first visible tile), not a tile's position in the whole list: counting the whole list
   // left page 2 of the grid with tiles that could never go live.
   const media = useMediaConfig();
-  const mediaLive = !!media?.enabled && liveSlot !== undefined && liveSlot > 0 && liveSlot <= (media.maxLiveTiles ?? 12) && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
+  const mediaLive = !!media?.enabled && liveSlot !== undefined && liveSlot > 0 && liveSlot <= (media.maxLiveTiles ?? 12) && !!mediaPathId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
   const liveVideo = layout === 'focus' || isActive || isSelectedForAnalysis || mediaLive;
 
   const feed = (

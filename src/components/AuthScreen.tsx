@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { motion } from 'motion/react';
-import { Fingerprint, Sparkles, ChevronDown } from 'lucide-react';
+import { Fingerprint, Sparkles, ChevronDown, KeyRound } from 'lucide-react';
 
 interface AuthScreenProps {
   loginError: string | null;
   isSigningIn: boolean;
   onGoogleLogin: () => void;
   onGuestBypass: () => void;
+  /** Signs in with a username and password an administrator created. */
+  onPasswordLogin: (username: string, password: string) => void;
 }
 
 // A friendly headline per known failure mode — the raw Firebase code/JSON is
@@ -15,11 +17,18 @@ interface AuthScreenProps {
 function friendlyLoginErrorMessage(loginError: string): string {
   if (loginError.includes('auth/configuration-not-found')) return "Google Sign-In isn't set up for this project yet.";
   if (loginError.includes('auth/unauthorized-domain')) return "This site isn't authorized for Google Sign-In yet.";
+  if (loginError.includes('auth/invalid-credential') || loginError.includes('auth/wrong-password') || loginError.includes('auth/user-not-found') || loginError.includes('auth/invalid-login-credentials')) return 'That username and password do not match.';
+  if (loginError.includes('auth/user-disabled')) return 'This account has been disabled. Ask your administrator.';
+  if (loginError.includes('auth/too-many-requests')) return 'Too many attempts. Wait a few minutes and try again.';
+  if (loginError.includes('auth/operation-not-allowed')) return 'Username and password sign-in is not switched on for this project yet.';
+  if (loginError.includes('invalid-username')) return 'Enter your username (letters, digits, . _ -) and your password.';
   return "We couldn't sign you in.";
 }
 
-export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onGuestBypass }: AuthScreenProps) {
+export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onGuestBypass, onPasswordLogin }: AuthScreenProps) {
   const [showDetails, setShowDetails] = useState(false);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   return (
     <motion.div
       key="auth"
@@ -87,6 +96,21 @@ export default function AuthScreen({ loginError, isSigningIn, onGoogleLogin, onG
               </div>
             </div>
           )}
+
+          <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); onPasswordLogin(username, password); }}>
+            <input className="input w-full" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false} aria-label="Username" />
+            <input className="input w-full" type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" aria-label="Password" />
+            <button type="submit" disabled={isSigningIn || !username.trim() || !password} className="btn-primary w-full !py-3 text-sm font-semibold active:scale-[0.98] flex items-center justify-center gap-2">
+              <KeyRound className="w-4 h-4" strokeWidth={1.75} />
+              {isSigningIn ? 'Signing in...' : 'Sign in with username'}
+            </button>
+          </form>
+
+          <div className="relative flex py-1 items-center">
+            <div className="flex-grow border-t border-border"></div>
+            <span className="flex-shrink mx-4 text-ink-muted text-[10px] font-bold uppercase tracking-wider">or</span>
+            <div className="flex-grow border-t border-border"></div>
+          </div>
 
           <button
             onClick={onGoogleLogin}

@@ -3,6 +3,7 @@ import { AnalysisJob, JobBackend, JobOutcome, createLocalBackend } from './jobBa
 import type { FrameGate } from './frameGate';
 import { AnalysisResult, buildLogDocument } from './logEntry';
 import { buildSightings, LatLng, PlateSighting } from '../src/lib/plateTracking';
+import { eventsFromLog, makeEvent, EventError, type EventDraft, type PlatformEvent } from './events/schema';
 import type { ClaimResult } from './leaseStore';
 
 /**
@@ -28,6 +29,10 @@ export interface WorkerCamera {
   suspiciousRules: string;
   webhookUrl: string;
   department?: string;
+  /** Set on a camera onboarded through an adapter: its frames are grabbed from the stored source address, not from `remoteStreamUrl` (which is only its media-server path). */
+  sourceId?: string;
+  /** The department an administrator gave this camera to (a real allotment, unlike the free-text `department`). Its faces and watchlist apply, and its logs carry it. */
+  departmentId?: string;
   location?: LatLng;
 }
 
@@ -40,11 +45,17 @@ export interface WorkerDeps {
   now(): number;
   /** Calls onChange with the full current list of server-analysed cameras on every change. */
   subscribeCameras(onChange: (cameras: WorkerCamera[]) => void, onError: (err: unknown) => void): () => void;
-  loadUserContext(userId: string): Promise<UserContext>;
+  /** The owner's faces and watchlist, plus the ones shared with `departmentId` when the camera has one. */
+  loadUserContext(userId: string, departmentId?: string): Promise<UserContext>;
   grabFrame(camera: WorkerCamera): Promise<Buffer>;
   analyze(input: { imageBase64: string; camera: WorkerCamera } & UserContext): Promise<AnalysisResult>;
   writeLog(doc: ReturnType<typeof buildLogDocument>): Promise<void>;
   writeSightings(userId: string, sightings: PlateSighting[]): Promise<void>;
+  /**
+   * Optional. Receives the typed events of every analysed frame (plate reads, watchlist hits, unusual scenes, and whatever the
+   * analyzers reported) for storage and alerting. Called without waiting, so a slow receiver never delays the next capture.
+   */
+  emitEvents?(events: PlatformEvent[]): Promise<void>;
   updateCamera(cameraId: string, patch: { lastAnalysisTime?: Date; lastAnalysisError?: string | null }): Promise<void>;
   sendWebhook(url: string, payload: unknown): Promise<void>;
   /**
@@ -166,13 +177,14 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     for (const id of [...states.keys()]) if (!seen.has(id)) states.delete(id);
   }
 
-  function getUserContext(userId: string): Promise<UserContext> {
-    const cached = contextCache.get(userId);
+  function getUserContext(userId: string, departmentId?: string): Promise<UserContext> {
+    const key = `${userId}|${departmentId ?? ''}`;
+    const cached = contextCache.get(key);
     if (cached && deps.now() - cached.at < opts.userContextTtlMs) return cached.value;
-    const value = deps.loadUserContext(userId);
-    contextCache.set(userId, { at: deps.now(), value });
+    const value = deps.loadUserContext(userId, departmentId);
+    contextCache.set(key, { at: deps.now(), value });
     // A failed load must not be cached for the whole TTL.
-    value.catch(() => { if (contextCache.get(userId)?.value === value) contextCache.delete(userId); });
+    value.catch(() => { if (contextCache.get(key)?.value === value) contextCache.delete(key); });
     return value;
   }
 
@@ -209,7 +221,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     let skipped: JobOutcome['skipped'];
     let ok = false;
     try {
-      const [frame, ctx] = await Promise.all([deps.grabFrame(camera), getUserContext(camera.userId)]);
+      const [frame, ctx] = await Promise.all([deps.grabFrame(camera), getUserContext(camera.userId, camera.departmentId)]);
 
       // Cheap pre-filter: an unchanged scene is not worth a model call (or a log row).
       const decision = deps.gate ? await deps.gate.check(camera.id, frame, deps.now()) : null;
@@ -218,7 +230,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
         skipped = 'unchanged';
       } else {
         const data = await deps.analyze({ imageBase64: frame.toString('base64'), camera, ...ctx });
-        doc = buildLogDocument({ id: camera.id, name: camera.name, sensitivity: camera.sensitivity, userId: camera.userId }, data, new Date(deps.now()));
+        doc = buildLogDocument({ id: camera.id, name: camera.name, sensitivity: camera.sensitivity, userId: camera.userId, departmentId: camera.departmentId }, data, new Date(deps.now()));
         await deps.writeLog(doc);
         // Only now does this frame become the gate's baseline — a failed analysis must not.
         decision?.commit();
@@ -230,6 +242,16 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
           doc.timestamp, doc.detectedPlates, doc.plateReads, doc.plateSource as PlateSighting['source'],
         );
         await deps.writeSightings(camera.userId, sightings).catch((err) => deps.log.warn(`[ANALYSIS] Could not record plate sightings for ${camera.name}:`, err));
+
+        if (deps.emitEvents) {
+          const drafts: EventDraft[] = [...eventsFromLog(doc, ctx.watchlist), ...(data.events ?? [])];
+          const events: PlatformEvent[] = [];
+          for (const d of drafts) {
+            try { events.push(makeEvent(d, { source: 'platform', camera: { id: camera.id, name: camera.name, userId: camera.userId, department: camera.department, location: camera.location }, ts: doc.timestamp })); }
+            catch (err) { if (err instanceof EventError) deps.log.warn(`[ANALYSIS] Dropped an event from ${d.source ?? 'an analyzer'} for ${camera.name}: ${err.message}`); else throw err; }
+          }
+          if (events.length) deps.emitEvents(events).catch((err) => deps.log.warn(`[ANALYSIS] Could not record events for ${camera.name}:`, err));
+        }
       }
 
       const recovered = lastError !== null;

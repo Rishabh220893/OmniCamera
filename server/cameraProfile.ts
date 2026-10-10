@@ -423,6 +423,8 @@ export interface ProfileStore {
   /** Sets or clears (null) the self-heal floor. The change itself is recorded separately with recordChange. */
   setHealFloor(site: string, cameraId: string, floor: HealFloor | null): Promise<void>;
   recordChange(change: RecipeChange): Promise<void>;
+  /** Forgets a camera: its current profile, its probe history and its recipe changes (a camera taken out of the Registry). Optional. */
+  removeProfile?(site: string, cameraId: string): Promise<void>;
   /** Newest first. One camera, or the whole site when cameraId is null. */
   changes(site: string, cameraId: string | null, limit?: number): Promise<RecipeChange[]>;
 }
@@ -523,6 +525,10 @@ export function createProfileStore(pg: PgLike): ProfileStore {
         [site, cameraId, Math.min(Math.max(limit, 1), 200)],
       );
       return res.rows.map((row) => row.report as ProbeReport);
+    },
+
+    async removeProfile(site, cameraId) {
+      for (const table of ['camera_profiles', 'probe_runs', 'recipe_changes']) await pg.query(`DELETE FROM ${table} WHERE site = $1 AND camera_id = $2`, [site, cameraId]);
     },
   };
 }

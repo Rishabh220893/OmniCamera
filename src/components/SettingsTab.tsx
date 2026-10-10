@@ -6,6 +6,7 @@ import {
   Save, MapPin, Building2, ScanLine, ShieldAlert, KeyRound, EyeOff
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import AdminUsersPanel from './AdminUsersPanel';
 import { CameraConfig, KnownFace, NotificationPrefs, WatchlistEntry } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 
@@ -39,8 +40,11 @@ interface SettingsTabProps {
   watchlist: WatchlistEntry[];
   onAddWatchlistEntry: (plate: string, reason: string) => void;
   onRemoveWatchlistEntry: (id: string) => void;
+  /** The department new faces / plates are saved for (everyone in it sees them), when there is one. */
+  faceDepartment?: string;
+  watchDepartment?: string;
   userDepartment: string;
-  userRole: 'operator' | 'admin';
+  userRole: 'viewer' | 'operator' | 'admin';
   onUpdateUserProfile: (updates: { department?: string; role?: 'operator' | 'admin' }) => void;
   isAdmin: boolean;
 }
@@ -52,7 +56,7 @@ export default function SettingsTab(props: SettingsTabProps) {
     streamAccessPassword, onChangeStreamAccessPassword, streamAccessEmail, onChangeStreamAccessEmail, cameras, activeCameraId,
     onSelectCamera, onAddCamera, onRemoveCamera, onUpdateActiveCamera, onOpenSetupGuides,
     webhookStatus, onTestWebhook, knownFaces, onFaceUpload, onRemoveFace,
-    watchlist, onAddWatchlistEntry, onRemoveWatchlistEntry,
+    watchlist, onAddWatchlistEntry, onRemoveWatchlistEntry, faceDepartment, watchDepartment,
     userDepartment, userRole, onUpdateUserProfile, isAdmin
   } = props;
 
@@ -180,18 +184,14 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
           <div className="space-y-2">
             <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Role</label>
-            <select
-              value={userRole}
-              onChange={(e) => onUpdateUserProfile({ role: e.target.value as 'operator' | 'admin' })}
-              className="input"
-            >
-              <option value="operator">Operator</option>
-              <option value="admin">Admin</option>
-            </select>
+            <input value={userRole.charAt(0).toUpperCase() + userRole.slice(1)} readOnly className="input" aria-describedby="role-help" />
           </div>
         </div>
-        <p className="text-[10px] text-ink-muted italic mt-4">Only Admin accounts can manage the vehicle watchlist below.</p>
+        <p id="role-help" className="text-[10px] text-ink-muted italic mt-4">Your role is set by an administrator and cannot be changed here. Only Admin accounts can manage the vehicle watchlist below.</p>
       </div>
+
+      {/* Administrators: users, departments and which cameras each department sees. Not for the offline guest (no account, no server session). */}
+      {isAdmin && user && user.uid !== 'demo-guest' && <AdminUsersPanel />}
 
       {/* Cloud sync status */}
       <div className="card p-8 relative overflow-hidden">
@@ -547,6 +547,7 @@ export default function SettingsTab(props: SettingsTabProps) {
               <label htmlFor="face-upload" className="btn-primary !py-2 !px-4 text-xs cursor-pointer whitespace-nowrap active:scale-95 inline-flex items-center">Add face</label>
             </div>
           </div>
+          {faceDepartment && <p className="text-[10px] text-ink-muted -mt-2">New faces are shared with everyone in {faceDepartment}.</p>}
           {knownFaces.length > 0 ? (
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
               {knownFaces.map(face => (
@@ -575,7 +576,7 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
           <div>
             <h2 className="text-lg font-bold font-display text-ink">Vehicle watchlist</h2>
-            <p className="text-xs text-ink-muted">Plates flagged for real-time tracking across every camera</p>
+            <p className="text-xs text-ink-muted">Plates flagged for real-time tracking across every camera{watchDepartment ? `. New plates are shared with everyone in ${watchDepartment}.` : ''}</p>
           </div>
         </div>
 

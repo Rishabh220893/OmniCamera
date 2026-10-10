@@ -17,12 +17,14 @@ export const RECIPE_LABEL: Record<RecipeId, string> = {
  *   proxy  the app's own HLS route, which needs the grid login
  *   stills a picture refreshed every few seconds, which needs the grid login too
  */
-export function plannedRecipes(o: { camId: string | null; url: string; hlsSupported: boolean; media: { enabled?: boolean } | null; hasLogin: boolean }): RecipeId[] {
+export function plannedRecipes(o: { camId: string | null; url: string; hlsSupported: boolean; media: { enabled?: boolean } | null; hasLogin: boolean; mediaId?: string | null }): RecipeId[] {
   const out: RecipeId[] = [];
   const hls = detectStreamType(o.url) === 'hls';
-  if (o.camId && o.media?.enabled && o.hlsSupported) out.push('media');
+  // A camera onboarded through an adapter has a media-server path (mediaId) but is not on the grid (no camId): only the media server can play it.
+  const mediaId = o.mediaId ?? o.camId;
+  if (mediaId && o.media?.enabled && o.hlsSupported) out.push('media');
   if (o.camId) out.push('whep');
-  if (hls && o.hlsSupported && o.hasLogin) out.push('proxy');
+  if (hls && o.hlsSupported && o.hasLogin && !(mediaId && !o.camId)) out.push('proxy');
   if (o.camId && o.hasLogin) out.push('stills');
   return out;
 }

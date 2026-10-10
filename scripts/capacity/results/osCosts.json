@@ -1,0 +1,9 @@
+{
+  "when": "2026-10-10",
+  "machine": "Intel(R) Celeron(R) N4020 CPU @ 1.10GHz (2 cores)",
+  "grabCpuSeconds": 0.125,
+  "gateCpuSeconds": 0.078,
+  "method": "median of 15 runs of total process CPU time as the OS counts it (scripts/capacity/os-costs.ps1); the grab is a local 720p clip, so RTSP session set-up is not included",
+  "ffmpegBenchmarkCpuSecondsGrab": 0.016,
+  "note": "ffmpeg's own -benchmark number leaves process start-up out; on this CPU start-up is most of the cost"
+}

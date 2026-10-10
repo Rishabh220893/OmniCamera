@@ -6,11 +6,33 @@ import { google } from 'googleapis';
 import { GoogleGenAI } from '@google/genai';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { createConnectorHub } from './server/connectors/hub';
+import { createMockConnectors } from './server/connectors/mock';
+import { createPlateEnricher } from './server/connectors/enrich';
+import { registerConnectorRoutes } from './server/connectors/routes';
+import { createFirebaseDirectory } from './server/admin/firebaseDirectory';
+import { registerAdminRoutes } from './server/admin/routes';
+import { createMemoryBus } from './server/bus/memoryBus';
+import { createRedisBus } from './server/bus/redisBus';
+import type { EventBus } from './server/bus/types';
+import { createVmsConnectorTypes } from './server/connectors/vms/index';
+import { createVmsService, createFileCursorStore } from './server/connectors/vms/service';
+import { createEventPipeline } from './server/events/pipeline';
+import { createWebhookService, type WebhookService } from './server/connectors/webhook/service';
+import { registerWebhookAdminRoutes, registerWebhookIngest } from './server/connectors/webhook/routes';
+import { registerVmsRoutes } from './server/connectors/vms/routes';
+import { recordingEnv } from './server/recording/env';
+import { createRecordingStore } from './server/recording/store';
+import { createS3Client } from './server/recording/s3';
+import { createS3ColdTier } from './server/recording/coldTier';
+import { createHoldStore, createPolicyStore, runRetention } from './server/recording/retention';
+import { registerRecordingRoutes } from './server/recording/routes';
+import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
+import { eventScope, type Principal } from './server/authz/policy';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, isSafeCameraUrl } from './server/frameSource';
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 import { createAnprClient, AnprClient } from './server/anprClient';
-import { mergePlates } from './server/plateMerge';
 import { createMotionGate } from './server/frameGate';
 import { createLocalBackend, JobBackend } from './server/jobBackend';
 import { createBullBackend } from './server/bullBackend';
@@ -29,6 +51,28 @@ import type { HealView, RecipeCode } from './src/lib/cameraProfileView';
 import { applyToMedia, importSaved, listViews, saveReport, summarize } from './server/profileService';
 import { createProbeJob } from './server/probeJob';
 import { probeCamera, type ProbeTarget } from './server/cameraProbeRun';
+import { createDefaultAdapters } from './server/adapters';
+import { createDefaultPipeline } from './server/analytics';
+import { CHAT_MODELS, VISION_MODELS, generateContentWithFallback } from './server/gemini';
+import { aiConfigured, aiKeyVar } from './server/llm';
+import { loadUserContext } from './server/userContext';
+import { secretBoxFromEnv } from './server/sources/secretBox';
+import { SOURCES_SITE, createPostgresSourceStore, type SourceStore } from './server/sources/store';
+import { createOnboarding } from './server/sources/onboard';
+import { createFirestoreRegistryWriter } from './server/sources/firestoreRegistry';
+import { registerSourceRoutes } from './server/sources/routes';
+import { sourcesMediaPlan } from './server/sources/media';
+import { applySourcesMedia } from './server/sources/apply';
+import { openSourceAddress } from './server/sources/address';
+import { createAlertEngine } from './server/events/alertEngine';
+import { makeEvent, type PlatformEvent } from './server/events/schema';
+import { createFirestoreGatewayDocs, createGatewayCentral } from './server/gateway/central';
+import { captureRawBody, registerGatewayRoutes } from './server/gateway/routes';
+import type { AssignedCamera } from './server/gateway/protocol';
+import { createChannelRegistry, createLogChannel, createWebhookChannel } from './server/events/channels';
+import { registerEventRoutes } from './server/events/routes';
+import { createMemoryAlertStore, createPostgresAlertStore, type AlertStore } from './server/events/store';
+import { registerAdapterRoutes } from './server/adapterRoutes';
 import { pathBuildOptionsFromEnv } from './server/mediaPlan';
 import { credentialResolver } from './server/siteSecrets';
 import { profileFiles } from './server/profileFiles';
@@ -79,25 +123,6 @@ function streamCredentials(req: express.Request): { email: string; password: str
 }
 const MISSING_CREDENTIALS_MESSAGE = 'Stream access email and password are not set. Enter them under Settings → stream access, or set STREAM_EMAIL and STREAM_PASSWORD on the server.';
 
-let aiClient: GoogleGenAI | null = null;
-function getAI(): GoogleGenAI {
-  if (!aiClient) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY environment variable is required');
-    }
-    aiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-  }
-  return aiClient;
-}
-
 const auth = new google.auth.GoogleAuth({
   credentials: process.env.GOOGLE_SHEETS_CREDENTIALS ? JSON.parse(process.env.GOOGLE_SHEETS_CREDENTIALS) : undefined,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
@@ -132,57 +157,6 @@ function requireRegistryAuth(req: express.Request, res: express.Response): boole
     return false;
   }
   return true;
-}
-
-// Gemini model fallback chain — the newest/preview model gives the best
-// results but is also the one most likely to return 503 "high demand"
-// under load. On a retryable error, fall through to the next model rather
-// than failing the whole analysis cycle. Google retires model IDs over
-// time (gemini-2.5-flash and gemini-2.0-flash are no longer available to
-// new projects as of this writing — its own 404 response names the
-// current replacement), so this list is deliberately short and should be
-// updated from that error message if it goes stale again rather than
-// guessing at names.
-const VISION_MODELS = ['gemini-3-flash-preview', 'gemini-3.6-flash'];
-const CHAT_MODELS = ['gemini-3.5-flash', 'gemini-3.6-flash'];
-
-function isRetryableGeminiError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  // Capacity/transient errors, and "model no longer exists" (404/NOT_FOUND)
-  // — both are reasons to try the *next* model, not to fail outright.
-  return /"code":\s*(404|429|500|502|503|504)|UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|NOT_FOUND|GEMINI_TIMEOUT/i.test(message);
-}
-
-const GEMINI_TIMEOUT_MS = 25_000;
-
-// Without this, a stalled call to a given model just hangs forever — the
-// client's fetch has no timeout of its own, so isAnalyzing never clears and
-// the capture loop stops producing any new summary/alerts until the tab is
-// reloaded. Racing a timeout turns that into a fast, retryable failure that
-// falls through to the next model instead.
-function withGeminiTimeout<T>(promise: Promise<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`GEMINI_TIMEOUT: no response after ${GEMINI_TIMEOUT_MS}ms`)), GEMINI_TIMEOUT_MS);
-    promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
-  });
-}
-
-async function generateContentWithFallback(
-  models: string[],
-  params: Omit<Parameters<ReturnType<typeof getAI>['models']['generateContent']>[0], 'model'>
-) {
-  const ai = getAI();
-  let lastError: unknown;
-  for (const model of models) {
-    try {
-      return await withGeminiTimeout(ai.models.generateContent({ ...params, model }));
-    } catch (err: unknown) {
-      lastError = err;
-      if (!isRetryableGeminiError(err)) throw err;
-      console.warn(`[GEMINI] Model "${model}" unavailable, falling back to next model:`, err instanceof Error ? err.message : err);
-    }
-  }
-  throw lastError;
 }
 
 // Every upstream fetch to a camera CDN below routes through this instead of
@@ -303,6 +277,9 @@ interface FrameAnalysisInput {
   knownFaces?: Array<{ name: string; imageData: string }>;
   watchlist?: string[];
   camera?: {
+    id?: string;
+    userId?: string;
+    department?: string;
     name?: string;
     sensitivity?: number;
     peopleThreshold?: number;
@@ -313,101 +290,22 @@ interface FrameAnalysisInput {
 
 // Shared by the browser-driven /api/gemini/analyze-frame route and the
 // server-side analysis worker, so both produce identical results.
+// The analyzers a frame goes through (server/analytics): Gemini scene analysis, the plate reader when ANPR_SERVICE_URL is set, camera-tamper
+// detection, and anything added to the list. ANALYZERS_OFF=camera-tamper,anpr-plates switches built-ins off.
+const analyzerPipeline = createDefaultPipeline({
+  generate: (params) => generateContentWithFallback(VISION_MODELS, params as never),
+  anpr: anprClient,
+  off: (process.env.ANALYZERS_OFF || '').split(',').map((x) => x.trim()).filter(Boolean),
+});
+
 async function analyzeFrame({ imageBase64, knownFaces, watchlist, camera }: FrameAnalysisInput) {
-  const faces = (knownFaces || []).slice(0, 6);
-  const faceDataParts = faces.map((face) => ({
-    inlineData: {
-      mimeType: 'image/jpeg',
-      data: face.imageData.includes(',') ? face.imageData.split(',')[1] : face.imageData,
-    },
-  }));
-
-  const knownFacesContext = faces.length > 0
-    ? `\nREFERENCE DATA: I have provided ${faceDataParts.length} images of known people as reference.
-       Their names are: ${faces.map((f) => f.name).join(', ')}.
-       If you see a person in the MAIN FEED FRAME, compare them visually to these reference images.
-       - If they match a reference image, identify them by that name.
-       - If they do NOT match any reference image, label them as "Unknown Person".`
-    : '';
-
-  console.log(`[GEMINI VISION] Analyzing frame for camera: "${camera?.name ?? 'Unknown'}"`);
-
-  // Plate reading goes to the dedicated ANPR service in parallel with the
-  // Gemini call; a failure there must never fail the whole analysis.
-  const anprPromise = anprClient
-    ? anprClient.detect(Buffer.from(imageBase64, 'base64')).then((reads) => ({ reads })).catch((error: unknown) => {
-        console.warn(`[ANPR] Service call failed, falling back to Gemini plates:`, error instanceof Error ? error.message : error);
-        return { error };
-      })
-    : Promise.resolve(null);
-
-  const response = await generateContentWithFallback(VISION_MODELS, {
-    contents: {
-      parts: [
-        { text: 'KNOWN INDIVIDUALS REFERENCE IMAGES (If provided):' },
-        ...faceDataParts,
-        { text: 'MAIN CAMERA FEED FRAME TO ANALYZE:' },
-        { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
-        {
-          text: `Act as a security AI monitoring a camera feed.
-          Objective: Provide a real-time summary, count objects, identify people, and detect brands.
-
-          Current System Configuration:
-          - Camera Name: ${camera?.name ?? 'Unknown'}
-          - Anomaly Sensitivity: ${camera?.sensitivity ?? 5}/10
-          - People count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.peopleThreshold ?? 5}
-          - Vehicle count (informational, for the trend chart only — NOT grounds for an alert on its own): ${camera?.vehicleThreshold ?? 2}
-          ${camera?.suspiciousRules ? `- CUSTOM SUSPICIOUS RULES: ${camera.suspiciousRules}` : ''}
-          ${knownFacesContext}
-
-          Tasks:
-          1. A brief summary of events. IMPORTANT: Mention identified people by their names in the summary.
-          2. Count people, vehicles, and notable objects.
-          3. Identify any visible brands on products, clothing, or environment.
-          4. Check for genuinely malicious, harmful, or suspicious activity — weapons, forced entry,
-             vandalism, trespassing, loitering with intent, an unknown person behaving suspiciously, or
-             anything matching the custom suspicious rules above. A busy or crowded scene is NOT by
-             itself unusual — do not flag isUnusual or write an alert merely because a lot of people or
-             vehicles are present. Only raise isUnusual/alerts for content that would actually warrant a
-             human operator's attention for security reasons.
-          5. Read any vehicle license/number plates that are legible in the frame.
-          6. Rate the overall mood/threat level of the scene as one of: "calm" (ordinary, nothing of
-             note), "neutral" (unremarkable activity), "tense" (something worth watching but not yet
-             alarming), "critical" (matches an alert-worthy situation from task 4).
-
-          Output MUST be strict JSON:
-          {
-            "summary": "Short 1-sentence summary mentioning names if identified",
-            "counts": { "people": number, "vehicles": number, "other": number },
-            "brands": ["List of identified brands"],
-            "people_identified": ["Names of identified known members or 'Unknown Person'"],
-            "alerts": ["List of specific malicious/harmful/suspicious warnings only — do NOT include plain crowd/traffic-count observations here"],
-            "isUnusual": boolean,
-            "isUnusualReason": "Explain WHY it was marked unusual — must be a malicious/harmful/suspicious reason, never just a headcount",
-            "detected_plates": ["Any legible vehicle plate numbers, uppercase, no spaces"],
-            "sentiment": "calm" | "neutral" | "tense" | "critical"
-          }`,
-        },
-      ],
-    },
-    config: { responseMimeType: 'application/json' },
+  const { result, events, outcomes } = await analyzerPipeline.analyze({
+    camera: { ...camera, id: camera?.id ?? 'unknown', name: camera?.name ?? 'Unknown' },
+    frame: { jpeg: Buffer.from(imageBase64, 'base64'), base64: imageBase64 },
+    user: { knownFaces: (knownFaces || []).slice(0, 6), watchlist: watchlist || [] },
+    now: new Date(),
   });
-
-  const responseText = response.text || '{}';
-  const data = JSON.parse(responseText) as { detected_plates?: string[]; [key: string]: unknown };
-
-  // Tier-1 stand-in: match detected plates against the caller's watchlist
-  // server-side, so the client never has to trust its own comparison.
-  const merged = mergePlates((data.detected_plates || []).map(String), await anprPromise);
-  const detectedPlates = merged.plates;
-  const watchlistSet = new Set((watchlist || []).map((p) => String(p).toUpperCase().replace(/[^A-Z0-9]/g, '')));
-  const watchlistMatches = detectedPlates.filter((p) => watchlistSet.has(p));
-
-  if (watchlistMatches.length > 0) {
-    console.warn(`[WATCHLIST MATCH] Camera "${camera?.name ?? 'Unknown'}" — plates: ${watchlistMatches.join(', ')} (source: ${merged.source})`);
-  }
-
-  return { ...data, detected_plates: detectedPlates, watchlistMatches, plate_reads: merged.reads, plate_source: merged.source };
+  return { ...result, events, analyzers: outcomes };
 }
 
 async function startServer() {
@@ -417,7 +315,11 @@ async function startServer() {
 
   // Default 100kb limit is far too small: a captured frame plus up to 6
   // base64-encoded known-face reference images easily runs several MB.
-  app.use(express.json({ limit: '25mb' }));
+  // The webhook receiver is public (a camera cannot sign in; a per-source token protects it), so it is mounted BEFORE the global JSON parser below,
+  // which would read up to 25 MB of an unauthenticated body. It has its own 512 KB limit. The service behind it is created further down.
+  const webhookRef: { service: WebhookService | null } = { service: null };
+  if (process.env.WEBHOOK_ENABLED !== 'false') registerWebhookIngest(app, () => webhookRef.service);
+  app.use(express.json({ limit: '25mb', verify: captureRawBody }));
 
   // Test mode (TRACKING_FAKE_FRAMES_DIR, see scripts/fake-grid.mjs): there are no real cameras, so the routes that would talk to the grid
   // answer at once instead of sending anything to it, and the snapshot route serves the pretend pictures. Never set this in production.
@@ -1356,15 +1258,187 @@ Analyze this context to answer user queries:
     }
   });
 
+  // ---- Events, alert rules and alerts (docs/analytics.md) ----
+  // Every analyzer's findings become typed events; rules decide which become alerts and where they go (webhook, log).
+  // ---- Who may do what (server/authz, docs/authz.md) ----
+  // Roles come from Firebase custom claims (npm run set-role). Accounts without a claim fall back to the old self-set role on their
+  // user document unless AUTHZ_LEGACY_ROLE=false. Refusals and sensitive uses are logged in memory and, with Firestore, in 'accessLog'.
+  const accessRing = createRingLog(2000);
+  const accessDurable = registryDb
+    ? createBatchedLog(async (batch) => {
+        const db = registryDb!, w = db.batch();
+        for (const e of batch) w.set(db.collection('accessLog').doc(), { ...e, timestamp: FieldValue.serverTimestamp() });
+        await w.commit();
+      })
+    : null;
+  const authz = createAuthz({
+    verify: async (idToken) => {
+      const t = await getAuth().verifyIdToken(idToken, process.env.AUTHZ_CHECK_REVOKED === 'true');
+      return { uid: t.uid, claims: t as unknown as Record<string, unknown> };
+    },
+    legacyProfile: process.env.AUTHZ_LEGACY_ROLE === 'false' || !registryDb ? undefined : async (uid) => (await registryDb!.collection('users').doc(uid).get()).data(),
+    allowGuests: process.env.MEDIA_ALLOW_GUESTS === 'true',
+    ready: () => !!registryDb,
+    log: { record: (e: AccessLogEntry) => { accessRing.record(e); accessDurable?.record(e); } },
+    warn: (m) => console.warn(m),
+  });
+  // ---- Users, departments and camera allotment (server/admin, docs/admin-users.md) ----
+  // Administrators create username + password accounts, create departments and give cameras to them. Needs Firebase Admin.
+  if (registryDb) {
+    registerAdminRoutes(app, { directory: createFirebaseDirectory(getAuth(), registryDb), requireAdmin: async (req, res) => { const p = await authz.require(req, res, 'user.manage'); return p ? { uid: p.uid } : null; } });
+  }
+  app.get('/api/access-log', async (req, res) => {
+    if (!(await authz.require(req, res, 'audit.read'))) return;
+    res.json({
+      entries: accessRing.recent(Math.min(1000, Number(req.query.limit) || 200), { uid: typeof req.query.uid === 'string' ? req.query.uid : undefined, allowed: req.query.allowed === 'false' ? false : req.query.allowed === 'true' ? true : undefined }),
+      droppedFromMemory: accessRing.dropped, droppedBeforeSaving: accessDurable?.dropped ?? 0, saved: !!accessDurable,
+    });
+  });
+
+  // ---- Recording and playback (server/recording, docs/recording.md) ----
+  // On when RECORDINGS_DIR is set and Firebase Admin is configured (camera ownership and departments are checked against the camera record).
+  const recEnv = recordingEnv(process.env);
+  if (recEnv && registryDb) {
+    const db = registryDb;
+    const recStore = createRecordingStore({
+      hotDir: recEnv.dir, warmDir: recEnv.warmDir, nameTime: recEnv.nameTime,
+      cold: recEnv.s3 ? createS3ColdTier(createS3Client(recEnv.s3)) : undefined, cacheDir: path.join(recEnv.dir, '.cold-cache'),
+    });
+    const recPolicies = createPolicyStore(recEnv.policyFile);
+    const recHolds = createHoldStore(recEnv.holdsFile);
+    registerRecordingRoutes(app, {
+      store: recStore, policies: recPolicies, holds: recHolds, exportsDir: recEnv.exportsDir, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays,
+      access: async (req, res, permission, cameraId) => {
+        const p = await authz.authenticate(req, res);
+        if (!p) return null;
+        let department: string | undefined, owner = true;
+        if (cameraId) {
+          const c = (await db.collection('cameras').doc(cameraId).get()).data();
+          if (!c) { res.status(404).json({ error: 'No such camera.' }); return null; }
+          owner = c.userId === p.uid;
+          department = typeof c.departmentId === 'string' ? c.departmentId : typeof c.department === 'string' ? c.department : undefined;
+        }
+        // The owner needs the role; anyone else also needs the camera's department among theirs.
+        if (!authz.check(p, permission, cameraId && !owner ? { department } : undefined, req)) { res.status(403).json({ error: owner ? 'Your role cannot do that.' : 'That camera belongs to a department you do not work for.' }); return null; }
+        return { uid: p.uid };
+      },
+    });
+    // Retention runs hourly, and once shortly after start. It only deletes what policy and holds allow (docs/recording.md).
+    const retentionTick = async () => {
+      try {
+        await recPolicies.load();
+        const r = await runRetention({ store: recStore, policyFor: recPolicies.forCamera, holds: recHolds, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays });
+        if (r.deleted || r.moved || r.movedToCold || r.errors) console.log(`[RECORDING] retention: deleted ${r.deleted}, moved ${r.moved}, uploaded ${r.movedToCold}, kept for holds ${r.heldKept}, errors ${r.errors}.`);
+      } catch (e) { console.warn('[RECORDING] retention run failed:', e instanceof Error ? e.message : e); }
+    };
+    setTimeout(retentionTick, 60_000).unref();
+    setInterval(retentionTick, 3_600_000).unref();
+    console.log(`[RECORDING] Playback is on; segments are read from ${recEnv.dir}${recEnv.warmDir ? ` and ${recEnv.warmDir}` : ''}.`);
+  } else if (recEnv) console.warn('[RECORDING] RECORDINGS_DIR is set but Firebase Admin is not configured, so playback routes are off.');
+
+  // Kept in Postgres when DATABASE_URL is set, else in memory (lost on restart). Each signed-in user sees only their own.
+  let alertStore: AlertStore;
+  if (process.env.DATABASE_URL) {
+    const { Pool } = await import('pg');
+    const alertPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+    alertStore = createPostgresAlertStore(alertPool);
+    try { await alertStore.ensureSchema(); }
+    catch (e) { console.warn('[ALERTS] Could not prepare the alert tables, keeping alerts in memory:', e instanceof Error ? e.message : e); alertStore = createMemoryAlertStore(); }
+  } else alertStore = createMemoryAlertStore();
+  const alertChannels = createChannelRegistry([createWebhookChannel({ allowPrivate: process.env.ALERT_WEBHOOK_ALLOW_PRIVATE === 'true' }), createLogChannel()]);
+  const alertEngine = createAlertEngine({ store: alertStore, channels: alertChannels });
+  console.log(`[ALERTS] Alert store: ${alertStore.kind}.`);
+
+  // ---- Outside systems: VAHAN, SARTHI, eGujCop (server/connectors, docs/connectors.md) ----
+  // Only mock connectors exist; CONNECTORS=mock turns them on. Plate reads are then checked after they have been stored and alerted.
+  const connectorHub = process.env.CONNECTORS === 'mock' ? createConnectorHub(createMockConnectors()) : null;
+  const plateEnricher = connectorHub ? createPlateEnricher({ hub: connectorHub, emit: (events) => alertEngine.ingest(events) }) : null;
+  const emitEvents = plateEnricher
+    ? plateEnricher.wrapEmit((events) => alertEngine.ingest(events))
+    : async (events: PlatformEvent[]) => { await alertEngine.ingest(events); };
+  if (connectorHub) {
+    console.log('[CONNECTORS] Mock VAHAN / SARTHI / eGujCop are on: plate reads are checked and findings are marked [MOCK].');
+    registerConnectorRoutes(app, { hub: connectorHub, allow: async (req, res, permission) => !!(await authz.require(req, res, permission)) });
+  }
+
+  // ---- The event bus (server/bus, server/events/pipeline.ts, docs/connectors-vms.md) ----
+  // Every source of events publishes to it and one consumer turns them into stored events and alerts: the analysis worker, regional gateways,
+  // the department-system runners and the webhook receiver. EVENT_BUS=redis uses REDIS_URL (shared by several servers), otherwise it is
+  // in-process (lost on restart, one server). Delivery is at-least-once and the alert engine stores an event once by its id.
+  let bus: EventBus;
+  if (process.env.EVENT_BUS === 'redis' && process.env.REDIS_URL) {
+    const { default: IORedis } = await import('ioredis');
+    const connect = () => new IORedis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+    bus = createRedisBus(connect(), connect);
+  } else bus = createMemoryBus();
+  const eventPipeline = await createEventPipeline({ bus, ingest: emitEvents });
+  const publishEvents = (events: PlatformEvent[]) => eventPipeline.publish(events);
+  console.log(`[EVENTS] Events go through the ${bus.kind} bus to alerting.`);
+
+  // ---- Webhook receiver: devices and systems that can only push (server/connectors/webhook, docs/connectors-vms.md) ----
+  // Sources and their tokens are managed by administrators (/api/webhooks); WEBHOOK_ENABLED=false switches the receiver off.
+  if (process.env.WEBHOOK_ENABLED !== 'false') {
+    const webhookService = createWebhookService({ file: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'webhook-sources.json'), emit: publishEvents });
+    await webhookService.load();
+    webhookRef.service = webhookService;
+    registerWebhookAdminRoutes(app, { service: webhookService, allow: async (req, res, permission) => { const p = await authz.require(req, res, permission); return p ? { uid: p.uid } : null; } });
+    console.log(`[WEBHOOK] Receiver on at /api/ingest/webhook/<source>; ${webhookService.list().length} source(s).`);
+  }
+
+  // ---- Department systems (server/connectors/vms, docs/connectors-vms.md) ----
+  // VMS_ENABLED=true starts one runner per configured department system (VMS_SYSTEMS_FILE, default .data/vms-systems.json); what they find
+  // is published to the bus like everything else.
+  if (process.env.VMS_ENABLED === 'true') {
+    const dataDir = process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data');
+    const vms = createVmsService({
+      types: createVmsConnectorTypes(), bus, systemsFile: process.env.VMS_SYSTEMS_FILE || path.join(dataDir, 'vms-systems.json'),
+      cursors: createFileCursorStore(path.join(dataDir, 'vms-cursors.json')), allowPrivate: process.env.VMS_ALLOW_PRIVATE === 'true',
+    });
+    registerVmsRoutes(app, { service: vms, allow: async (req, res, permission) => { const p = await authz.require(req, res, permission); return p ? { uid: p.uid } : null; } });
+    await vms.load();
+    console.log(`[VMS] ${vms.list().length} department system(s) configured; event bus: ${bus.kind}.`);
+  }
+
+  registerEventRoutes(app, {
+    store: alertStore, engine: alertEngine, channels: alertChannels,
+    requireUser: async (req, res, permission) => {
+      const p = await authz.require(req, res, permission);
+      if (p) res.locals.principal = p;
+      return p?.uid ?? null;
+    },
+    // People whose role is a claim set by an administrator (not the old self-set field) see their departments' events, alerts and rules,
+    // whoever owns the cameras; an organisation-wide administrator ('*') sees all of them. Everyone else sees their own, as before.
+    departmentScope: async (req) => eventScope(req.res?.locals.principal as Principal | undefined),
+  });
+
   // ---- Server-side analysis (replaces the browser-tab capture loop) ----
   // Opt-in: needs SERVER_ANALYSIS=true, the Admin SDK (FIREBASE_SERVICE_ACCOUNT)
   // and GEMINI_API_KEY. Cameras are picked up when their registry record has
   // `serverAnalysis: true`.
   let analysisWorker: AnalysisWorker | null = null;
   let pgEvents: PostgresEventStore | null = null;
+  // Events (logs, plate sightings): Postgres as the record when DATABASE_URL + EVENT_STORE=postgres, with Firestore kept as a bounded live feed
+  // for the current UI (FIRESTORE_LOG_MODE: all|notable|none). Shared by this server's own analysis worker and by results sent in by regional gateways.
+  let centralEventStoreP: Promise<EventStore | null> | null = null;
+  function centralEventStore(): Promise<EventStore | null> {
+    return (centralEventStoreP ??= (async () => {
+      if (!registryDb) return null;
+      const db = registryDb;
+      if (process.env.EVENT_STORE === 'postgres') {
+        if (!process.env.DATABASE_URL) throw new Error('EVENT_STORE=postgres needs DATABASE_URL.');
+        const { Pool } = await import('pg');
+        const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: Math.max(4, Number(process.env.ANALYSIS_CONCURRENCY) || 4), ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+        pgEvents = createPostgresEventStore(pool);
+        await pgEvents.ensureSchema();
+        const mode = (['all', 'notable', 'none'].includes(process.env.FIRESTORE_LOG_MODE || '') ? process.env.FIRESTORE_LOG_MODE : 'notable') as FirestoreLogMode;
+        return createTeeEventStore(pgEvents, [createFirestoreEventStore(db, mode)], (what, err) => console.warn(`[EVENTS] Mirror write failed (${what}):`, err));
+      }
+      return createFirestoreEventStore(db, 'all');
+    })());
+  }
   if (process.env.SERVER_ANALYSIS === 'true') {
-    if (!registryDb || !process.env.GEMINI_API_KEY) {
-      console.warn('[ANALYSIS] SERVER_ANALYSIS=true but FIREBASE_SERVICE_ACCOUNT and/or GEMINI_API_KEY is missing — worker not started.');
+    if (!registryDb || !aiConfigured()) {
+      console.warn(`[ANALYSIS] SERVER_ANALYSIS=true but FIREBASE_SERVICE_ACCOUNT and/or ${aiKeyVar()} is missing — worker not started.`);
     } else {
       const db = registryDb;
       const creds = {
@@ -1391,20 +1465,7 @@ Analyze this context to answer user queries:
         backend = createLocalBackend({ concurrency });
       }
 
-      // Events (logs, plate sightings): Postgres as the record when DATABASE_URL + EVENT_STORE=postgres,
-      // with Firestore kept as a bounded live feed for the current UI (FIRESTORE_LOG_MODE: all|notable|none).
-      let eventStore: EventStore;
-      if (process.env.EVENT_STORE === 'postgres') {
-        if (!process.env.DATABASE_URL) throw new Error('EVENT_STORE=postgres needs DATABASE_URL.');
-        const { Pool } = await import('pg');
-        const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: Math.max(2, concurrency), ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
-        pgEvents = createPostgresEventStore(pool);
-        await pgEvents.ensureSchema();
-        const mode = (['all', 'notable', 'none'].includes(process.env.FIRESTORE_LOG_MODE || '') ? process.env.FIRESTORE_LOG_MODE : 'notable') as FirestoreLogMode;
-        eventStore = createTeeEventStore(pgEvents, [createFirestoreEventStore(db, mode)], (what, err) => console.warn(`[EVENTS] Mirror write failed (${what}):`, err));
-      } else {
-        eventStore = createFirestoreEventStore(db, 'all');
-      }
+      const eventStore = (await centralEventStore())!;
       console.log(`[ANALYSIS] Event store: ${eventStore.kind}.`);
 
       // Skip the model call for scenes that haven't changed (ANALYSIS_GATE=off to analyse every frame).
@@ -1429,32 +1490,39 @@ Analyze this context to answer user queries:
               const c = d.data();
               const url = typeof c.remoteStreamUrl === 'string' ? c.remoteStreamUrl : '';
               // Webcam / simulated cameras only exist in a browser, and unsafe URLs are never fetched.
-              if (!c.useRemoteFeed || !url || !isSafeCameraUrl(url) || !c.userId) return;
+              const sourceId = typeof c.sourceId === 'string' && c.sourceId ? c.sourceId : undefined;
+              // A camera onboarded through an adapter keeps its real address in the sealed source record; its stream URL is only a media-server label.
+              if (!c.useRemoteFeed || !url || (!sourceId && !isSafeCameraUrl(url)) || !c.userId) return;
+              if (c.gatewayId) return; // a regional gateway analyses this camera, next to it
               cameras.push({
                 id: d.id, userId: c.userId, name: c.name || 'Unnamed Camera', remoteStreamUrl: url,
                 interval: c.interval ?? 60, sensitivity: c.sensitivity ?? 5,
                 peopleThreshold: c.peopleThreshold ?? 5, vehicleThreshold: c.vehicleThreshold ?? 2,
                 suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
-                department: c.department || undefined,
+                department: c.departmentId || c.department || undefined,
+                departmentId: typeof c.departmentId === 'string' && c.departmentId ? c.departmentId : undefined,
+                sourceId,
                 location: c.location && typeof c.location.lat === 'number' && typeof c.location.lng === 'number' ? { lat: c.location.lat, lng: c.location.lng } : undefined,
               });
             });
             onChange(cameras);
           }, onError),
-        loadUserContext: async (userId) => {
-          const [faces, watch] = await Promise.all([
-            db.collection('faces').where('userId', '==', userId).limit(6).get(),
-            db.collection('watchlist').where('userId', '==', userId).get(),
-          ]);
-          return {
-            knownFaces: faces.docs.map((f) => ({ name: f.data().name as string, imageData: f.data().imageData as string })),
-            watchlist: watch.docs.map((w) => w.data().plate as string),
-          };
+        loadUserContext: (userId, departmentId) => loadUserContext(db, userId, departmentId),
+        grabFrame: async (camera) => {
+          // Straight from the camera for one onboarded through an adapter (its stored address, login unsealed only for this call).
+          let url = camera.remoteStreamUrl;
+          if (camera.sourceId) {
+            const store = await sourceStore();
+            const rec = store ? await store.get(SOURCES_SITE, camera.sourceId) : null;
+            if (!rec) throw new Error('This camera\'s stored source is missing.');
+            url = openSourceAddress(rec, sourceBox).rtspUrl;
+          }
+          return grabFrame({ url, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` });
         },
-        grabFrame: (camera) => grabFrame({ url: camera.remoteStreamUrl, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` }),
         analyze: ({ imageBase64, camera, knownFaces, watchlist }) => analyzeFrame({ imageBase64, knownFaces, watchlist, camera }),
         writeLog: (doc) => eventStore.writeLog(doc),
         writeSightings: (userId, sightings) => eventStore.writeSightings(userId, sightings),
+        emitEvents: publishEvents,
         updateCamera: async (cameraId, patch) => { await db.collection('cameras').doc(cameraId).update(patch); },
         sendWebhook: async (url, payload) => {
           const res = await fetch(url, {
@@ -1469,6 +1537,56 @@ Analyze this context to answer user queries:
         ...(Number(process.env.ANALYSIS_LEASE_MS) > 0 ? { leaseMs: Number(process.env.ANALYSIS_LEASE_MS) } : {}),
       });
     }
+  }
+
+  // ---- Regional gateways (docs/regional-gateway.md) ----
+  // Gateways run next to far-away cameras, analyse locally and send only results here. Cameras with a gatewayId are theirs; this server's own
+  // worker skips them. Needs Firestore (the camera list and the gateway records live there).
+  async function requireAdminUid(req: express.Request, res: express.Response): Promise<string | null> {
+    return (await authz.require(req, res, 'gateway.manage'))?.uid ?? null;
+  }
+  if (registryDb) {
+    const db = registryDb;
+    const gatewayCentral = createGatewayCentral({
+      docs: createFirestoreGatewayDocs(db),
+      cameras: async (gatewayId) => {
+        const snap = await db.collection('cameras').where('gatewayId', '==', gatewayId).get();
+        const out: AssignedCamera[] = [];
+        snap.forEach((d) => {
+          const c = d.data();
+          const url = typeof c.remoteStreamUrl === 'string' ? c.remoteStreamUrl : '';
+          if (c.serverAnalysis !== true || !c.useRemoteFeed || !url || !c.userId) return;
+          out.push({
+            id: d.id, userId: c.userId, name: c.name || 'Unnamed Camera', remoteStreamUrl: url, interval: c.interval ?? 60, sensitivity: c.sensitivity ?? 5,
+            peopleThreshold: c.peopleThreshold ?? 5, vehicleThreshold: c.vehicleThreshold ?? 2, suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
+            department: c.departmentId || c.department || undefined,
+                departmentId: typeof c.departmentId === 'string' && c.departmentId ? c.departmentId : undefined,
+            location: c.location && typeof c.location.lat === 'number' && typeof c.location.lng === 'number' ? { lat: c.location.lat, lng: c.location.lng } : undefined,
+          });
+        });
+        return out;
+      },
+      userContext: (userId, departmentId) => loadUserContext(db, userId, departmentId),
+      sinks: {
+        writeLog: async (doc) => { const st = await centralEventStore(); if (!st) throw new Error('no event store'); await st.writeLog(doc); },
+        writeSightings: async (userId, sightings) => { const st = await centralEventStore(); if (!st) throw new Error('no event store'); await st.writeSightings(userId, sightings); },
+        emitEvents: publishEvents,
+        updateCamera: async (cameraId, patch) => { await db.collection('cameras').doc(cameraId).update(patch); },
+      },
+      // A gateway going quiet, struggling or coming back is itself an event, so alert rules (webhook, ...) can watch for it like anything else.
+      onTransition: (g, from) => {
+        const type = g.state === 'offline' ? 'gateway.offline' : g.state === 'degraded' ? 'gateway.degraded' : g.state === 'online' && from !== 'never_seen' ? 'gateway.online' : null;
+        if (!type) return;
+        const silentFor = g.lastHeartbeatAt ? Math.round((Date.now() - new Date(g.lastHeartbeatAt).getTime()) / 1000) : null;
+        void publishEvents([makeEvent({
+          type, summary: type === 'gateway.offline' ? `Gateway ${g.name} (${g.region}) stopped reporting` : type === 'gateway.degraded' ? `Gateway ${g.name} (${g.region}) is degraded: ${g.problems.join('; ')}` : `Gateway ${g.name} (${g.region}) is reporting again`,
+          data: { gatewayId: g.id, region: g.region, problems: g.problems, silentForS: silentFor }, dedupeKey: `${g.id}:${g.state}:${Math.floor(Date.now() / 60_000)}`,
+        }, { source: 'gateway-monitor', camera: { id: g.id, name: `Gateway ${g.name}`, userId: g.ownerId }, ts: new Date() })]).catch((e) => console.warn('[GATEWAY] could not record a state change:', e));
+      },
+    });
+    gatewayCentral.ready().catch((e) => console.warn('[GATEWAY] could not load the gateway list:', e instanceof Error ? e.message : e));
+    setInterval(() => gatewayCentral.sweep(), 10_000).unref();
+    registerGatewayRoutes(app, { central: gatewayCentral, requireAdmin: requireAdminUid });
   }
 
   // Lets the UI know whether the "Analyze on server" toggle can do anything.
@@ -1500,10 +1618,7 @@ Analyze this context to answer user queries:
   // Firebase ID token and can only read their own events.
   async function eventsUser(req: express.Request, res: express.Response): Promise<string | null> {
     if (!pgEvents) { res.status(501).json({ error: 'The Postgres event store is not enabled (EVENT_STORE=postgres).' }); return null; }
-    const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
-    if (!idToken) { res.status(401).json({ error: 'Sign-in required.' }); return null; }
-    try { return (await getAuth().verifyIdToken(idToken)).uid; }
-    catch { res.status(401).json({ error: 'Sign-in could not be verified.' }); return null; }
+    return (await authz.require(req, res, 'event.view'))?.uid ?? null;
   }
   const asDate = (v: unknown) => { const d = typeof v === 'string' ? new Date(v) : null; return d && !Number.isNaN(d.getTime()) ? d : undefined; };
 
@@ -1555,29 +1670,25 @@ Analyze this context to answer user queries:
   const profileEncoder = (process.env.MEDIA_ENCODER === 'none' ? 'none' : 'qsv') as 'qsv' | 'none';
   const profileSlots = Math.max(1, Number(process.env.MEDIA_MAX_TRANSCODES) || 6);
   const siteName = (v: unknown) => (typeof v === 'string' && /^[A-Za-z0-9_-]{1,40}$/.test(v) ? v : 'grid');
+  let pgPoolP: Promise<import('pg').Pool> | null = null;
+  function pgPool(): Promise<import('pg').Pool> {
+    pgPoolP ??= import('pg').then(({ Pool }) => new Pool({ connectionString: process.env.DATABASE_URL, max: 4, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined }));
+    return pgPoolP;
+  }
   let profileStoreP: Promise<ProfileStore> | null = null;
   async function profileStore(): Promise<ProfileStore | null> {
     if (!process.env.DATABASE_URL) return null;
     profileStoreP ??= (async () => {
-      const { Pool } = await import('pg');
-      const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
-      const store = createProfileStore(pool);
+      const store = createProfileStore(await pgPool());
       await store.ensureSchema();
       return store;
     })();
     try { return await profileStoreP; } catch (e) { profileStoreP = null; throw e; }
   }
   async function requireProfileAdmin(req: express.Request, res: express.Response): Promise<boolean> {
-    if (process.env.MEDIA_ALLOW_GUESTS === 'true') return true;
-    const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
-    if (!idToken || !registryDb) { res.status(401).json({ error: 'Sign-in required.' }); return false; }
-    try {
-      const uid = (await getAuth().verifyIdToken(idToken)).uid;
-      if ((await registryDb.collection('users').doc(uid).get()).data()?.role === 'admin') return true;
-      res.status(403).json({ error: 'Only an admin can change playback profiles.' });
-    } catch { res.status(401).json({ error: 'Sign-in could not be verified.' }); }
-    return false;
+    return !!(await authz.require(req, res, 'profile.change'));
   }
+  const requireAdapterAdmin = async (req: express.Request, res: express.Response) => !!(await authz.require(req, res, 'adapter.use'));
   const mediaApiUrl = (() => {
     if (process.env.MEDIA_API_URL) return process.env.MEDIA_API_URL.replace(/\/+$/, '');
     // The control API only listens on the media server's own machine, so it is reachable only when that is this machine.
@@ -1648,7 +1759,7 @@ Analyze this context to answer user queries:
         if (!mediaApiUrl) return ["the media server's control API is not reachable from this server; run scripts/media-config.ts apply on its machine"];
         const build = pathBuildOptionsFromEnv(healSite, process.env);
         build.credentials('cam01');
-        return (await applyToMedia(store, { site: healSite, encoder: profileEncoder, build, api: mediaApiUrl, dryRun: false, pathsFile: generatedPathsFile() })).errors;
+        return (await applyToMedia(store, { site: healSite, encoder: profileEncoder, build, api: mediaApiUrl, dryRun: false, pathsFile: generatedPathsFile(), extra: await sourcesExtra() })).errors;
       },
     });
     if (mediaApiUrl) {
@@ -1739,18 +1850,92 @@ Analyze this context to answer user queries:
     catch (e) { res.status(400).json({ error: e instanceof Error ? e.message : 'No camera login is set.' }); return; }
     const dryRun = (req.body as { dryRun?: unknown }).dryRun !== false;
     const pathsFile = process.env.MEDIA_PATHS_FILE || path.join(process.cwd(), 'media-server', 'bin', 'paths.generated.yml');
-    res.json(await applyToMedia(store, { site, encoder: profileEncoder, build, api: mediaApiUrl, dryRun, pathsFile }));
+    res.json(await applyToMedia(store, { site, encoder: profileEncoder, build, api: mediaApiUrl, dryRun, pathsFile, extra: site === healSite ? await sourcesExtra() : undefined }));
   }));
+
+  // ---- Source adapters: ONVIF discovery, direct RTSP/HTTP cameras, the grid (docs/adapters.md) ----
+  const gridSource = pathBuildOptionsFromEnv(healSite, process.env).site;
+  registerAdapterRoutes(app, {
+    adapters: createDefaultAdapters({ site: healSite, source: gridSource, whepPort: Number(process.env.GRID_WHEP_PORT || 8889) }),
+    requireAdmin: requireAdapterAdmin,
+    allowPrivate: process.env.ADAPTERS_ALLOW_PRIVATE === 'true',
+    save: async (report) => {
+      const store = await profileStore();
+      if (!store) throw new Error('Playback profiles are kept in Postgres. Set DATABASE_URL on the server.');
+      await saveReport(store, report, profileEncoder);
+    },
+  });
+
+  // ---- Cameras onboarded through adapters (server/sources; docs/adapters.md "Onboarding") ----
+  // ONVIF devices, Hikvision/Dahua recorders and plain RTSP cameras become Registry cameras served through the media server. Needs Postgres
+  // (profiles and sources), Firebase Admin (the Registry) and, for a camera that needs a login, SOURCE_SECRET_KEY (logins are stored sealed).
+  const sourceBox = (() => { try { return secretBoxFromEnv(process.env); } catch (e) { console.warn('[SOURCES]', e instanceof Error ? e.message : e); return null; } })();
+  let sourceStoreP: Promise<SourceStore> | null = null;
+  async function sourceStore(): Promise<SourceStore | null> {
+    if (!process.env.DATABASE_URL) return null;
+    sourceStoreP ??= (async () => { const s = createPostgresSourceStore(await pgPool()); await s.ensureSchema(); return s; })();
+    try { return await sourceStoreP; } catch (e) { sourceStoreP = null; throw e; }
+  }
+  /** The stores are created on first use (they need the database), so the parts that hold them get stand-ins that look them up per call. */
+  const lazy = <T extends object>(get: () => Promise<T | null>, what: string): T => new Proxy({} as T, {
+    get: (_t, prop) => {
+      if (prop === 'kind') return 'lazy';
+      if (typeof prop === 'symbol' || prop === 'then') return undefined;
+      return async (...args: unknown[]) => {
+        const real = await get();
+        if (!real) throw new Error(`${what} need Postgres: set DATABASE_URL on the server.`);
+        return (real as unknown as Record<string, (...a: unknown[]) => unknown>)[prop](...args);
+      };
+    },
+  });
+  const sourcesMediaBase = () => (process.env.MEDIA_SERVER_URL || '').trim().replace(/\/+$/, '');
+  const sourcesBuild = () => pathBuildOptionsFromEnv(SOURCES_SITE, process.env);
+  /** The grid's own build options, or null when this server has no grid login (a department-only deployment). */
+  const gridBuildOrNull = () => { try { const b = pathBuildOptionsFromEnv(healSite, process.env); b.credentials('cam01'); return b; } catch { return null; } };
+  /** The sources' paths, to be merged into any apply of the grid so the generated file keeps them. undefined when sources are not in use. */
+  async function sourcesExtra() {
+    const [profiles, sources] = await Promise.all([profileStore(), sourceStore()]);
+    if (!profiles || !sources) return undefined;
+    return sourcesMediaPlan({ profiles, sources, box: sourceBox, encoder: profileEncoder, build: sourcesBuild() });
+  }
+  const sourcesOnboarding = createOnboarding({
+    adapters: createDefaultAdapters({ site: healSite, source: gridSource, whepPort: Number(process.env.GRID_WHEP_PORT || 8889) }),
+    profiles: lazy<ProfileStore>(profileStore, 'Playback profiles'),
+    sources: lazy<SourceStore>(sourceStore, 'Camera sources'),
+    registry: createFirestoreRegistryWriter({
+      get db() { if (!registryDb) throw new Error('The Registry needs Firebase Admin (FIREBASE_SERVICE_ACCOUNT).'); return registryDb as never; },
+      timestamp: () => FieldValue.serverTimestamp(),
+      audit: async (e) => { if (registryDb) await writeRegistryAudit(registryDb, { ...e, source: 'api' }); },
+    }),
+    box: sourceBox, encoder: profileEncoder, mediaBase: sourcesMediaBase,
+  });
+  registerSourceRoutes(app, {
+    onboarding: sourcesOnboarding,
+    sources: lazy<SourceStore>(sourceStore, 'Camera sources'),
+    profileViews: async () => {
+      const store = await profileStore();
+      return store ? (await listViews(store, SOURCES_SITE, profileEncoder)).map((v) => ({ cameraId: v.cameraId, recipe: v.recipe, pathKind: v.pathKind, failure: v.failure, probedAt: v.probedAt })) : [];
+    },
+    requireAdmin: async (req, res) => (await authz.require(req, res, 'adapter.use'))?.uid ?? null,
+    unavailable: async () => (!process.env.DATABASE_URL ? 'Onboarding cameras through adapters keeps them in Postgres. Set DATABASE_URL on the server.' : !registryDb ? 'The Registry needs Firebase Admin (FIREBASE_SERVICE_ACCOUNT).' : null),
+    allowPrivate: process.env.ADAPTERS_ALLOW_PRIVATE === 'true',
+    keyConfigured: !!sourceBox,
+    applyMedia: mediaApiUrl ? async (dryRun) => {
+      const [profiles, sources] = await Promise.all([profileStore(), sourceStore()]);
+      if (!profiles || !sources) throw new Error('Onboarding cameras through adapters keeps them in Postgres. Set DATABASE_URL on the server.');
+      const grid = gridBuildOrNull();
+      return applySourcesMedia({
+        profiles, sources, box: sourceBox, encoder: profileEncoder, sourcesBuild: sourcesBuild(), grid: grid ? { site: healSite, build: grid } : null,
+        api: mediaApiUrl, pathsFile: generatedPathsFile(), dryRun,
+      });
+    } : undefined,
+  });
 
   // ---- Background tracking across all cameras (Feed > Full Panel; server/tracking.ts) ----
   // Any signed-in user (a guest in the local demo, MEDIA_ALLOW_GUESTS=true) may start one job. TRACKING_FAKE_FRAMES_DIR replaces the
   // cameras with a folder of images (<camera id>.jpg) so the whole path can be tested without the grid.
   async function requireSignedIn(req: express.Request, res: express.Response): Promise<boolean> {
-    if (process.env.MEDIA_ALLOW_GUESTS === 'true') return true;
-    const idToken = (req.header('Authorization') || '').replace(/^Bearer\s+/i, '');
-    if (!idToken || !registryDb) { res.status(401).json({ error: 'Sign-in required.' }); return false; }
-    try { await getAuth().verifyIdToken(idToken); return true; }
-    catch { res.status(401).json({ error: 'Sign-in could not be verified.' }); return false; }
+    return !!(await authz.require(req, res, 'tracking.run'));
   }
   const trackFakeDir = process.env.TRACKING_FAKE_FRAMES_DIR || '';
   registerTrackingRoutes(app, {

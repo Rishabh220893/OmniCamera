@@ -6,7 +6,7 @@ import { detectStreamType, unsupportedReason, deriveWhepCamId } from '../lib/str
 import { startWhep, captureWhepSnapshot } from '../lib/whepClient';
 import { captureHlsSnapshot } from '../lib/hlsSnapshot';
 import { getCachedSnapshot, setCachedSnapshot, hasCachedSnapshot } from '../lib/snapshotCache';
-import { useMediaConfig, mediaFailedCameras, gridCamId, mediaPlaylistUrl, mediaAuthHeader, noteMediaFailure, noteMediaPlaying } from '../lib/mediaServer';
+import { useMediaConfig, mediaFailedCameras, gridCamId, mediaPathId, mediaPlaylistUrl, mediaAuthHeader, noteMediaFailure, noteMediaPlaying } from '../lib/mediaServer';
 import { cn } from '../lib/utils';
 
 export type FeedStatus = 'connecting' | 'live' | 'error';
@@ -112,7 +112,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
   // A live tile that plays from the media server needs no grid login in the browser: the media server holds
   // it. So those tiles wait for the media config (instead of failing) and then connect without credentials.
   const credsEmpty = !streamAccessPassword || !streamAccessEmail;
-  const mediaWillServe = liveVideo && !!mediaCfg?.enabled && !!gridCamId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
+  const mediaWillServe = liveVideo && !!mediaCfg?.enabled && !!mediaPathId(camera.remoteStreamUrl) && !mediaFailedCameras.has(camera.id);
   const waitingForMediaConfig = liveVideo && mediaCfg === null && credsEmpty;
   const credsMissing = isRemote && streamType === 'hls' && credsEmpty && !mediaWillServe && !waitingForMediaConfig;
   const shouldConnect = shouldConnectProp && !credsMissing && !(isRemote && streamType === 'hls' && waitingForMediaConfig);
@@ -524,7 +524,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // Play from the media server when there is one: it pulls each camera once and serves any number of
     // viewers, so this tile adds no load to the grid or to this app's server. Safari's native HLS cannot
     // send the viewer login, and a camera whose media-server stream failed uses the app's proxy instead.
-    const mediaCamId = gridCamId(camera.remoteStreamUrl);
+    const mediaCamId = mediaPathId(camera.remoteStreamUrl);
     // Prefer hls.js wherever it runs: recent Chrome also plays HLS natively (canPlayType says 'maybe'), but the
     // native player cannot send the media server's login header, so it would silently bypass the media server.
     const nativeHls = !Hls.isSupported() && !!video.canPlayType('application/vnd.apple.mpegurl');
@@ -620,7 +620,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
     // Above the manifest and fragment stage timeouts combined
     // (A media-server camera can need longer: some grid cameras only send a keyframe every 20-40 s.)
     const watchdog = setTimeout(() => {
-      if (useMedia) noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail));
+      if (useMedia) noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail && gridCamId(camera.remoteStreamUrl)));
       scheduleReconnect('Timed out waiting for a real picture from this stream.');
     }, useMedia ? 150_000 : 60_000); // longer than the media server's own start timeout for a re-encode (120 s)
     const clearWatchdog = () => clearTimeout(watchdog);
@@ -685,7 +685,7 @@ export default function CameraFeed({ camera, isFocused, isCapturing, reportRefs,
           // request). Only after repeated failures, and only if this browser has a grid login for it, does the
           // camera switch to the app's own proxy.
           if (useMedia) {
-            const switched = noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail));
+            const switched = noteMediaFailure(camera.id, !!(streamAccessPassword && streamAccessEmail && gridCamId(camera.remoteStreamUrl)));
             scheduleReconnect(`Media server stream failed (${data.details}); ${switched ? 'using the direct route' : 'retrying'}.`);
             return;
           }

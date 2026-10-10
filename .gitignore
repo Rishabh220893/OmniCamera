@@ -18,3 +18,29 @@ media-server/bin/
 
 # Runner output (process logs, grabbed test frames)
 .demo-logs/
+
+# Model benchmark output and the frames fed to it (can show real camera footage)
+ai-benchmark-report/
+bench-frames/
+
+# Backups written by npm run clear-cameras (camera records)
+cameras-backup-*.json
+
+# Secrets and keys: never commit these (the repository is public)
+*.key
+*.crt
+*.pem
+*.pfx
+*.p12
+auto.crt
+auto.key
+.env.*
+!.env.example
+*service-account*.json
+*serviceAccount*.json
+scale.local
+demo.local
+
+# Live-grid test reports: their network captures contain the camera grid's login
+live-grid-report-*/
+live-grid-report-*.zip
