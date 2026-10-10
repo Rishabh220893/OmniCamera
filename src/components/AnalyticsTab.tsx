@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area
 } from 'recharts';
-import { ArrowLeft, ChevronLeft, ChevronRight, Download, Users, Truck } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Clock, Download, Users, Truck } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
 import { LogEntry, RoutePoint, TabId } from '../types';
 import { PlateSighting } from '../lib/plateTracking';
