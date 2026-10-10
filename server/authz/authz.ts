@@ -87,8 +87,14 @@ export function createAuthz(deps: AuthzDeps): Authz {
   }
 
   async function authenticate(req: Request, res: Response): Promise<Principal | null> {
-    if (deps.allowGuests) return { uid: 'demo', role: 'admin', departments: [ALL], source: 'guest' };
     const idToken = bearerToken(req);
+    if (deps.allowGuests) {
+      // The local demo lets people in without signing in, but someone who IS signed in keeps their own identity: their rules, events and
+      // incidents belong to their account, which is also what owns the cameras the analysis runs for. Only a request with no usable
+      // token is the shared guest 'demo'.
+      if (idToken && (!deps.ready || deps.ready())) { try { return await resolve(idToken); } catch { /* an invalid token falls back to guest */ } }
+      return { uid: 'demo', role: 'admin', departments: [ALL], source: 'guest' };
+    }
     if (!idToken || (deps.ready && !deps.ready())) {
       log({ uid: '', role: '', source: 'none', permission: 'sign-in', allowed: false, reason: idToken ? 'not configured' : 'no token', method: req.method, path: req.path });
       res.status(401).json({ error: 'Sign-in required.' });

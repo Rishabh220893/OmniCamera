@@ -204,9 +204,19 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
     try { return await executeInner(job); } finally { executing.delete(job.camera.id); }
   }
 
-  /** camera.offline / camera.online from the run history itself (no AI). The job carries the failure count, so any worker reports the change exactly once. */
+  // What this process last reported for each camera. A flaky grid makes a camera fail and recover over and over; without this every swing
+  // became an event (130 "offline" events in three hours). Offline is reported once until it has been reported online, and a camera
+  // that went online again is not reported offline for REPORT_GAP_MS; online is only reported after an offline.
+  const reported = new Map<string, { state: 'offline' | 'online'; at: number }>();
+  const REPORT_GAP_MS = 30 * 60_000;
+
+  /** camera.offline / camera.online from the run history itself (no AI). */
   function reportReachability(camera: WorkerCamera, state: 'offline' | 'online', summary: string, failures: number) {
     if (!deps.emitEvents) return;
+    const last = reported.get(camera.id);
+    if (state === 'offline' && last && (last.state === 'offline' || deps.now() - last.at < REPORT_GAP_MS)) return;
+    if (state === 'online' && last?.state !== 'offline') return;
+    reported.set(camera.id, { state, at: deps.now() });
     try {
       const ev = makeEvent({ type: `camera.${state}`, summary, severity: state === 'offline' ? 'warning' : 'info', data: { failedRuns: failures }, tags: ['reachability'], dedupeKey: state }, { source: 'analysis-worker', camera: { id: camera.id, name: camera.name, userId: camera.userId, department: camera.department, location: camera.location }, ts: new Date(deps.now()) });
       deps.emitEvents([ev]).catch((err) => deps.log.warn(`[ANALYSIS] Could not record the ${state} event for ${camera.name}:`, err));

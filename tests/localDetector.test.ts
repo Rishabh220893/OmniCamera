@@ -110,6 +110,30 @@ test('worker: a camera that keeps failing is reported offline once, and online o
   assert.equal(emitted.length, 2, 'no repeat once it is back');
 });
 
+test('worker: a camera that keeps flapping is not reported offline again within the gap, and online is only reported after an offline', async () => {
+  let t = 1_000_000;
+  let down = true;
+  const emitted: PlatformEvent[] = [];
+  const deps: WorkerDeps = {
+    now: () => t, subscribeCameras: () => () => {}, loadUserContext: async () => ({ knownFaces: [], watchlist: [] }),
+    grabFrame: async () => { if (down) throw new Error('Could not capture a frame'); return Buffer.from('f'); },
+    analyze: async () => ({ summary: 'ok' }), writeLog: async () => {}, writeSightings: async () => {}, updateCamera: async () => {}, sendWebhook: async () => {},
+    emitEvents: async (e) => { emitted.push(...e); }, log: { info() {}, warn() {}, error() {} },
+  };
+  const worker = createAnalysisWorker(deps, { concurrency: 1 });
+  const camera: WorkerCamera = { id: 'a', userId: 'u1', name: 'Gate', remoteStreamUrl: 'https://x.test/a', interval: 10, sensitivity: 5, peopleThreshold: 5, vehicleThreshold: 2, suspiciousRules: '', webhookUrl: '' };
+  worker._applyCameras([camera]);
+  const run = async (n: number, isDown: boolean) => { down = isDown; for (let k = 0; k < n; k++) { t += 60_000; worker._tick(); await worker._idle(); } };
+  await run(OFFLINE_AFTER_FAILURES + 1, true);   // offline reported
+  await run(1, false);                           // back online reported
+  await run(OFFLINE_AFTER_FAILURES + 1, true);   // fails again a few minutes later: still inside the gap
+  await run(1, false);
+  assert.deepEqual(emitted.map((e) => e.type), ['camera.offline', 'camera.online'], 'the second swing is not reported');
+  t += 31 * 60_000;
+  await run(OFFLINE_AFTER_FAILURES + 1, true);   // after the gap it is reported again
+  assert.deepEqual(emitted.map((e) => e.type), ['camera.offline', 'camera.online', 'camera.offline']);
+});
+
 // ---- reading the model's JSON ------------------------------------------------------------------------------------------
 
 import { parseModelJson } from '../server/analytics/modelJson.ts';

@@ -190,6 +190,17 @@ test('guest mode (local demo) is an admin named demo; not configured is 401 even
   });
 });
 
+test('guest mode: a signed-in person keeps their own identity (their rules and events are theirs), a bad token falls back to guest', async () => {
+  const accounts = { realuser: { claims: {}, doc: { role: 'admin' } } };
+  await serve(harness(accounts, { allowGuests: true }).authz, async (call) => {
+    const signedIn = await call('realuser', '/x/gateway.manage');
+    assert.deepEqual([signedIn.status, signedIn.json.uid, signedIn.json.source], [200, 'realuser', 'legacy'], 'not the shared demo user');
+    const bad = await call('forged-token', '/x/gateway.manage');
+    assert.deepEqual([bad.status, bad.json.uid, bad.json.source], [200, 'demo', 'guest']);
+    assert.equal((await call(null, '/x/gateway.manage')).json.uid, 'demo');
+  });
+});
+
 test('a log that throws never breaks the request', async () => {
   const { authz } = harness({ a: { claims: { role: 'viewer' } } }, { log: { record: () => { throw new Error('disk full'); } } });
   await serve(authz, async (call) => { assert.equal((await call('a', '/x/gateway.manage')).status, 403); });
