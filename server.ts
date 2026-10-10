@@ -21,6 +21,8 @@ import { createEventPipeline } from './server/events/pipeline';
 import { createWebhookService, type WebhookService } from './server/connectors/webhook/service';
 import { registerWebhookAdminRoutes, registerWebhookIngest } from './server/connectors/webhook/routes';
 import { registerVmsRoutes } from './server/connectors/vms/routes';
+import { createFederationService, type FederationService } from './server/federation/service';
+import { registerFederationAdminRoutes, registerFederationClientRoutes } from './server/federation/routes';
 import { recordingEnv } from './server/recording/env';
 import { createRecordingStore } from './server/recording/store';
 import { createS3Client } from './server/recording/s3';
@@ -329,6 +331,9 @@ async function startServer() {
   // which would read up to 25 MB of an unauthenticated body. It has its own 512 KB limit. The service behind it is created further down.
   const webhookRef: { service: WebhookService | null } = { service: null };
   if (process.env.WEBHOOK_ENABLED !== 'false') registerWebhookIngest(app, () => webhookRef.service);
+  // The federation client routes (API-key identities, event push, session leases) are public in the same way, with their own small limits.
+  const federationRef: { service: FederationService | null } = { service: null };
+  if (process.env.FEDERATION_ENABLED !== 'false') registerFederationClientRoutes(app, () => federationRef.service);
   app.use(express.json({ limit: '25mb', verify: captureRawBody }));
 
   // Test mode (TRACKING_FAKE_FRAMES_DIR, see scripts/fake-grid.mjs): there are no real cameras, so the routes that would talk to the grid
@@ -1415,6 +1420,19 @@ Analyze this context to answer user queries:
     webhookRef.service = webhookService;
     registerWebhookAdminRoutes(app, { service: webhookService, allow: async (req, res, permission) => { const p = await authz.require(req, res, permission); return p ? { uid: p.uid } : null; } });
     console.log(`[WEBHOOK] Receiver on at /api/ingest/webhook/<source>; ${webhookService.list().length} source(s).`);
+  }
+
+  // ---- Federation service: department/connector identities, quotas, session caps (server/federation, docs/federation-service.md) ----
+  if (process.env.FEDERATION_ENABLED !== 'false') {
+    const sessionCap = Number(process.env.FEDERATION_DEPARTMENT_SESSION_CAP);
+    const federation = createFederationService({
+      file: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'federation-clients.json'), emit: publishEvents,
+      departmentSessionCap: Number.isInteger(sessionCap) && sessionCap > 0 ? sessionCap : undefined,
+    });
+    await federation.load();
+    federationRef.service = federation;
+    registerFederationAdminRoutes(app, { service: federation, allow: async (req, res, permission) => { const p = await authz.require(req, res, permission); return p ? { uid: p.uid } : null; } });
+    console.log(`[FEDERATION] Client API on at /api/federation/*; ${federation.list().length} client(s).`);
   }
 
   // ---- Department systems (server/connectors/vms, docs/connectors-vms.md) ----
