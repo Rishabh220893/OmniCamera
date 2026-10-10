@@ -30,7 +30,8 @@ import { registerRecordingRoutes } from './server/recording/routes';
 import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
 import { eventScope, type Principal } from './server/authz/policy';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
-import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, isSafeCameraUrl } from './server/frameSource';
+import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, gridCameraId, isSafeCameraUrl } from './server/frameSource';
+import { createGridGuard, createRedisGridStore, GridRefusedError, PauseError } from './server/gridGuard';
 import { createAnalysisWorker, AnalysisWorker, WorkerCamera } from './server/analysisWorker';
 import { createAnprClient, AnprClient } from './server/anprClient';
 import { createMotionGate } from './server/frameGate';
@@ -188,6 +189,9 @@ const manifestLogAt = new Map<string, number>();
 // wrong password is never mistaken for someone else's limit.
 const HLS_COOLDOWN_MS = Math.max(10_000, Number(process.env.HLS_COOLDOWN_MS) || 5 * 60_000);
 const GRID_LIMIT_RE = /watch time limit|cooldown/i;
+// Keeps the analysis within the account's viewing-time allowance and pauses it while the grid refuses the account (server/gridGuard.ts).
+// GRID_GRABS_PER_MIN (default 10) limits how many grabs the analysis may start per minute.
+const gridGuard = createGridGuard({ perMinute: Number(process.env.GRID_GRABS_PER_MIN) || 10, cooldownMs: HLS_COOLDOWN_MS });
 const gridBlocks = new Map<string, { until: number; trips: number; message: string }>();
 const gridKey = (email: string, password: string) => `${email}\u0000${password}`;
 function gridBlockedFor(email: string, password: string): { retryAfterSec: number; message: string } | null {
@@ -196,6 +200,7 @@ function gridBlockedFor(email: string, password: string): { retryAfterSec: numbe
   return { retryAfterSec: Math.ceil((b.until - Date.now()) / 1000), message: b.message };
 }
 function tripGridBlock(email: string, password: string, source: string, message: string): number {
+  void gridGuard.trip(message, source); // also tell the analysis, which grabs from another process than the one serving this route
   const key = gridKey(email, password);
   const prev = gridBlocks.get(key);
   const trips = prev && Date.now() < prev.until + 60_000 ? prev.trips + 1 : 0;
@@ -1388,6 +1393,16 @@ Analyze this context to answer user queries:
     const connect = () => new IORedis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
     bus = createRedisBus(connect(), connect);
   } else bus = createMemoryBus();
+  // The grid guard's state is shared between server processes through Redis when it is configured (the worker that grabs and the
+  // server that shows the Health tab are different processes); without Redis it lives in this process.
+  if (process.env.REDIS_URL) {
+    try {
+      const { default: IORedis } = await import('ioredis');
+      const redis = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: 2 });
+      redis.on('error', () => { /* the guard keeps working in this process */ });
+      gridGuard.useStore(createRedisGridStore(redis));
+    } catch (e) { console.warn('[GRID] Could not share the grid guard through Redis, keeping it in this process:', e instanceof Error ? e.message : e); }
+  }
   const eventPipeline = await createEventPipeline({ bus, ingest: emitEvents });
   const publishEvents = (events: PlatformEvent[]) => eventPipeline.publish(events);
   console.log(`[EVENTS] Events go through the ${bus.kind} bus to alerting.`);
@@ -1545,7 +1560,22 @@ Analyze this context to answer user queries:
             if (!rec) throw new Error('This camera\'s stored source is missing.');
             url = openSourceAddress(rec, sourceBox).rtspUrl;
           }
-          return grabFrame({ url, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` });
+          // A grid camera goes through the guard: grabs per minute are limited, and while the grid refuses the account nothing is asked of it.
+          const viaGrid = !camera.sourceId && gridCameraId(url) !== null;
+          if (viaGrid) await gridGuard.take();
+          try {
+            const frame = await grabFrame({ url, localBaseUrl: `http://localhost:${PORT}`, creds, gridRtspHost: `${SENTINEL_GRID_HOST}:8554` });
+            if (viaGrid) void gridGuard.ok();
+            return frame;
+          } catch (err) {
+            const blocked = viaGrid ? gridBlockedFor(creds.email, creds.password) : null;
+            if (err instanceof GridRefusedError || blocked) {
+              const why = err instanceof GridRefusedError ? err.message : blocked!.message;
+              const secs = await gridGuard.trip(why, 'analysis');
+              throw new PauseError(`The camera grid is refusing this account (${why}); not asking it again for ${secs}s.`, secs * 1000, `Paused: the camera grid is refusing this account (${why}). Analysis resumes by itself.`);
+            }
+            throw err;
+          }
         },
         analyze: ({ imageBase64, camera, knownFaces, watchlist }) => analyzeFrame({ imageBase64, knownFaces, watchlist, camera }),
         writeLog: (doc) => eventStore.writeLog(doc),
@@ -1674,6 +1704,12 @@ Analyze this context to answer user queries:
       if (!plate) { res.status(400).json({ error: 'Plate required.' }); return; }
       res.json({ sightings: await pgEvents.querySightings(userId, plate, Number(req.query.limit) || 200) });
     } catch (err) { console.error('[EVENTS] sighting query failed:', err); res.status(500).json({ error: 'Could not read events.' }); }
+  });
+
+  // The camera grid's state for the Health tab: is the account being refused, and how much of the grab allowance is used.
+  app.get('/api/grid/status', async (req, res) => {
+    if (!(await authz.require(req, res, 'event.view'))) return;
+    res.status(200).json(await gridGuard.status());
   });
 
   app.get('/api/analysis/config', async (_req, res) => {
