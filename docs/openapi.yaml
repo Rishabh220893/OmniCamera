@@ -783,6 +783,18 @@ paths:
         - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }
       responses:
         '200': { description: Alerts, content: { application/json: { schema: { type: object, properties: { alerts: { type: array, items: { $ref: '#/components/schemas/Alert' } } } } } } }
+  /api/incidents:
+    get:
+      summary: Incidents: events that belong together across cameras, sources and departments
+      description: Needs `alert.view`. Visibility as for events (organisation-wide admin all; a department's people the incidents touching it; others incidents on their own cameras). Also `GET /api/incidents/{id}` (the incident, the events in it the caller may see, and how many are hidden), `POST /api/incidents/{id}/close`, `/reopen`, `/notes` {text} (need `alert.handle`). See docs/incidents.md.
+      tags: [Alerts]
+      security: [{ adminToken: [] }]
+      parameters:
+        - { name: state, in: query, schema: { type: string, enum: [open, closed] } }
+        - { name: before, in: query, schema: { type: string, format: date-time } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        '200': { description: Incidents, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
   /api/alerts/{id}/acknowledge:
     post:
       summary: Acknowledge an alert

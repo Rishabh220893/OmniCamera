@@ -65,7 +65,7 @@ Verdicts: **have** = built and tested (with fakes where stated); **partial**; **
 | A5 | **Shared multi-department data model** (department-owned cameras/events, visibility by policy) | all | **built** (2026-10-10): departments, username+password users, camera allotment, department-scoped cameras/events/alerts, administrators see all events, department alert rules, department faces/watchlist/logs (`docs/admin-users.md`); stores tested on real Postgres, rules in the Firebase emulator; **not run in a browser against Firebase**; plate sightings still per-owner |
 | A6 | **Event bus** interface (publish/subscribe/replay); in-process, Redis Streams, **Kafka** | all (Kafka: 1) | **built, and now carries every producer** (analysis worker, gateways, runners, webhooks; step 3): interface, conformance suite, in-process (tested); Redis Streams written, **never run**; Kafka not written |
 | A7 | **Federation service**: connector/department identities, routing, quotas, sharing policy, session caps | 2, 3 | missing |
-| A8 | **Correlation engine** and incidents | 3 (and 1 for tracking) | missing |
+| A8 | **Correlation engine** and incidents | 3 (and 1 for tracking) | **built** (docs/incidents.md): three rules (one plate on 2+ cameras, watchlist hit, two systems on one camera), department-scoped visibility, Events > Incidents screen; tested with synthetic events, the Postgres store test not yet run, never run on real cameras |
 | A9 | **Search API** (events, sightings, tags; Postgres, engine hidden) and tag editing | 1, 2, 3 | missing |
 | A10 | **Video wall** layouts and session control | all | missing |
 | A11 | **Dashboard**: search, alerts, rules, incidents, health, report | all | missing (largest) |

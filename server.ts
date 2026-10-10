@@ -71,6 +71,9 @@ import { captureRawBody, registerGatewayRoutes } from './server/gateway/routes';
 import type { AssignedCamera } from './server/gateway/protocol';
 import { createChannelRegistry, createLogChannel, createWebhookChannel } from './server/events/channels';
 import { registerEventRoutes } from './server/events/routes';
+import { createCorrelator } from './server/incidents/correlator';
+import { registerIncidentRoutes } from './server/incidents/routes';
+import { createMemoryIncidentStore, createPostgresIncidentStore, type IncidentStore } from './server/incidents/store';
 import { createMemoryAlertStore, createPostgresAlertStore, type AlertStore } from './server/events/store';
 import { registerAdapterRoutes } from './server/adapterRoutes';
 import { pathBuildOptionsFromEnv } from './server/mediaPlan';
@@ -1340,24 +1343,36 @@ Analyze this context to answer user queries:
 
   // Kept in Postgres when DATABASE_URL is set, else in memory (lost on restart). Each signed-in user sees only their own.
   let alertStore: AlertStore;
+  let incidentStore: IncidentStore = createMemoryIncidentStore();
   if (process.env.DATABASE_URL) {
     const { Pool } = await import('pg');
     const alertPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 3, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
     alertStore = createPostgresAlertStore(alertPool);
+    const pgIncidents = createPostgresIncidentStore(alertPool);
+    try { await pgIncidents.ensureSchema(); incidentStore = pgIncidents; }
+    catch (e) { console.warn('[INCIDENTS] Could not prepare the incident table, keeping incidents in memory:', e instanceof Error ? e.message : e); }
     try { await alertStore.ensureSchema(); }
     catch (e) { console.warn('[ALERTS] Could not prepare the alert tables, keeping alerts in memory:', e instanceof Error ? e.message : e); alertStore = createMemoryAlertStore(); }
   } else alertStore = createMemoryAlertStore();
   const alertChannels = createChannelRegistry([createWebhookChannel({ allowPrivate: process.env.ALERT_WEBHOOK_ALLOW_PRIVATE === 'true' }), createLogChannel()]);
   const alertEngine = createAlertEngine({ store: alertStore, channels: alertChannels });
+  // Incidents: events that belong together (one plate on several cameras, a watchlist hit, two systems agreeing on a camera). Runs after the events are stored.
+  const correlator = createCorrelator({ events: alertStore, store: incidentStore });
+  const ingestAndCorrelate = async (events: PlatformEvent[]) => {
+    const result = await alertEngine.ingest(events);
+    await correlator.observe(events).catch((e) => console.warn('[INCIDENTS] Correlation failed:', e instanceof Error ? e.message : e));
+    return result;
+  };
+  console.log(`[INCIDENTS] Incident store: ${incidentStore.kind}.`);
   console.log(`[ALERTS] Alert store: ${alertStore.kind}.`);
 
   // ---- Outside systems: VAHAN, SARTHI, eGujCop (server/connectors, docs/connectors.md) ----
   // Only mock connectors exist; CONNECTORS=mock turns them on. Plate reads are then checked after they have been stored and alerted.
   const connectorHub = process.env.CONNECTORS === 'mock' ? createConnectorHub(createMockConnectors()) : null;
-  const plateEnricher = connectorHub ? createPlateEnricher({ hub: connectorHub, emit: (events) => alertEngine.ingest(events) }) : null;
+  const plateEnricher = connectorHub ? createPlateEnricher({ hub: connectorHub, emit: (events) => ingestAndCorrelate(events) }) : null;
   const emitEvents = plateEnricher
-    ? plateEnricher.wrapEmit((events) => alertEngine.ingest(events))
-    : async (events: PlatformEvent[]) => { await alertEngine.ingest(events); };
+    ? plateEnricher.wrapEmit((events) => ingestAndCorrelate(events))
+    : async (events: PlatformEvent[]) => { await ingestAndCorrelate(events); };
   if (connectorHub) {
     console.log('[CONNECTORS] Mock VAHAN / SARTHI / eGujCop are on: plate reads are checked and findings are marked [MOCK].');
     registerConnectorRoutes(app, { hub: connectorHub, allow: async (req, res, permission) => !!(await authz.require(req, res, permission)) });
@@ -1410,6 +1425,16 @@ Analyze this context to answer user queries:
     },
     // People whose role is a claim set by an administrator (not the old self-set field) see their departments' events, alerts and rules,
     // whoever owns the cameras; an organisation-wide administrator ('*') sees all of them. Everyone else sees their own, as before.
+    departmentScope: async (req) => eventScope(req.res?.locals.principal as Principal | undefined),
+  });
+
+  registerIncidentRoutes(app, {
+    store: incidentStore, events: alertStore,
+    requireUser: async (req, res, permission) => {
+      const p = await authz.require(req, res, permission);
+      if (p) res.locals.principal = p;
+      return p?.uid ?? null;
+    },
     departmentScope: async (req) => eventScope(req.res?.locals.principal as Principal | undefined),
   });
 

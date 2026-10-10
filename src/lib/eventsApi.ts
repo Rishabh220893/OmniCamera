@@ -61,3 +61,18 @@ export const eventsApi = {
 export const ruleInputOf = (r: RuleRow, patch: Partial<RuleInput> = {}): RuleInput => ({
   name: r.name, enabled: r.enabled, match: r.match, throttle: r.throttle, channels: r.channels, ...(r.schedule ? { schedule: r.schedule } : {}), ...patch,
 });
+
+// ---- incidents -----------------------------------------------------------------------------------------------------------
+
+export interface IncidentRow {
+  id: string; kind: 'plate_trail' | 'watchlist' | 'multi_source'; key: string; title: string; severity: Severity; state: 'open' | 'closed';
+  eventIds: string[]; eventCount: number; cameraIds: string[]; cameraNames: string[]; departments: string[]; crossDepartment: boolean;
+  firstAt: string; lastAt: string; createdAt: string; closedAt?: string; closedBy?: string; notes: Array<{ text: string; by: string; at: string }>;
+}
+export const incidentsApi = {
+  list: (state?: IncidentRow['state']) => call<{ incidents: IncidentRow[] }>('/api/incidents' + qs({ state, limit: '100' })).then((r) => r.incidents),
+  detail: (id: string) => call<{ incident: IncidentRow; events: EventRow[]; hiddenEvents: number }>(`/api/incidents/${encodeURIComponent(id)}`),
+  close: (id: string) => call<{ incident: IncidentRow }>(`/api/incidents/${encodeURIComponent(id)}/close`, { method: 'POST', body: {} }).then((r) => r.incident),
+  reopen: (id: string) => call<{ incident: IncidentRow }>(`/api/incidents/${encodeURIComponent(id)}/reopen`, { method: 'POST', body: {} }).then((r) => r.incident),
+  addNote: (id: string, text: string) => call<{ incident: IncidentRow }>(`/api/incidents/${encodeURIComponent(id)}/notes`, { method: 'POST', body: { text } }).then((r) => r.incident),
+};
