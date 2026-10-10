@@ -10,6 +10,23 @@ import type { Analyzer, FinalizeContext, Finalizer } from './types';
 
 export type GenerateFn = (params: { contents: { parts: unknown[] }; config?: Record<string, unknown> }) => Promise<{ text?: string }>;
 
+const STRINGS = { type: 'ARRAY', items: { type: 'STRING' } } as const;
+const SCENE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    summary: { type: 'STRING' },
+    counts: { type: 'OBJECT', properties: { people: { type: 'NUMBER' }, vehicles: { type: 'NUMBER' }, other: { type: 'NUMBER' } }, required: ['people', 'vehicles', 'other'] },
+    brands: STRINGS,
+    people_identified: STRINGS,
+    alerts: STRINGS,
+    isUnusual: { type: 'BOOLEAN' },
+    isUnusualReason: { type: 'STRING' },
+    detected_plates: STRINGS,
+    sentiment: { type: 'STRING', enum: ['calm', 'neutral', 'tense', 'critical'] },
+  },
+  required: ['summary', 'counts', 'brands', 'people_identified', 'alerts', 'isUnusual', 'detected_plates', 'sentiment'],
+} as const;
+
 export function createGeminiSceneAnalyzer(deps: { generate: GenerateFn; log?: Pick<Console, 'log'> }): Analyzer {
   const log = deps.log ?? console;
   return {
@@ -86,7 +103,9 @@ export function createGeminiSceneAnalyzer(deps: { generate: GenerateFn; log?: Pi
             },
           ],
         },
-        config: { responseMimeType: 'application/json' },
+        // A response schema makes Gemini return valid JSON of exactly this shape (the cheap models sometimes slipped on busy frames);
+        // other providers ignore it. parseModelJson below is the second line of defence.
+        config: { responseMimeType: 'application/json', responseSchema: SCENE_SCHEMA },
       });
       return { fields: parseModelJson(response.text) as Partial<AnalysisResult> };
     },

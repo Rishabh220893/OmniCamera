@@ -173,7 +173,9 @@ test('parity: the Gemini prompt is exactly the one analyzeFrame sent (fixture ta
     assert.deepEqual(parts.slice(0, 1 + f.length + 1).map((p) => p.text ?? (p.inlineData ? 'img' : '?')), ['KNOWN INDIVIDUALS REFERENCE IMAGES (If provided):', ...f.map(() => 'img'), 'MAIN CAMERA FEED FRAME TO ANALYZE:']);
     assert.equal(parts[1 + f.length + 1].inlineData.data, FRAME.toString('base64'));
     if (f.length) assert.deepEqual(parts.slice(1, 1 + f.length).map((x) => x.inlineData.data), f.map((x) => (x.imageData.includes(',') ? x.imageData.split(',')[1] : x.imageData)), 'a data: URL prefix is stripped from face images');
-    assert.deepEqual(seen.config, { responseMimeType: 'application/json' });
+    assert.equal(seen.config.responseMimeType, 'application/json');
+    assert.equal(seen.config.responseSchema.type, 'OBJECT', 'a response schema asks Gemini for valid JSON of the log shape');
+    assert.deepEqual(Object.keys(seen.config).sort(), ['responseMimeType', 'responseSchema']);
   }
   const many = Array.from({ length: 9 }, (_, i) => ({ name: `P${i}`, imageData: 'AA' }));
   const sevenFaces = (await capture({ id: 'c', name: 'x' }, many)).contents.parts as any[];
