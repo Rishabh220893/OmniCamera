@@ -14,6 +14,7 @@
     "clear-cameras": "tsx scripts/clear-cameras.ts",
     "rotate-source-key": "tsx scripts/rotate-source-key.ts",
     "evidence-key": "tsx scripts/evidence-key.ts",
+    "edge-recording-config": "tsx scripts/edge-recording-config.ts",
     "test:rules": "firebase emulators:exec --only firestore --project demo-omnisee \"node --import tsx --test tests/firestoreRules.test.ts\"",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",

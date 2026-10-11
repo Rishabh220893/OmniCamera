@@ -27,6 +27,7 @@ import { createFederationService, type FederationService } from './server/federa
 import { registerReportRoutes } from './server/reports/routes';
 import { registerTrailRoutes } from './server/trail/routes';
 import { createWallService } from './server/wall/service';
+import { createClipRequestStore, registerClipRoutes, registerClipUpload, type ClipRoutesContext } from './server/gateway/clips';
 import { registerWallRoutes } from './server/wall/routes';
 import { createRedisUsageStore, type UsageStore } from './server/federation/usageStore';
 import { registerFederationAdminRoutes, registerFederationClientRoutes } from './server/federation/routes';
@@ -38,7 +39,7 @@ import { createHoldStore, createPolicyStore, runRetention } from './server/recor
 import { createDiskWatch, readDisk, signingKeyFromEnv } from './server/recording/evidence';
 import { registerRecordingRoutes } from './server/recording/routes';
 import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
-import { eventScope, type Principal } from './server/authz/policy';
+import { decide, eventScope, type Principal } from './server/authz/policy';
 import { getFirestore, FieldValue, Firestore } from 'firebase-admin/firestore';
 import { checkFfmpeg, extractFrameWithFfmpeg, extractFrameDetailed, grabFrame, gridCameraId, isSafeCameraUrl } from './server/frameSource';
 import { createGridGuard, createRedisGridStore, GridRefusedError, PauseError } from './server/gridGuard';
@@ -77,7 +78,7 @@ import { applySourcesMedia } from './server/sources/apply';
 import { openSourceAddress } from './server/sources/address';
 import { createAlertEngine } from './server/events/alertEngine';
 import { makeEvent, type PlatformEvent } from './server/events/schema';
-import { createFirestoreGatewayDocs, createGatewayCentral } from './server/gateway/central';
+import { createFirestoreGatewayDocs, createGatewayCentral, type GatewayCentral } from './server/gateway/central';
 import { captureRawBody, registerGatewayRoutes } from './server/gateway/routes';
 import type { AssignedCamera } from './server/gateway/protocol';
 import { createChannelRegistry, createEmailChannel, createLogChannel, createRecordingHoldChannel, createSmsChannel, createSmtpSender, createWebhookChannel } from './server/events/channels';
@@ -341,6 +342,9 @@ async function startServer() {
   const webhookRef: { service: WebhookService | null } = { service: null };
   if (process.env.WEBHOOK_ENABLED !== 'false') registerWebhookIngest(app, () => webhookRef.service);
   // The federation client routes (API-key identities, event push, session leases) are public in the same way, with their own small limits.
+  // Central clip fetch from regional gateways (server/gateway/clips.ts): the gateway uploads a clip here; it is filed as an evidence export.
+  const clipCtxRef: { ctx: ClipRoutesContext | null } = { ctx: null };
+  registerClipUpload(app, () => clipCtxRef.ctx);
   const federationRef: { service: FederationService | null } = { service: null };
   if (process.env.FEDERATION_ENABLED !== 'false') registerFederationClientRoutes(app, () => federationRef.service);
   app.use(express.json({ limit: '25mb', verify: captureRawBody }));
@@ -1324,6 +1328,7 @@ Analyze this context to answer user queries:
   const recEnv = recordingEnv(process.env);
   // Late-bound: the recording block comes before the event bus exists, but the disk watch and the hold channel need both.
   const lateEmit: { fn: ((events: PlatformEvent[]) => Promise<unknown>) | null } = { fn: null };
+  const clipGateways: { ready: boolean; central: GatewayCentral | null } = { ready: false, central: null };
   let recordingHolds: ReturnType<typeof createHoldStore> | null = null;
   if (recEnv && registryDb) {
     const db = registryDb;
@@ -1336,6 +1341,32 @@ Analyze this context to answer user queries:
     recordingHolds = recHolds;
     // Export manifests are signed when EVIDENCE_SIGNING_KEY is set (npm run evidence-key makes one); otherwise they are hashed but unsigned.
     const evidenceKey = (() => { try { return signingKeyFromEnv(process.env); } catch (e) { console.warn('[RECORDING]', e instanceof Error ? e.message : e); return null; } })();
+    // Clips cut at a regional gateway and sent here become evidence exports in the same folder; they need the gateway service, which is set up later.
+    clipGateways.ready = true;
+    const clipCtx: ClipRoutesContext = {
+      store: createClipRequestStore({ file: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'gateway-clips.json') }),
+      exportsDir: recEnv.exportsDir, signing: evidenceKey,
+      access: async (req, res, permission, cameraId) => {
+        const p = await authz.authenticate(req, res);
+        if (!p) return null;
+        let department: string | undefined, owner = true;
+        if (cameraId) {
+          const c = (await db.collection('cameras').doc(cameraId).get()).data();
+          if (!c) { res.status(404).json({ error: 'No such camera.' }); return null; }
+          owner = c.userId === p.uid;
+          department = typeof c.departmentId === 'string' ? c.departmentId : typeof c.department === 'string' ? c.department : undefined;
+        }
+        if (!decide(p, permission, cameraId && !owner ? { department } : undefined).allowed) { res.status(403).json({ error: 'You cannot do that.' }); return null; }
+        return { uid: p.uid };
+      },
+      gateways: {
+        exists: async (id) => !!(await clipGateways.central?.list())?.some((g) => g.id === id),
+        lookup: (id) => clipGateways.central?.lookup(id) ?? null,
+        refresh: async () => { await clipGateways.central?.refresh(); },
+      },
+    };
+    clipCtxRef.ctx = clipCtx;
+    registerClipRoutes(app, clipCtx);
     console.log(`[RECORDING] Evidence manifests are ${evidenceKey ? `signed (key ${evidenceKey.keyId})` : 'not signed (EVIDENCE_SIGNING_KEY is not set)'}.`);
     registerRecordingRoutes(app, {
       store: recStore, policies: recPolicies, holds: recHolds, exportsDir: recEnv.exportsDir, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays, signing: evidenceKey,
@@ -1751,6 +1782,7 @@ Analyze this context to answer user queries:
         }, { source: 'gateway-monitor', camera: { id: g.id, name: `Gateway ${g.name}`, userId: g.ownerId }, ts: new Date() })]).catch((e) => console.warn('[GATEWAY] could not record a state change:', e));
       },
     });
+    clipGateways.central = gatewayCentral;
     gatewayCentral.ready().catch((e) => console.warn('[GATEWAY] could not load the gateway list:', e instanceof Error ? e.message : e));
     setInterval(() => gatewayCentral.sweep(), 10_000).unref();
     registerGatewayRoutes(app, { central: gatewayCentral, requireAdmin: requireAdminUid });

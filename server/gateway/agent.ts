@@ -8,6 +8,12 @@
 import type { AssignedCamera, AssignmentResponse, HeartbeatRequest, HeartbeatResponse, IngestResponse, OutboxItem, UserContextResponse } from './protocol';
 import { signRequest } from './protocol';
 import type { Outbox } from './outbox';
+import { createReadStream } from 'node:fs';
+import { Readable } from 'node:stream';
+
+/** A clip the centre wants cut from this gateway's own recordings (server/gateway/clips.ts). */
+export interface ClipRequestForGateway { id: string; cameraId: string; from: string; to: string; reason: string; maxSeconds: number }
+export interface ClipDetails { sha256: string; bytes: number; actualFrom: string; durationSec: number; segments: unknown[]; gaps: unknown[]; holdId?: string }
 
 export type LinkState = 'online' | 'degraded' | 'offline';
 
@@ -61,6 +67,12 @@ export interface Agent {
   onCameras(cb: (cameras: AssignedCamera[]) => void): () => void;
   userContext(userId: string, departmentId?: string): Promise<UserContextResponse>;
   status(): AgentStatus;
+  /** Clip requests waiting for this gateway (taking them marks them as being worked on). */
+  clipRequests(): Promise<ClipRequestForGateway[]>;
+  postClipDetails(id: string, d: ClipDetails): Promise<void>;
+  failClip(id: string, error: string): Promise<void>;
+  /** Sends the cut clip. The signature covers its SHA-256; the centre checks the bytes against it. */
+  uploadClip(id: string, file: string, sha256: string, bytes: number): Promise<void>;
 }
 
 class CentralError extends Error {
@@ -203,6 +215,30 @@ export function createAgent(o: AgentOptions): Agent {
     async userContext(userId, departmentId) {
       try { const { json } = await call<UserContextResponse>('GET', `/api/gateway/user-context?userId=${encodeURIComponent(userId)}${departmentId ? `&departmentId=${encodeURIComponent(departmentId)}` : ''}`); ok(); return json!; }
       catch (e) { bad(e); throw e; }
+    },
+    async clipRequests() {
+      try { const { json } = await call<{ requests: ClipRequestForGateway[] }>('GET', '/api/gateway/clip-requests'); ok(); return json?.requests ?? []; }
+      catch (e) { bad(e); throw e; }
+    },
+    async postClipDetails(id, d) { try { await call('POST', `/api/gateway/clip-requests/${encodeURIComponent(id)}/meta`, d); ok(); } catch (e) { bad(e); throw e; } },
+    async failClip(id, error) { try { await call('POST', `/api/gateway/clip-requests/${encodeURIComponent(id)}/failed`, { error }); ok(); } catch (e) { bad(e); throw e; } },
+    async uploadClip(id, file, sha256, bytes) {
+      const pathAndQuery = `/api/gateway/clip-requests/${encodeURIComponent(id)}/file`;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const headers = { 'Content-Type': 'video/mp4', 'Content-Length': String(bytes), 'X-Clip-SHA256': sha256, ...signRequest({ gatewayId: o.gatewayId, secret: o.secret, method: 'PUT', path: pathAndQuery, body: sha256, now: now() + clockOffsetMs }) };
+        let res: Response;
+        try { res = await doFetch(base + pathAndQuery, { method: 'PUT', headers, body: Readable.toWeb(createReadStream(file)) as unknown as BodyInit, duplex: 'half', signal: AbortSignal.timeout(Math.max(timeoutMs, 30 * 60_000)) } as RequestInit); }
+        catch (e) { const err = new CentralError(`could not reach the centre: ${(e as { cause?: { code?: string } }).cause?.code ?? (e instanceof Error ? e.message : String(e))}`, 0); bad(err); throw err; }
+        if (res.status === 401) {
+          const j = (await res.json().catch(() => ({}))) as { reason?: string; serverTime?: number; error?: string };
+          if (j.reason === 'clock' && typeof j.serverTime === 'number' && attempt === 0) { clockOffsetMs = j.serverTime - now(); continue; }
+          const err = new CentralError(j.error ?? 'the centre refused the upload', 401, j.reason); bad(err); throw err;
+        }
+        if (!res.ok) { const j = (await res.json().catch(() => ({}))) as { error?: string }; const err = new CentralError(j.error ?? `the centre answered ${res.status}`, res.status); bad(err); throw err; }
+        ok();
+        return;
+      }
+      throw new CentralError('clock could not be corrected', 401, 'clock');
     },
     status: () => ({ link: linkState(), lastSuccessAt, consecutiveFailures: failures, lastError, unauthorized, clockOffsetMs: Math.round(clockOffsetMs), sent, rejected, assignedCameras: cams.length }),
   };

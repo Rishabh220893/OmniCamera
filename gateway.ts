@@ -12,6 +12,8 @@
  *              GATEWAY_OUTBOX_MAX_MB (200)   GATEWAY_OUTBOX_MAX_DAYS (7)   GATEWAY_STATUS_PORT (off; local status page on 127.0.0.1)
  *              ANALYSIS_CONCURRENCY (4)   ANALYSIS_GATE=off   ANALYZERS_OFF=camera-tamper,anpr-plates   ANPR_SERVICE_URL / ANPR_API_KEY
  *              STREAM_EMAIL / STREAM_PASSWORD / GATEWAY_GRID_RTSP_HOST  (only for cameras on the camera grid)
+ *   recording at the edge (docs/regional-gateway.md, "Recorded video"): GATEWAY_RECORDINGS_DIR (where this region's media server writes segments;
+ *              the centre can then ask for clips of them) GATEWAY_RECORDINGS_KEEP_DAYS (7) RECORDINGS_NAME_TIME (local|utc)
  */
 import http from 'node:http';
 import path from 'node:path';
@@ -24,6 +26,9 @@ import { grabFrame } from './server/frameSource';
 import { createAgent } from './server/gateway/agent';
 import { openOutbox } from './server/gateway/outbox';
 import { createGatewayRuntime } from './server/gateway/runtime';
+import { createClipWorker } from './server/gateway/clipWorker';
+import { createRecordingStore } from './server/recording/store';
+import { createHoldStore, runRetention } from './server/recording/retention';
 
 const need = (k: string) => { const v = process.env[k]; if (!v) { console.error(`${k} is required (see the header of gateway.ts).`); process.exit(1); } return v; };
 const centralUrl = need('CENTRAL_URL'), gatewayId = need('GATEWAY_ID'), secret = need('GATEWAY_SECRET');
@@ -60,6 +65,22 @@ runtime = createGatewayRuntime({
 });
 agent.start();
 runtime.start();
+
+// Recording at the edge: the footage stays here; the centre asks for a clip when it needs one, and this gateway cuts and sends it.
+let clips: ReturnType<typeof createClipWorker> | null = null;
+let retentionTimer: ReturnType<typeof setInterval> | null = null;
+if (process.env.GATEWAY_RECORDINGS_DIR) {
+  const store = createRecordingStore({ hotDir: path.resolve(process.env.GATEWAY_RECORDINGS_DIR), nameTime: process.env.RECORDINGS_NAME_TIME === 'utc' ? 'utc' : 'local' });
+  const holds = createHoldStore(path.join(dataDir, 'holds.json'));
+  const keepDays = Math.max(1, Number(process.env.GATEWAY_RECORDINGS_KEEP_DAYS) || 7);
+  clips = createClipWorker({ agent, store, holds, workDir: path.join(dataDir, 'clips'), log: console });
+  clips.start();
+  const retention = () => runRetention({ store, policyFor: () => ({ mode: 'continuous', keepDays }), holds }).then((r) => { if (r.deleted || r.errors) console.log(`[GATEWAY] retention: deleted ${r.deleted}, kept for holds ${r.heldKept}, errors ${r.errors}`); }).catch((e) => console.warn('[GATEWAY] retention failed:', e instanceof Error ? e.message : e));
+  setTimeout(retention, 60_000).unref();
+  retentionTimer = setInterval(retention, 3_600_000);
+  retentionTimer.unref();
+  console.log(`[GATEWAY] Recording at the edge is on: ${process.env.GATEWAY_RECORDINGS_DIR}, kept ${keepDays} day(s); the centre can ask for clips.`);
+}
 console.log(`[GATEWAY] ${gatewayId} started: centre ${centralUrl}, data ${dataDir}, concurrency ${concurrency}.`);
 
 const statusPort = Number(process.env.GATEWAY_STATUS_PORT) || 0;
@@ -74,6 +95,7 @@ if (statusPort) {
 async function shutdown() {
   console.log('[GATEWAY] stopping...');
   runtime.stop();
+  clips?.stop();
   try { await Promise.race([agent.flushOnce(), new Promise((r) => setTimeout(r, 3000))]); } catch { /* whatever is left stays in the outbox for the next start */ }
   agent.stop();
   process.exit(0);

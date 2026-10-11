@@ -56,7 +56,7 @@ export function verifyManifest(manifest: unknown, sig: Pick<ManifestSignature, '
 
 // ---- chain of custody ------------------------------------------------------------------------------------------------------------------
 
-export type CustodyAction = 'exported' | 'downloaded' | 'verified' | 'held' | 'released';
+export type CustodyAction = 'exported' | 'fetched' | 'downloaded' | 'verified' | 'held' | 'released';
 export interface CustodyEntry { at: string; by: string; action: CustodyAction; detail?: string; prev: string; hash: string }
 
 const GENESIS = '0'.repeat(64);
