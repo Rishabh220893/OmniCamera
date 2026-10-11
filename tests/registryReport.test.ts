@@ -40,3 +40,12 @@ test('gap report: missing metadata is listed per camera; ageing and unlocated ar
   assert.ok(csv.includes("'=HYPERLINK"), 'a camera name that starts with = is kept as text');
   assert.ok(csv.includes('Ageing') && csv.includes('Incomplete metadata') && csv.includes('Uncovered zone'));
 });
+
+test('coverage rule: a square counts as covered when any part of it is within the radius of a camera, so a camera inside a large square covers it', () => {
+  const state = [cam('a', { location: { lat: 23.0225, lng: 72.5714 } }), cam('b', { location: { lat: 21.1702, lng: 72.8311 } }), cam('c', { location: { lat: 22.3039, lng: 70.8022 } }), cam('d', { location: { lat: 22.3072, lng: 73.1812 } })];
+  const z = findUncoveredZones(state, 300);
+  assert.ok(z.cellMeters > 1000, 'a State-wide area gets large squares');
+  assert.ok(z.coveredPercent > 0, 'the squares that hold a camera are covered (the old rule counted none of them)');
+  assert.equal(z.zones.length, z.uncoveredTotal, 'every uncovered square is returned, so the map can draw all of them');
+  assert.equal(z.cellsChecked - z.uncoveredTotal >= 4 && z.cellsChecked - z.uncoveredTotal <= 16, true, `about one covered square per camera (${z.cellsChecked - z.uncoveredTotal})`);
+});

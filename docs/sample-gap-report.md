@@ -11,7 +11,7 @@ Generated 2026-10-11 from `docs/sample-cameras.csv` (12 cameras) by `npm run reg
 | Offline or degraded | 4 |
 | Ageing (installed more than 5 years ago) | 5 |
 | With incomplete metadata | 2 |
-| Uncovered squares (no camera within 300 m) | 2430 of 2520 (96.4%) |
+| Uncovered squares (no camera within 300 m) | 2351 of 2520 (93.3%) |
 
 ## Cameras by department (fewest first)
 
@@ -52,7 +52,7 @@ Generated 2026-10-11 from `docs/sample-cameras.csv` (12 cameras) by `npm run reg
 
 ## Uncovered zones
 
-The area the located cameras span (their bounding box plus one radius) was cut into 2520 squares of 170 m; 3.6% are within 300 m of a camera. The 10 emptiest uncovered squares (centre, and the distance to the nearest camera):
+The area the located cameras span (their bounding box plus one radius) was cut into 2520 squares of 170 m; 6.7% are within 300 m of a camera. The 10 emptiest uncovered squares (centre, and the distance to the nearest camera):
 
 - 13.04317, 77.55802: 4122 m from the nearest camera
 - 13.04317, 77.55959: 4049 m from the nearest camera

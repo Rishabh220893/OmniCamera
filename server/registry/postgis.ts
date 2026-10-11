@@ -122,7 +122,6 @@ export interface GapResult { cameras: number; located: number; radiusMeters: num
 
 const CHUNK = 400;           // rows per INSERT (14 params each stays under the 65,535 parameter limit)
 const MAX_CELLS = 2500;
-const MAX_ZONES = 400;
 /** After this many failures in a row the mirror reads as not ready until a write or a retry succeeds. */
 const FAIL_LIMIT = 3;
 
@@ -175,13 +174,14 @@ export function createRegistryMirror(db: SqlClient, log: (m: string) => void = c
         const sql = `WITH env AS (SELECT ST_Transform(ST_Expand(ST_MakeEnvelope($${n + 2}::float8, $${n + 3}::float8, $${n + 4}::float8, $${n + 5}::float8, 4326), $${n + 1}::float8), $${n + 7}::int) AS g),
           grid AS (SELECT ST_Transform(ST_Centroid((ST_SquareGrid($${n + 6}::float8, g)).geom), 4326)::geography AS c FROM env),
           dist AS (SELECT c, (SELECT min(ST_Distance(cam.geom, c)) FROM registry_cameras cam WHERE cam.user_id = $1 ${dept} AND cam.geom IS NOT NULL) AS nearest FROM grid)
-          SELECT ST_Y(c::geometry) AS lat, ST_X(c::geometry) AS lng, round(nearest)::int AS nearest, count(*) OVER ()::int AS total, sum((nearest <= $${n + 8}::float8)::int) OVER ()::int AS covered
+          SELECT ST_Y(c::geometry) AS lat, ST_X(c::geometry) AS lng, round(nearest)::int AS nearest, count(*) OVER ()::int AS total, sum((nearest - $${n + 6}::float8 * 0.7071 <= $${n + 8}::float8)::int) OVER ()::int AS covered
           FROM dist ORDER BY nearest DESC`;
         const r = await db.query(sql, gp);
         const all = r.rows;
-        const uncovered = all.filter((x) => x.nearest > o.radiusMeters);
+        // Covered = any part of the square is within the radius of a camera (the same rule as src/lib/registryReport.ts).
+        const uncovered = all.filter((x) => x.nearest - cell * 0.7071 > o.radiusMeters);
         ok();
-        return { cameras: e.cameras, located: e.located, radiusMeters: o.radiusMeters, cellMeters: cell, cellsChecked: all.length, uncoveredTotal: uncovered.length, zones: uncovered.slice(0, MAX_ZONES).map((x) => ({ lat: +x.lat.toFixed(5), lng: +x.lng.toFixed(5), nearestMeters: x.nearest })) };
+        return { cameras: e.cameras, located: e.located, radiusMeters: o.radiusMeters, cellMeters: cell, cellsChecked: all.length, uncoveredTotal: uncovered.length, zones: uncovered.map((x) => ({ lat: +x.lat.toFixed(5), lng: +x.lng.toFixed(5), nearestMeters: x.nearest })) };
       } catch (err) { fail(err); return null; }
     },
     status() { return { enabled: true, ready: trusted(), mirrored, lastSyncAt, errors, lastError }; },

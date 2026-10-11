@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, Rectangle, LayersControl, LayerGroup } from 'react-leaflet';
+import { Fragment, useMemo, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, CircleMarker, Rectangle, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapPin, Navigation, X } from 'lucide-react';
@@ -97,7 +97,7 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
         <div className="flex flex-wrap items-center gap-3">
           <span className="font-bold text-ink-muted uppercase tracking-wide text-[10px]">Status</span>
           {STATUSES.map(st => <span key={st} className="inline-flex items-center gap-1.5 capitalize text-ink-muted"><span style={{ background: STATUS_COLOR[st] }} className="inline-block w-2.5 h-2.5 rounded-full" />{st}</span>)}
-          <span className="inline-flex items-center gap-1.5 text-ink-muted"><span className="inline-block w-2.5 h-2.5 rounded-full border border-critical" style={{ background: 'rgba(200,57,42,.15)' }} />uncovered zone (layer control, top right)</span>
+          <span className="inline-flex items-center gap-1.5 text-ink-muted"><span className="inline-block w-2.5 h-2.5 rounded-full border border-critical" style={{ background: 'rgba(200,57,42,.15)' }} />uncovered square (layer control, top right): no camera within the coverage radius of any part of it. Squares left uncoloured are covered; at State scale the radius is small, so most of the map is red until you zoom in.</span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-bold text-ink-muted uppercase tracking-wide text-[10px]">Departments</span>
@@ -155,16 +155,19 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
             <LayersControl.Overlay checked={showCoverage} name={`Coverage (${coverageRadiusMeters} m)`}>
               <LayerGroup>
                 {located.map(cam => (
-                  <Circle
-                    key={`cov-${cam.id}`}
-                    center={[cam.location!.lat, cam.location!.lng]}
-                    radius={coverageRadiusMeters}
-                    pathOptions={{ color: statusColor(cam), fillColor: statusColor(cam), fillOpacity: 0.08, weight: 1, opacity: 0.35 }}
-                  />
+                  <Fragment key={`cov-${cam.id}`}>
+                    <Circle
+                      center={[cam.location!.lat, cam.location!.lng]}
+                      radius={coverageRadiusMeters}
+                      pathOptions={{ color: statusColor(cam), fillColor: statusColor(cam), fillOpacity: 0.08, weight: 1, opacity: 0.35 }}
+                    />
+                    {/* The real radius is a dot on a State-wide view; this ring keeps the coverage layer visible at any zoom. */}
+                    <CircleMarker center={[cam.location!.lat, cam.location!.lng]} radius={9} pathOptions={{ color: '#1f8a5f', fillColor: '#1f8a5f', fillOpacity: 0.15, weight: 2, opacity: 0.9 }} />
+                  </Fragment>
                 ))}
               </LayerGroup>
             </LayersControl.Overlay>
-            <LayersControl.Overlay name={`Uncovered zones (emptiest ${uncoveredZones.length})`}>
+            <LayersControl.Overlay name={`Uncovered zones (${uncoveredZones.length})`}>
               <LayerGroup>
                 {uncoveredZones.map((z, i) => {
                   // A square of the size the analysis used, so it is as big on the map as the gap it stands for.

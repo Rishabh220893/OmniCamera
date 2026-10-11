@@ -24,7 +24,6 @@ const DEFAULT_STALE_DAYS = 7;
 export const DEFAULT_COVERAGE_RADIUS_M = 300;
 /** At most this many squares are checked; a wide area gets bigger squares instead of a slower report. */
 const MAX_CELLS = 2500;
-const MAX_ZONES_RETURNED = 400;
 
 const EARTH_M = 6_371_000;
 const rad = (d: number) => (d * Math.PI) / 180;
@@ -57,13 +56,14 @@ export function findUncoveredZones(cameras: CameraConfig[], radiusMeters = DEFAU
       const lat = minLat + ((r + 0.5) * cellMeters) / mPerDegLat, lng = minLng + ((c + 0.5) * cellMeters) / mPerDegLng;
       let nearest = Infinity;
       for (const p of pts) { const d = distanceMeters(lat, lng, p.lat, p.lng); if (d < nearest) nearest = d; }
-      if (nearest <= radiusMeters) covered++;
+      // Covered = any part of the square is within the radius of a camera (centre distance minus the half diagonal), so a camera inside a large square covers it.
+      if (nearest - cellMeters * 0.7071 <= radiusMeters) covered++;
       else zones.push({ lat: +lat.toFixed(5), lng: +lng.toFixed(5), nearestMeters: Math.round(nearest) });
     }
   }
   zones.sort((a, b) => b.nearestMeters - a.nearestMeters); // the emptiest first
   const checked = rows * cols;
-  return { zones: zones.slice(0, MAX_ZONES_RETURNED), uncoveredTotal: zones.length, cellMeters, cellsChecked: checked, coveredPercent: Math.round((covered / checked) * 1000) / 10 };
+  return { zones, uncoveredTotal: zones.length, cellMeters, cellsChecked: checked, coveredPercent: Math.round((covered / checked) * 1000) / 10 };
 }
 
 export function computeGapAnalysis(
