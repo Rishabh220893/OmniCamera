@@ -77,6 +77,7 @@ export const EVENT_CATALOGUE: Array<{ type: string; severity: Severity; descript
   { type: 'scene.unusual', severity: 'warning', description: 'The scene was judged unusual or suspicious.', data: 'reason, sentiment' },
   { type: 'scene.alert', severity: 'warning', description: 'The scene analysis raised a specific warning.', data: 'text' },
   { type: 'analyzer.failed', severity: 'notice', description: 'An analyzer could not process a frame.', data: 'analyzer, error' },
+  { type: 'count.anomaly', severity: 'warning', description: 'The number of people or vehicles at a camera is far from what is usual for that hour of the week (more or fewer).', data: 'metric, count, expected, stdev, sigma, direction, hourOfWeek, basedOn' },
   { type: 'incident.opened', severity: 'warning', description: 'An incident was opened: events that belong together across cameras, systems or departments (one event for each department it touches).', data: 'incidentId, kind, key, departments, crossDepartment, cameras, eventCount' },
   { type: 'recording.disk_low', severity: 'warning', description: 'The disk that holds recordings is getting full (under 15% free).', data: 'freeBytes, totalBytes, percentFree' },
   { type: 'recording.disk_critical', severity: 'critical', description: 'The disk that holds recordings is almost full (under 5% free): recording is about to fail.', data: 'freeBytes, totalBytes, percentFree' },

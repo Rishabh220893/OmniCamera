@@ -64,6 +64,9 @@ import { applyToMedia, importSaved, listViews, saveReport, summarize } from './s
 import { createProbeJob } from './server/probeJob';
 import { probeCamera, type ProbeTarget } from './server/cameraProbeRun';
 import { createDefaultAdapters } from './server/adapters';
+import { EVENT_TOPIC } from './server/bus/topics';
+import { createAnomalyDetector } from './server/analytics/anomaly';
+import { createInferenceClient, createRemoteDetectorAnalyzer } from './server/analytics/remoteInference';
 import { createDefaultPipeline } from './server/analytics';
 import { CHAT_MODELS, VISION_MODELS, generateContentWithFallback } from './server/gemini';
 import { aiConfigured, aiKeyVar } from './server/llm';
@@ -318,6 +321,8 @@ const analyzerPipeline = createDefaultPipeline({
   generate: (params) => generateContentWithFallback(VISION_MODELS, params as never),
   anpr: anprClient,
   off: (process.env.ANALYZERS_OFF || '').split(',').map((x) => x.trim()).filter(Boolean),
+  // INFERENCE_SERVICE_URL: a detector on a separate (GPU) service counts people and vehicles too (docs/inference-service.md).
+  extra: process.env.INFERENCE_SERVICE_URL ? [createRemoteDetectorAnalyzer({ client: createInferenceClient({ url: process.env.INFERENCE_SERVICE_URL, apiKey: process.env.INFERENCE_API_KEY || undefined, timeoutMs: Number(process.env.INFERENCE_TIMEOUT_MS) || 5000 }) })] : [],
 });
 
 async function analyzeFrame({ imageBase64, knownFaces, watchlist, camera }: FrameAnalysisInput) {
@@ -1491,6 +1496,14 @@ Analyze this context to answer user queries:
   const eventPipeline = await createEventPipeline({ bus, ingest: emitEvents });
   const publishEvents = (events: PlatformEvent[]) => eventPipeline.publish(events);
   lateEmit.fn = publishEvents;
+  // Unusual counts: the usual number of people and vehicles per camera and hour of the week is learned from the events, and a count far from it is
+  // reported as `count.anomaly` (server/analytics/anomaly.ts). ANOMALY_DETECTION=off switches it off.
+  if (process.env.ANOMALY_DETECTION !== 'off') {
+    const anomaly = createAnomalyDetector({ stateFile: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'anomaly-baseline.json'), sigma: Number(process.env.ANOMALY_SIGMA) || undefined });
+    await anomaly.load();
+    await bus.subscribe<PlatformEvent>(EVENT_TOPIC, 'anomaly', async (msgs) => { const found = anomaly.handle(msgs.map((m) => m.value)); if (found.length) await publishEvents(found); }, { from: 'latest' });
+    setInterval(() => void anomaly.save(), 60_000).unref();
+  }
   console.log(`[EVENTS] Events go through the ${bus.kind} bus to alerting.`);
 
   // ---- Webhook receiver: devices and systems that can only push (server/connectors/webhook, docs/connectors-vms.md) ----

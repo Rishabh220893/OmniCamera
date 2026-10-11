@@ -1,0 +1,8 @@
+# CPU build. For a GPU host use requirements-gpu.txt instead (not both).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+opencv-python-headless>=4.9
+ultralytics>=8.2        # the detector (YOLO); weights are downloaded on first start
+insightface>=0.7        # optional: face embeddings (set INFERENCE_FACES=on); needs onnxruntime
+onnxruntime>=1.17

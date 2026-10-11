@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+opencv-python-headless>=4.9
+ultralytics>=8.2
+insightface>=0.7
+onnxruntime-gpu>=1.17
