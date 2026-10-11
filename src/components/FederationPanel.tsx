@@ -31,7 +31,7 @@ export default function FederationPanel() {
   const [label, setLabel] = useState('');
   const [scopes, setScopes] = useState<FederationScope[]>(['events.push']);
   const [quotas, setQuotas] = useState<FederationQuotas>(DEFAULTS);
-  const [editing, setEditing] = useState<{ id: string; q: FederationQuotas } | null>(null);
+  const [editing, setEditing] = useState<{ id: string; q: FederationQuotas; scopes: FederationScope[] } | null>(null);
 
   const reload = useCallback(async () => {
     try { setClients(await federationApi.clients()); setLoadError(null); } catch (e) { setLoadError(errText(e)); }
@@ -56,7 +56,7 @@ export default function FederationPanel() {
     await reload();
   });
   const toggle = (c: FederationClientRow) => run(`on:${c.id}`, async () => { await federationApi.update(c.id, { enabled: !c.enabled }); await reload(); });
-  const saveQuotas = () => editing && run(`q:${editing.id}`, async () => { await federationApi.update(editing.id, { quotas: editing.q }); setEditing(null); await reload(); });
+  const saveQuotas = () => editing && run(`q:${editing.id}`, async () => { await federationApi.update(editing.id, { quotas: editing.q, scopes: editing.scopes }); setEditing(null); await reload(); });
   const rotate = (c: FederationClientRow) => {
     if (!window.confirm(`Make a new key for "${c.id}"? The old key stops working at once, so the department's system must be given the new one.`)) return;
     void run(`rot:${c.id}`, async () => { const r = await federationApi.rotate(c.id); setShownKey({ id: c.id, key: r.key }); setCopied(false); await reload(); });
@@ -138,16 +138,17 @@ export default function FederationPanel() {
                     {clients.map((c) => (
                       <tr key={c.id} className={cn('border-t border-border align-top', !c.enabled && 'opacity-60')}>
                         <td className="py-2 pr-3"><span className="font-mono">{c.id}</span>{c.label && <span className="block text-ink-muted">{c.label}</span>}
-                          <span className="block text-ink-muted">{c.scopes.map((s) => FEDERATION_SCOPES.find((x) => x.id === s)?.label ?? s).join(', ') || 'no permissions'}{!c.enabled && ' · switched off'}</span></td>
+                          <span className="block text-ink-muted">{c.scopes.map((s) => FEDERATION_SCOPES.find((x) => x.id === s)?.label ?? s).join(', ') || 'no permissions'}{!c.enabled && ' · switched off'}</span>
+                          {editing?.id === c.id && (<span className="flex flex-col gap-1 mt-1">{FEDERATION_SCOPES.map((sc) => (<label key={sc.id} className="flex items-center gap-1.5"><input type="checkbox" checked={editing.scopes.includes(sc.id)} onChange={() => setEditing({ ...editing, scopes: editing.scopes.includes(sc.id) ? editing.scopes.filter((x) => x !== sc.id) : [...editing.scopes, sc.id] })} />{sc.label}</label>))}</span>)}</td>
                         <td className="pr-3">{c.department}</td>
                         <td className="pr-3">{editing?.id === c.id ? (
                           <span className="flex flex-col gap-1">
-                            <input aria-label="Events per minute" value={editing.q.eventsPerMinute} onChange={(e) => setEditing({ id: c.id, q: { ...editing.q, eventsPerMinute: num(e.target.value) } })} className="input !py-1 text-xs w-24" />
-                            <input aria-label="Events per day" value={editing.q.eventsPerDay} onChange={(e) => setEditing({ id: c.id, q: { ...editing.q, eventsPerDay: num(e.target.value) } })} className="input !py-1 text-xs w-24" />
+                            <input aria-label="Events per minute" value={editing.q.eventsPerMinute} onChange={(e) => setEditing({ id: c.id, scopes: editing.scopes, q: { ...editing.q, eventsPerMinute: num(e.target.value) } })} className="input !py-1 text-xs w-24" />
+                            <input aria-label="Events per day" value={editing.q.eventsPerDay} onChange={(e) => setEditing({ id: c.id, scopes: editing.scopes, q: { ...editing.q, eventsPerDay: num(e.target.value) } })} className="input !py-1 text-xs w-24" />
                           </span>
                         ) : `${c.usage.eventsLastMinute} / ${c.quotas.eventsPerMinute} · ${c.usage.eventsToday} / ${c.quotas.eventsPerDay}`}</td>
                         <td className="pr-3">{editing?.id === c.id
-                          ? <input aria-label="Live sessions at once" value={editing.q.maxSessions} onChange={(e) => setEditing({ id: c.id, q: { ...editing.q, maxSessions: num(e.target.value) } })} className="input !py-1 text-xs w-16" />
+                          ? <input aria-label="Live sessions at once" value={editing.q.maxSessions} onChange={(e) => setEditing({ id: c.id, scopes: editing.scopes, q: { ...editing.q, maxSessions: num(e.target.value) } })} className="input !py-1 text-xs w-16" />
                           : `${c.usage.activeSessions} / ${c.quotas.maxSessions}`}</td>
                         <td className="pr-3 whitespace-nowrap">{ago(c.usage.lastSeenAt)}</td>
                         <td className="pr-3" title={c.usage.lastError ?? undefined}>{c.usage.rejected}{c.usage.lastError ? ' ⓘ' : ''}</td>
@@ -156,7 +157,7 @@ export default function FederationPanel() {
                             <button onClick={saveQuotas} disabled={!!busy} className="btn-primary !py-1 !px-2 text-xs">Save</button>
                             <button onClick={() => setEditing(null)} className="btn-ghost !py-1 !px-2 text-xs">Cancel</button>
                           </>) : (<>
-                            <button onClick={() => setEditing({ id: c.id, q: { ...c.quotas } })} className="btn-ghost !py-1 !px-2 text-xs">Limits</button>
+                            <button onClick={() => setEditing({ id: c.id, scopes: [...c.scopes], q: { ...c.quotas } })} className="btn-ghost !py-1 !px-2 text-xs">Limits</button>
                             <button onClick={() => toggle(c)} disabled={!!busy} className="btn-ghost !py-1 !px-2 text-xs">{c.enabled ? 'Switch off' : 'Switch on'}</button>
                             <button onClick={() => rotate(c)} disabled={!!busy} className="btn-ghost !py-1 !px-2 text-xs">New key</button>
                             <button onClick={() => remove(c)} disabled={!!busy} className="btn-ghost !py-1 !px-2 text-xs text-critical" aria-label={`Remove ${c.id}`}><Trash2 className="w-3.5 h-3.5" /></button>
