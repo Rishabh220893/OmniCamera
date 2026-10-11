@@ -26,10 +26,12 @@ export interface SecurityOptions {
 }
 
 const FIREBASE = ['https://*.googleapis.com', 'https://*.firebaseio.com', 'https://*.firebaseapp.com', 'https://*.gstatic.com', 'https://accounts.google.com', 'wss://*.firebaseio.com'];
+/** Where the browser fetches TURN credentials for WebRTC video (src/lib/whepClient.ts); without it an enforced policy would break live video behind NAT. */
+const TURN = ['https://turn.elixir-webrtc.org'];
 
 export function cspFor(extra: string[] = []): string {
   const ex = extra.filter((o) => /^(https?|wss?):\/\/[^\s;,]+$/i.test(o));
-  const connect = ["'self'", ...FIREBASE, ...ex, 'ws:', 'wss:'];
+  const connect = ["'self'", ...FIREBASE, ...TURN, ...ex, 'ws:', 'wss:'];
   return [
     "default-src 'self'",
     // The built app and the font stylesheet; Vite's dev server and some libraries inject inline styles.

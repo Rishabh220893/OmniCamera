@@ -87,7 +87,7 @@ test('rules: a good rule is normalised; bad ones list every problem', () => {
   assert.equal(bad([]).length, 1);
   const many = bad({ name: '', match: { types: ['Bad Type', 'plate'], minSeverity: 'loud', cameraIds: 'cam01', where: [{ field: 'secret', op: 'eq', value: 1 }, { field: 'data.x', op: 'weird', value: 1 }, { field: 'data.x', op: 'gt', value: 'a' }, { field: 'data.x', op: 'in', value: 3 }, { field: 'data.x', op: 'eq' }] }, schedule: { days: [9], from: '25:00' }, throttle: { windowMs: -1, by: ['nope'] }, channels: [] });
   assert.ok(many.length >= 12, `reported ${many.length} problems: ${many.join(' | ')}`);
-  assert.ok(bad({ name: 'n', channels: [{ type: 'sms' }] }).some((p) => /channels\[0\]\.type/.test(p)));
+  assert.ok(bad({ name: 'n', channels: [{ type: 'carrier-pigeon' }] }).some((p) => /channels\[0\]\.type/.test(p)));
   assert.ok(bad({ name: 'n', channels: [{ type: 'webhook', url: 'ftp://x' }] }).some((p) => /http/.test(p)));
   assert.ok(bad({ name: 'n', channels: Array.from({ length: 6 }, () => ({ type: 'log' })) }).length === 1);
   assert.ok(bad({ name: 'n', schedule: { from: '10:00' }, channels: [{ type: 'log' }] }).some((p) => /both/.test(p)));
