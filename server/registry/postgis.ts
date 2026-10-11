@@ -160,8 +160,8 @@ export function createRegistryMirror(db: SqlClient, log: (m: string) => void = c
       try {
         const dept = o.department ? 'AND lower(department) = lower($2)' : '';
         const base: unknown[] = o.department ? [userId, o.department] : [userId];
-        const ext = await db.query(`SELECT count(*)::int AS cameras, count(geom)::int AS located, ST_XMin(ext) AS min_lng, ST_YMin(ext) AS min_lat, ST_XMax(ext) AS max_lng, ST_YMax(ext) AS max_lat
-          FROM (SELECT geom, ST_Extent(geom::geometry) OVER () AS ext FROM registry_cameras WHERE user_id = $1 ${dept}) t GROUP BY ext`, base);
+        const ext = await db.query(`SELECT count(*)::int AS cameras, count(geom)::int AS located, min(ST_X(geom::geometry)) AS min_lng, min(ST_Y(geom::geometry)) AS min_lat,
+          max(ST_X(geom::geometry)) AS max_lng, max(ST_Y(geom::geometry)) AS max_lat FROM registry_cameras WHERE user_id = $1 ${dept}`, base);
         const e = ext.rows[0];
         if (!e || e.located < 3) { ok(); return { cameras: e?.cameras ?? 0, located: e?.located ?? 0, radiusMeters: o.radiusMeters, cellMeters: 0, cellsChecked: 0, uncoveredTotal: 0, zones: [] }; }
         const midLat = (e.min_lat + e.max_lat) / 2, pad = o.radiusMeters;
@@ -172,10 +172,10 @@ export function createRegistryMirror(db: SqlClient, log: (m: string) => void = c
         const srid = (midLat >= 0 ? 32600 : 32700) + zone;
         const gp = [...base, pad / 111320, e.min_lng, e.min_lat, e.max_lng, e.max_lat, cell, srid, o.radiusMeters];
         const n = base.length;
-        const sql = `WITH env AS (SELECT ST_Transform(ST_Expand(ST_MakeEnvelope($${n + 2}, $${n + 3}, $${n + 4}, $${n + 5}, 4326), $${n + 1}), $${n + 7}) AS g),
-          grid AS (SELECT ST_Transform(ST_Centroid((ST_SquareGrid($${n + 6}, g)).geom), 4326)::geography AS c FROM env),
+        const sql = `WITH env AS (SELECT ST_Transform(ST_Expand(ST_MakeEnvelope($${n + 2}::float8, $${n + 3}::float8, $${n + 4}::float8, $${n + 5}::float8, 4326), $${n + 1}::float8), $${n + 7}::int) AS g),
+          grid AS (SELECT ST_Transform(ST_Centroid((ST_SquareGrid($${n + 6}::float8, g)).geom), 4326)::geography AS c FROM env),
           dist AS (SELECT c, (SELECT min(ST_Distance(cam.geom, c)) FROM registry_cameras cam WHERE cam.user_id = $1 ${dept} AND cam.geom IS NOT NULL) AS nearest FROM grid)
-          SELECT ST_Y(c::geometry) AS lat, ST_X(c::geometry) AS lng, round(nearest)::int AS nearest, count(*) OVER ()::int AS total, sum((nearest <= $${n + 8})::int) OVER ()::int AS covered
+          SELECT ST_Y(c::geometry) AS lat, ST_X(c::geometry) AS lng, round(nearest)::int AS nearest, count(*) OVER ()::int AS total, sum((nearest <= $${n + 8}::float8)::int) OVER ()::int AS covered
           FROM dist ORDER BY nearest DESC`;
         const r = await db.query(sql, gp);
         const all = r.rows;

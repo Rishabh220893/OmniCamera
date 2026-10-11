@@ -37,18 +37,13 @@ the one thing here that could break a working app. A mirror gets the spatial sto
 - `GET /api/registry/gaps?userId=&radius=300&department=`: uncovered zones computed in the database (a square grid in the area's UTM projection, distance measured on the sphere), the same result shape as the Registry screen's gap report. `503` when the mirror is not ready; the screen computes the same report in the browser.
 - `GET /api/registry/status`.
 
-## What is NOT verified
+## What is verified, and what is not
 
-The unit tests use a fake database and a fake Firestore listener. **No real PostGIS database has run this code**: the DDL, the upsert with `ST_GeogFromText`, the bounding-box and filter query, and the
-`ST_SquareGrid` gap query are untested against PostGIS. Run the check before turning the flag on:
+**Verified on 2026-10-11 against the project's Neon database** (PostGIS 3.6.4) with `npm run registry-postgis-check -- --yes`: table and index creation, upsert, update and delete, listing, filters (status, department, installed before, text), bounding box, a user seeing only their own cameras, a camera without coordinates, longitude/latitude order, the gap query, and status. All 13 checks pass; the scratch schema is dropped afterwards. The first real run found two bugs the fake database could not (a grouping on a type PostgreSQL cannot compare, and an untyped projection parameter); both are fixed. The database's gap result matches the browser's calculation closely for the same cameras (1,740 vs 1,634 squares; emptiest point 4,399 m vs 4,380 m; the difference is the metre-based projection against degrees).
 
-```
-DATABASE_URL=postgres://... DATABASE_SSL=true npm run registry-postgis-check -- --yes
-```
+**Not verified:** the Firestore listener on a real collection (the first snapshot of tens of thousands of cameras is held in memory while it is applied), the server running with `REGISTRY_POSTGIS=true` end to end against Firestore and Neon together, drift between the two stores after a long outage of the mirror (a restart re-copies everything; there is no incremental catch-up), behaviour under production read load, and large grids (the check used 3 cameras).
 
-It may run `CREATE EXTENSION IF NOT EXISTS postgis`, creates a scratch schema `registry_check_<random>` with the table, writes 5 sample cameras there, checks 11 behaviours (listing, filters, bounding box, update and delete, the gap query, status) and drops the schema, also when a check fails. Without `--yes` it only prints what it would do. `ST_SquareGrid` needs PostGIS 3.1 or newer.
-
-Also unverified: the Firestore listener on a real collection (the first snapshot of tens of thousands of cameras is held in memory while it is applied), drift between the two stores after a long outage of the mirror (a restart re-copies everything; there is no incremental catch-up), and how it behaves under the production read load.
+The unit tests (`tests/registryPostgis.test.ts`) use a fake database and a fake Firestore listener; the real-database check is the one that exercises the SQL.
 
 ## If something goes wrong
 
