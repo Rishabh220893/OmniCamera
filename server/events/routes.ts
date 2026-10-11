@@ -71,6 +71,8 @@ export function registerEventRoutes(app: Express, ctx: EventRoutesContext): void
   };
 
   app.get('/api/event-types', (_req, res) => { res.json({ types: EVENT_CATALOGUE }); });
+  /** Which ways of delivering an alert this server has (e-mail and SMS need to be set up on it). */
+  app.get('/api/event-channels', (_req, res) => { res.json({ channels: ctx.channels.types() }); });
 
   app.get('/api/events', async (req, res) => {
     const userId = await ctx.requireUser(req, res, 'event.view');

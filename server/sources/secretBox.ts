@@ -11,6 +11,8 @@ export interface SecretBox {
   seal(plain: string): string;
   /** Returns the plain text, or throws when the value was not sealed with this key (or was altered). */
   open(sealed: string): string;
+  /** True when the value was sealed with an older key of the ring, so it should be sealed again (a key rotation). Absent on a one-key box. */
+  isStale?(sealed: string): boolean;
 }
 
 export class SecretKeyError extends Error { constructor(message: string) { super(message); this.name = 'SecretKeyError'; } }
@@ -45,8 +47,29 @@ export function createSecretBox(key: Buffer): SecretBox {
   };
 }
 
+/**
+ * A ring of keys for a rotation: values are sealed with the first (newest) key and opened with any of them, so the server keeps working while
+ * old values are re-sealed (`npm run rotate-source-key`). Once nothing is stale the old keys can be removed.
+ */
+export function createKeyRing(keys: Buffer[]): SecretBox {
+  if (keys.length === 0) throw new SecretKeyError('A key ring needs at least one key.');
+  const boxes = keys.map(createSecretBox);
+  return {
+    seal: (plain) => boxes[0].seal(plain),
+    open(sealed) {
+      let last: unknown;
+      for (const b of boxes) { try { return b.open(sealed); } catch (e) { last = e; } }
+      throw last instanceof Error ? last : new SecretKeyError('The stored login cannot be read with any configured key.');
+    },
+    isStale(sealed) { try { boxes[0].open(sealed); return false; } catch { return true; } },
+  };
+}
+
 /** The box for this server, or null when no key is set. A key that is set but malformed is an error, not a silent "no key". */
 export function secretBoxFromEnv(env: Record<string, string | undefined>): SecretBox | null {
   const raw = env.SOURCE_SECRET_KEY;
-  return raw && raw.trim() ? createSecretBox(parseSecretKey(raw)) : null;
+  if (!raw || !raw.trim()) return null;
+  // SOURCE_SECRET_KEY_PREVIOUS (comma separated) keeps values sealed with an older key readable during a rotation.
+  const older = (env.SOURCE_SECRET_KEY_PREVIOUS ?? '').split(',').map((k) => k.trim()).filter(Boolean).map(parseSecretKey);
+  return older.length ? createKeyRing([parseSecretKey(raw), ...older]) : createSecretBox(parseSecretKey(raw));
 }

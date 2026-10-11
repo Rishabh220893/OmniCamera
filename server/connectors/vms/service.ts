@@ -12,6 +12,7 @@ import type { PlatformEvent } from '../../events/schema';
 import { createVmsRunner, type CursorStore, type RunnerStatus, type VmsRunner } from './runner';
 import { VmsError, validateSystemConfig, type VmsCamera, type VmsConnector, type VmsSystemConfig } from './types';
 import type { createVmsConnectorTypes } from './index';
+import type { SecretBox } from '../../sources/secretBox';
 
 import { EVENT_TOPIC } from '../../bus/topics';
 export { EVENT_TOPIC };
@@ -52,6 +53,8 @@ export interface VmsServiceOptions {
   bus: EventBus;
   /** Allow systems on private networks (departmental VMSs usually are). Default false. */
   allowPrivate?: boolean;
+  /** Seals the systems' logins in the systems file (SOURCE_SECRET_KEY). Without it they are kept as they were: in clear text. */
+  box?: SecretBox | null;
   pollIntervalMs?: number;
   minGapMs?: number;
   /** Replaces the real connector, for tests. */
@@ -74,7 +77,22 @@ export function createVmsService(o: VmsServiceOptions) {
     if (!c) { c = o.connectorFor ? o.connectorFor(cfg) : o.types.get(cfg.kind).create(cfg); connectors.set(cfg.id, c); }
     return c;
   };
-  const persist = () => writeJson(o.systemsFile, [...systems.values()]);
+  /** The file form of a system: with a box, the login is sealed and the clear text is not written. */
+  const toFile = (cfg: VmsSystemConfig): unknown => {
+    if (!o.box || !cfg.credentials) return cfg;
+    const { credentials, ...rest } = cfg;
+    return { ...rest, sealedCredentials: o.box.seal(JSON.stringify(credentials)) };
+  };
+  /** Reads a system from the file, opening a sealed login. Throws a sentence when it cannot be opened. */
+  const fromFile = (raw: unknown): unknown => {
+    const r = (raw ?? {}) as Record<string, unknown>;
+    if (typeof r.sealedCredentials !== 'string') return raw;
+    if (!o.box) throw new VmsError(`System '${String(r.id)}' has a sealed login but SOURCE_SECRET_KEY is not set.`, 'auth');
+    const { sealedCredentials, ...rest } = r;
+    try { return { ...rest, credentials: JSON.parse(o.box.open(sealedCredentials)) }; }
+    catch { throw new VmsError(`System '${String(r.id)}': its sealed login cannot be read with the configured key.`, 'auth'); }
+  };
+  const persist = () => writeJson(o.systemsFile, [...systems.values()].map(toFile));
 
   function startRunner(cfg: VmsSystemConfig) {
     const runner = createVmsRunner({
@@ -99,11 +117,17 @@ export function createVmsService(o: VmsServiceOptions) {
     /** Reads the saved systems and starts a runner for each. */
     load: () => serial(async () => {
       if (loaded) return;
+      let migrate = false;
       for (const raw of await readJson<unknown[]>(o.systemsFile, [])) {
-        try { const cfg = validateSystemConfig(raw); o.types.get(cfg.kind); systems.set(cfg.id, cfg); }
+        try {
+          const rr = raw as { credentials?: unknown; sealedCredentials?: string };
+          // A login saved in clear text before there was a key is sealed the next time the file is written; one sealed with an older key, too.
+          if (o.box && (rr.credentials || (typeof rr.sealedCredentials === 'string' && o.box.isStale?.(rr.sealedCredentials)))) migrate = true;
+          const cfg = validateSystemConfig(fromFile(raw)); o.types.get(cfg.kind); systems.set(cfg.id, cfg); }
         catch (e) { log.warn(`[VMS] skipped a saved system: ${e instanceof Error ? e.message : e}`); }
       }
       loaded = true;
+      if (migrate) await persist().catch((e) => log.warn(`[VMS] could not seal the saved logins: ${e instanceof Error ? e.message : e}`));
       for (const cfg of systems.values()) startRunner(cfg);
     }),
 

@@ -13,15 +13,22 @@ const THROTTLE_BY = [
 
 interface Draft {
   id?: string; name: string; types: string; minSeverity: '' | Severity; tags: string; department: string; windowMin: number;
-  by: typeof THROTTLE_BY[number]['value']; channel: 'log' | 'webhook'; url: string; secret: string; enabled: boolean;
+  by: typeof THROTTLE_BY[number]['value']; hook: boolean; url: string; secret: string; email: string; sms: string; hold: boolean; holdBefore: number; holdAfter: number; enabled: boolean;
 }
-const blank = (): Draft => ({ name: '', types: 'plate.watchlist_match', minSeverity: '', tags: '', department: '', windowMin: 10, by: 'event', channel: 'log', url: '', secret: '', enabled: true });
+
+/** The ways an alert can be delivered, in the order they are offered. The alert list itself is always kept. */
+const CHANNEL_NOTE: Record<string, string> = { email: 'E-mail is not set up on this server (an administrator sets SMTP_URL).', sms: 'SMS is not set up on this server (an administrator sets SMS_GATEWAY_URL).', 'recording-hold': 'Recording is not on for this server.' };
+const blank = (): Draft => ({ name: '', types: 'plate.watchlist_match', minSeverity: '', tags: '', department: '', windowMin: 10, by: 'event', hook: false, url: '', secret: '', email: '', sms: '', hold: false, holdBefore: 5, holdAfter: 10, enabled: true });
 
 function toDraft(r: RuleRow): Draft {
   const hook = r.channels.find((c): c is Extract<typeof c, { type: 'webhook' }> => c.type === 'webhook');
+  const mail = r.channels.find((c): c is Extract<typeof c, { type: 'email' }> => c.type === 'email');
+  const text = r.channels.find((c): c is Extract<typeof c, { type: 'sms' }> => c.type === 'sms');
+  const hold = r.channels.find((c): c is Extract<typeof c, { type: 'recording-hold' }> => c.type === 'recording-hold');
   return {
     id: r.id, name: r.name, types: (r.match.types ?? []).join(', '), minSeverity: r.match.minSeverity ?? '', tags: (r.match.tags ?? []).join(', '), department: r.department ?? '',
-    windowMin: Math.round(r.throttle.windowMs / 60_000), by: r.throttle.by[0] ?? 'event', channel: hook ? 'webhook' : 'log', url: hook?.url ?? '', secret: hook?.secret ?? '', enabled: r.enabled,
+    windowMin: Math.round(r.throttle.windowMs / 60_000), by: r.throttle.by[0] ?? 'event', hook: !!hook, url: hook?.url ?? '', secret: hook?.secret ?? '', email: (mail?.to ?? []).join(', '), sms: (text?.to ?? []).join(', '),
+    hold: !!hold, holdBefore: hold?.beforeMinutes ?? 5, holdAfter: hold?.afterMinutes ?? 10, enabled: r.enabled,
   };
 }
 
@@ -30,7 +37,11 @@ function toInput(d: Draft, existing?: RuleRow): RuleInput {
   const match = { ...(existing?.match ?? {}), types: csv(d.types), tags: csv(d.tags) } as RuleInput['match'];
   if (d.minSeverity) match.minSeverity = d.minSeverity; else delete match.minSeverity;
   if (!match.tags?.length) delete match.tags;
-  const channels: RuleInput['channels'] = d.channel === 'webhook' ? [{ type: 'webhook', url: d.url.trim(), ...(d.secret ? { secret: d.secret } : {}) }] : [{ type: 'log' }];
+  const channels: RuleInput['channels'] = [{ type: 'log' }]; // the alert list is always kept
+  if (d.hook) channels.push({ type: 'webhook', url: d.url.trim(), ...(d.secret ? { secret: d.secret } : {}) });
+  if (csv(d.email).length) channels.push({ type: 'email', to: csv(d.email) });
+  if (csv(d.sms).length) channels.push({ type: 'sms', to: csv(d.sms) });
+  if (d.hold) channels.push({ type: 'recording-hold', beforeMinutes: Math.max(0, Math.round(d.holdBefore)), afterMinutes: Math.max(0, Math.round(d.holdAfter)) });
   return {
     name: d.name.trim(), enabled: d.enabled, match, throttle: { windowMs: Math.max(0, d.windowMin) * 60_000, by: [d.by] }, channels,
     ...(existing?.schedule ? { schedule: existing.schedule } : {}), ...(!d.id && d.department.trim() ? { department: d.department.trim() } : {}),
@@ -46,6 +57,9 @@ export default function RulesView() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const deptNames = useDepartmentNames();
+  const [available, setAvailable] = useState<string[] | null>(null);
+  useEffect(() => { eventsApi.channels().then(setAvailable).catch(() => setAvailable(null)); }, []);
+  const has = (t: string) => available === null || available.includes(t);
   const toggleType = (t: string) => setDraft((d) => {
     if (!d) return d;
     const cur = csv(d.types);
@@ -134,10 +148,21 @@ export default function RulesView() {
               {THROTTLE_BY.map((b) => <option key={b.value} value={b.value}>{b.label}</option>)}</select></label>
           <label className="space-y-1"><span className="text-ink-muted">...for this many minutes (0 = alert every time)</span>
             <input className="input w-full" type="number" min={0} max={10080} value={draft.windowMin} onChange={(e) => setDraft({ ...draft, windowMin: Number(e.target.value) })} aria-label="Minutes" /></label>
-          <label className="space-y-1"><span className="text-ink-muted">Send to</span>
-            <select className="input w-full" value={draft.channel} onChange={(e) => setDraft({ ...draft, channel: e.target.value as Draft['channel'] })} aria-label="Channel">
-              <option value="log">The alert list only</option><option value="webhook">A web address (webhook)</option></select></label>
-          {draft.channel === 'webhook' && (
+          <fieldset className="space-y-2 sm:col-span-2" data-testid="rule-channels"><legend className="text-ink-muted">Tell people (the alert list always gets it)</legend>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={draft.hook} onChange={(e) => setDraft({ ...draft, hook: e.target.checked })} aria-label="Send to a web address" /> Send to a web address (webhook)</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={!!draft.email} disabled={!has('email')} onChange={(e) => setDraft({ ...draft, email: e.target.checked ? ' ' : '' })} aria-label="Send an e-mail" /> Send an e-mail</label>
+            {!has('email') && <p className="text-[11px] text-ink-muted pl-6">{CHANNEL_NOTE.email}</p>}
+            {draft.email !== '' && has('email') && <input className="input w-full" value={draft.email.trim() === '' ? '' : draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value || ' ' })} placeholder="chief@department.gov.in, control@department.gov.in (up to 5)" aria-label="E-mail addresses" />}
+            <label className="flex items-center gap-2"><input type="checkbox" checked={!!draft.sms} disabled={!has('sms')} onChange={(e) => setDraft({ ...draft, sms: e.target.checked ? ' ' : '' })} aria-label="Send an SMS" /> Send an SMS</label>
+            {!has('sms') && <p className="text-[11px] text-ink-muted pl-6">{CHANNEL_NOTE.sms}</p>}
+            {draft.sms !== '' && has('sms') && <input className="input w-full" value={draft.sms.trim() === '' ? '' : draft.sms} onChange={(e) => setDraft({ ...draft, sms: e.target.value || ' ' })} placeholder="+919876543210, +919812345678 (international form, up to 5)" aria-label="Phone numbers" />}
+            <label className="flex items-center gap-2"><input type="checkbox" checked={draft.hold} disabled={!has('recording-hold')} onChange={(e) => setDraft({ ...draft, hold: e.target.checked })} aria-label="Keep the recording" /> Keep the recording around the event (so it is not deleted)</label>
+            {!has('recording-hold') && <p className="text-[11px] text-ink-muted pl-6">{CHANNEL_NOTE['recording-hold']}</p>}
+            {draft.hold && has('recording-hold') && (
+              <div className="flex items-center gap-2 pl-6">from <input className="input w-20" type="number" min={0} max={120} value={draft.holdBefore} onChange={(e) => setDraft({ ...draft, holdBefore: Number(e.target.value) })} aria-label="Minutes before" /> minutes before to <input className="input w-20" type="number" min={0} max={240} value={draft.holdAfter} onChange={(e) => setDraft({ ...draft, holdAfter: Number(e.target.value) })} aria-label="Minutes after" /> minutes after</div>
+            )}
+          </fieldset>
+          {draft.hook && (
             <>
               <label className="space-y-1"><span className="text-ink-muted">Webhook address</span>
                 <input className="input w-full" type="url" placeholder="https://..." value={draft.url} onChange={(e) => setDraft({ ...draft, url: e.target.value })} required aria-label="Webhook address" /></label>
@@ -147,7 +172,7 @@ export default function RulesView() {
           )}
           <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} /> Rule is on</label>
           <div className="sm:col-span-2 flex gap-2">
-            <button className="btn-primary !py-2 !px-5 text-xs" disabled={busy || !draft.name.trim() || (draft.channel === 'webhook' && !draft.url.trim())}>{draft.id ? 'Save changes' : 'Create rule'}</button>
+            <button className="btn-primary !py-2 !px-5 text-xs" disabled={busy || !draft.name.trim() || (draft.hook && !draft.url.trim()) || (draft.email !== '' && csv(draft.email).length === 0) || (draft.sms !== '' && csv(draft.sms).length === 0)}>{draft.id ? 'Save changes' : 'Create rule'}</button>
             <button type="button" className="btn-secondary !py-2 !px-5 text-xs" onClick={() => setDraft(null)}>Cancel</button>
           </div>
         </form>
@@ -161,7 +186,7 @@ export default function RulesView() {
               <p className="text-sm font-semibold text-ink">{r.name}{r.department && <span className="badge badge-accent !text-[10px] ml-2">{r.department}</span>}</p>
               <p className="text-[11px] text-ink-muted">
                 {(r.match.types?.length ? r.match.types.join(', ') : 'any event')}{r.match.minSeverity ? ` · ${r.match.minSeverity}+` : ''}{r.match.tags?.length ? ` · tagged ${r.match.tags.join(', ')}` : ''}
-                {' '}&middot; {r.throttle.windowMs ? `repeats folded for ${Math.round(r.throttle.windowMs / 60_000)} min` : 'alerts every time'} &middot; to {r.channels.map((c) => (c.type === 'webhook' ? 'webhook' : 'alert list')).join(', ')}
+                {' '}&middot; {r.throttle.windowMs ? `repeats folded for ${Math.round(r.throttle.windowMs / 60_000)} min` : 'alerts every time'} &middot; to {r.channels.map((c) => ({ webhook: 'webhook', email: 'e-mail', sms: 'SMS', 'recording-hold': 'keeps the recording', log: 'alert list' } as Record<string, string>)[c.type] ?? c.type).join(', ')}
               </p>
             </div>
             <label className="flex items-center gap-1.5 text-xs"><input type="checkbox" checked={r.enabled} disabled={busy} onChange={() => void run(`'${r.name}' ${r.enabled ? 'switched off' : 'switched on'}.`, () => eventsApi.updateRule(r.id, ruleInputOf(r, { enabled: !r.enabled })))} aria-label={`${r.name} is on`} /> On</label>

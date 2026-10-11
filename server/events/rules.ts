@@ -10,7 +10,15 @@ export interface Cond { field: string; op: CondOp; value?: unknown }
 
 export type ChannelConfig =
   | { type: 'webhook'; url: string; secret?: string }
+  | { type: 'email'; to: string[] }
+  | { type: 'sms'; to: string[] }
+  /** Places a hold on the camera's recordings from `beforeMinutes` before the event to `afterMinutes` after it, so retention cannot delete the footage. */
+  | { type: 'recording-hold'; beforeMinutes: number; afterMinutes: number }
   | { type: 'log' };
+
+export const EMAIL_RE = /^[^\s@<>",;]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
+/** International format: + and 8 to 15 digits. */
+export const PHONE_RE = /^\+[1-9]\d{7,14}$/;
 
 export interface Schedule {
   /** 0 = Sunday ... 6 = Saturday, in the rule's time zone. Empty or absent = every day. */
@@ -144,7 +152,20 @@ export function validateRule(input: unknown, o: { userId: string; id: string; no
         const ch: ChannelConfig = { type: 'webhook', url: c.url, ...(secret ? { secret } : {}) };
         const bad = o.allowChannel?.(ch);
         if (bad) problems.push(`channels[${i}]: ${bad}`); else channels.push(ch);
-      } else problems.push(`channels[${i}].type must be 'webhook' or 'log'.`);
+      } else if (c?.type === 'email' || c?.type === 'sms') {
+        const list = Array.isArray(c.to) ? c.to.map((x: unknown) => (typeof x === 'string' ? x.trim() : '')) : [];
+        const re = c.type === 'email' ? EMAIL_RE : PHONE_RE;
+        if (list.length < 1 || list.length > 5 || list.some((x: string) => !re.test(x))) { problems.push(`channels[${i}].to must list 1 to 5 ${c.type === 'email' ? 'e-mail addresses' : 'phone numbers in international form (+919876543210)'}.`); return; }
+        const ch: ChannelConfig = { type: c.type, to: [...new Set<string>(list)] };
+        const bad = o.allowChannel?.(ch);
+        if (bad) problems.push(`channels[${i}]: ${bad}`); else channels.push(ch);
+      } else if (c?.type === 'recording-hold') {
+        const before = c.beforeMinutes === undefined ? 5 : Number(c.beforeMinutes), after = c.afterMinutes === undefined ? 10 : Number(c.afterMinutes);
+        if (!Number.isInteger(before) || before < 0 || before > 120 || !Number.isInteger(after) || after < 0 || after > 240 || before + after < 1) { problems.push(`channels[${i}]: the hold needs whole minutes before (0 to 120) and after (0 to 240) the event, not both zero.`); return; }
+        const ch: ChannelConfig = { type: 'recording-hold', beforeMinutes: before, afterMinutes: after };
+        const bad = o.allowChannel?.(ch);
+        if (bad) problems.push(`channels[${i}]: ${bad}`); else channels.push(ch);
+      } else problems.push(`channels[${i}].type must be 'webhook', 'email', 'sms', 'recording-hold' or 'log'.`);
     });
   }
 

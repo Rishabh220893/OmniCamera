@@ -170,7 +170,9 @@ export function createAlertEngine(deps: AlertEngineDeps) {
       const ts = now().toISOString();
       const event: PlatformEvent = { id: `test-${newId()}`, type: 'system.test', source: 'rule-test', severity: 'info', userId: rule.userId, cameraId: camera.id, cameraName: camera.name, ts, summary: `Test of rule "${rule.name}"`, data: { test: true }, tags: ['test'], ...(rule.department ? { department: rule.department } : {}) };
       const alert: Alert = { id: `test-${newId()}`, userId: rule.userId, ruleId: rule.id, ruleName: rule.name, key: 'test', state: 'open', severity: 'info', title: `TEST: ${event.summary}`, cameraId: camera.id, cameraName: camera.name, ...(rule.department ? { department: rule.department } : {}), firstEventId: event.id, lastEventId: event.id, eventCount: 1, createdAt: ts, lastEventAt: ts, deliveries: [] };
-      const deliveries = await deliver(rule, alert, event);
+      // A test must not place a real hold on a recording: that channel is skipped (and said so), the others are really used.
+      const deliveries = await deliver({ ...rule, channels: rule.channels.filter((c) => c.type !== 'recording-hold') }, alert, event);
+      for (const c of rule.channels) if (c.type === 'recording-hold') deliveries.push({ channel: 'recording-hold', ok: true, at: now().toISOString(), attempts: 0, error: 'not tested: a test does not keep real footage' });
       alert.deliveries = deliveries;
       try { await deps.store.saveEvents([event]); await deps.store.saveAlert(alert); }
       catch (e) { log.warn(`[ALERT] Could not store the test of rule "${rule.name}":`, e instanceof Error ? e.message : e); }

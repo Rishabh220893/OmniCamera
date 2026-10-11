@@ -11,6 +11,7 @@ import { registerRecordingRoutes, type RecordingPermission } from '../server/rec
 import { createRecordingStore, segmentName } from '../server/recording/store.ts';
 import { createHoldStore, createPolicyStore } from '../server/recording/retention.ts';
 import { sha256File } from '../server/recording/clip.ts';
+import { generateEvidenceKey, signingKeyFromEnv, verifyManifest, readCustody, verifyCustody, type SigningKey } from '../server/recording/evidence.ts';
 import { can, decide, type Principal } from '../server/authz/policy.ts';
 
 const haveFfmpeg = spawnSync('ffmpeg', ['-version']).status === 0 && spawnSync('ffprobe', ['-version']).status === 0;
@@ -31,7 +32,7 @@ function seg(dir: string, cam: string, start: Date, sec: number) {
 
 type Who = { uid: string; role: 'viewer' | 'operator' | 'admin' } | null;
 
-async function withRoutes(run: (c: { call: (method: string, p: string, body?: unknown, who?: string) => Promise<{ status: number; json: any; headers: Headers; buf: Buffer }>; dir: string; exportsDir: string; holds: ReturnType<typeof createHoldStore>; denied: string[] }) => Promise<void>, over: { maxConcurrent?: number } = {}) {
+async function withRoutes(run: (c: { call: (method: string, p: string, body?: unknown, who?: string) => Promise<{ status: number; json: any; headers: Headers; buf: Buffer }>; dir: string; exportsDir: string; holds: ReturnType<typeof createHoldStore>; denied: string[] }) => Promise<void>, over: { maxConcurrent?: number; signing?: SigningKey | null } = {}) {
   const dir = mkdtempSync(path.join(root, 'r-'));
   seg(dir, 'camA', at(0), 4); seg(dir, 'camA', at(4), 4); seg(dir, 'camA', at(12), 4);
   const exportsDir = path.join(dir, 'exports');
@@ -44,7 +45,7 @@ async function withRoutes(run: (c: { call: (method: string, p: string, body?: un
   const app = express();
   app.use(express.json());
   registerRecordingRoutes(app, {
-    store, policies, holds, exportsDir, now: () => at(100), maxConcurrent: over.maxConcurrent,
+    store, policies, holds, exportsDir, now: () => at(100), maxConcurrent: over.maxConcurrent, signing: over.signing,
     access: async (req, res, permission: RecordingPermission, cameraId) => {
       const a = accounts[String(req.header('X-User'))];
       if (!a) { res.status(401).json({ error: 'Sign-in required.' }); return null; }
@@ -211,4 +212,57 @@ test('authz policy: recordings are department-scoped even for an admin limited t
   const viewer: Principal = { uid: 'v', role: 'viewer', departments: ['*'], source: 'claims' };
   assert.ok(!can(viewer, 'recording.view'), 'viewers do not see recordings');
   assert.ok(can({ ...viewer, role: 'operator' }, 'recording.export'));
+});
+
+const keyOf = (): SigningKey => { const k = generateEvidenceKey(); return signingKeyFromEnv({ EVIDENCE_SIGNING_KEY: k.privatePem })!; };
+
+test('signed export: the manifest is signed, the signature checks with the public key alone, a changed manifest does not, and the custody log records the handling', { skip, timeout: 60_000 }, async () => {
+  const signing = keyOf();
+  await withRoutes(async ({ call, exportsDir }) => {
+    const r = await call('POST', '/api/recordings/camA/export', { from: at(0).toISOString(), to: at(8).toISOString(), reason: 'FIR 12/2026' });
+    assert.equal(r.status, 201);
+    assert.equal(r.json.signed, true);
+    const m = r.json.export, sig = r.json.signature;
+    assert.deepEqual([sig.algorithm, sig.keyId], ['ed25519', signing.keyId]);
+    const pub = (await call('GET', '/api/evidence/public-key')).json;
+    assert.equal(pub.keyId, signing.keyId);
+    assert.equal(verifyManifest(m, sig, pub.publicKeyPem), true, 'checks with the public key alone');
+    assert.equal(verifyManifest({ ...m, reason: 'something else' }, sig, pub.publicKeyPem), false, 'an edited manifest does not');
+    assert.equal(verifyManifest(m, sig, generateEvidenceKey().publicPem), false, 'another key does not');
+
+    const dl = await call('GET', '/api/recording-exports/' + m.id + '/file');
+    assert.equal(dl.status, 200);
+    const v = await call('POST', '/api/recording-exports/' + m.id + '/verify');
+    assert.deepEqual([v.json.fileMatchesManifest, v.json.signature, v.json.custody.ok, v.json.ok], [true, 'valid', true, true]);
+
+    const detail = (await call('GET', '/api/recording-exports/' + m.id)).json;
+    assert.deepEqual(detail.custody.map((e: any) => e.action), ['exported', 'downloaded', 'verified']);
+    assert.equal(detail.custodyIntact, true);
+    assert.equal(detail.custody[0].by, 'bob');
+
+    // Tampering shows: a changed video, a removed custody line, a changed custody line.
+    const dir = path.join(exportsDir, m.id);
+    const custody = await readCustody(dir);
+    assert.deepEqual(verifyCustody(custody.filter((_, i) => i !== 1)), { ok: false, brokenAt: 2, why: 'a line is missing or out of order' });
+    assert.deepEqual(verifyCustody(custody.map((e, i) => (i === 0 ? { ...e, by: 'mallory' } : e))), { ok: false, brokenAt: 1, why: 'a line was changed' });
+    const fs = await import('node:fs');
+    fs.appendFileSync(path.join(dir, 'camA.mp4'), Buffer.from('tamper'));
+    const bad = await call('POST', '/api/recording-exports/' + m.id + '/verify');
+    assert.deepEqual([bad.json.fileMatchesManifest, bad.json.ok], [false, false]);
+    const lines = fs.readFileSync(path.join(dir, 'custody.jsonl'), 'utf8').trim().split('\n');
+    fs.writeFileSync(path.join(dir, 'custody.jsonl'), [lines[0].replace('"bob"', '"mallory"'), ...lines.slice(1)].join('\n') + '\n');
+    const worse = await call('POST', '/api/recording-exports/' + m.id + '/verify');
+    assert.equal(worse.json.custody.ok, false);
+  }, { signing });
+});
+
+test('unsigned server: the manifest says it is unsigned, verification still checks the file and the chain, and there is no public key to hand out', { skip, timeout: 60_000 }, async () => {
+  await withRoutes(async ({ call }) => {
+    const r = await call('POST', '/api/recordings/camA/export', { from: at(0).toISOString(), to: at(8).toISOString(), reason: 'FIR 99/2026' });
+    assert.deepEqual([r.json.signed, r.json.signature], [false, null]);
+    assert.equal((await call('GET', '/api/evidence/public-key')).status, 404);
+    const v = await call('POST', '/api/recording-exports/' + r.json.export.id + '/verify');
+    assert.deepEqual([v.json.signature, v.json.fileMatchesManifest, v.json.ok], ['unsigned', true, true]);
+    assert.equal((await call('POST', '/api/recording-exports/' + r.json.export.id + '/verify', undefined, 'eve')).status, 403, 'a viewer cannot verify');
+  });
 });

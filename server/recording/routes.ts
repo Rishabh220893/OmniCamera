@@ -18,6 +18,8 @@ import { PolicyError, parsePolicy } from './policy';
 import { CAMERA_RE, type RecordingStore } from './store';
 import { ClipError, makeClip, type ClipResult } from './clip';
 import { overlapsHold, runRetention, type HoldStore, type PolicyStore } from './retention';
+import { appendCustody, readCustody, signManifest, verifyCustody, verifyManifest, type ManifestSignature, type SigningKey } from './evidence';
+import { sha256File } from './clip';
 
 export type RecordingPermission = 'recording.view' | 'recording.export' | 'recording.manage';
 
@@ -34,6 +36,8 @@ export interface RecordingRoutesContext {
    */
   access(req: Request, res: Response, permission: RecordingPermission, cameraId?: string): Promise<{ uid: string } | null>;
   now?: () => Date;
+  /** Signs export manifests (EVIDENCE_SIGNING_KEY). Without it manifests are hashed but unsigned, and say so. */
+  signing?: SigningKey | null;
   maxClipSeconds?: number;
   maxExportSeconds?: number;
   /** At most this many clips are being cut at once (each is an ffmpeg process). */
@@ -141,8 +145,12 @@ export function registerRecordingRoutes(app: Express, ctx: RecordingRoutesContex
       // The exported range is held so the originals outlive routine retention while the case is open.
       const hold = await ctx.holds.add({ cameraId: id, from: r.from, to: r.to, reason, by: who.uid });
       const manifest = { id: exportId, cameraId: id, reason, exportedBy: who.uid, exportedAt: now().toISOString(), holdId: hold.id, ...clipSummary(clip) };
-      await fs.writeFile(path.join(ctx.exportsDir, exportId, 'manifest.json'), JSON.stringify(manifest, null, 2));
-      res.status(201).json({ export: manifest });
+      const dir = path.join(ctx.exportsDir, exportId);
+      await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+      let signature: ManifestSignature | null = null;
+      if (ctx.signing) { signature = signManifest(manifest, ctx.signing, now()); await fs.writeFile(path.join(dir, 'manifest.sig.json'), JSON.stringify(signature, null, 2)); }
+      await appendCustody(dir, { by: who.uid, action: 'exported', detail: `${id} ${r.from.toISOString()} to ${r.to.toISOString()}; hold ${hold.id}; ${signature ? `signed by key ${signature.keyId}` : 'unsigned'}`, at: now() });
+      res.status(201).json({ export: manifest, signature, signed: !!signature });
     } catch (e) { fail(res, e); }
   });
 
@@ -155,13 +163,43 @@ export function registerRecordingRoutes(app: Express, ctx: RecordingRoutesContex
     try { return JSON.parse(await fs.readFile(path.join(ctx.exportsDir, id, 'manifest.json'), 'utf8')); } catch { return null; }
   };
 
+  const loadSignature = async (id: string): Promise<ManifestSignature | null> => {
+    try { return JSON.parse(await fs.readFile(path.join(ctx.exportsDir, id, 'manifest.sig.json'), 'utf8')); } catch { return null; }
+  };
+
   app.get('/api/recording-exports/:id', async (req, res) => {
     const id = exportId(req, res);
     if (!id) return;
     const m = await loadManifest(id);
     if (!m) { res.status(404).json({ error: 'No such export.' }); return; }
     if (!(await ctx.access(req, res, 'recording.export', m.cameraId))) return;
-    res.json({ export: m });
+    const custody = await readCustody(path.join(ctx.exportsDir, id)).catch(() => []);
+    res.json({ export: m, signature: await loadSignature(id), custody, custodyIntact: verifyCustody(custody).ok });
+  });
+
+  /** The public key that checks signed manifests: safe to publish; keep a copy offline so a signature can be checked without this server. */
+  app.get('/api/evidence/public-key', async (req, res) => {
+    if (!(await ctx.access(req, res, 'recording.export'))) return;
+    if (!ctx.signing) { res.status(404).json({ error: 'This server does not sign manifests (EVIDENCE_SIGNING_KEY is not set).' }); return; }
+    res.json({ algorithm: 'ed25519', keyId: ctx.signing.keyId, publicKeyPem: ctx.signing.publicPem });
+  });
+
+  /** Re-checks an export now: the file against the manifest's SHA-256, the signature, and the custody chain. Recorded in the custody log. */
+  app.post('/api/recording-exports/:id/verify', async (req, res) => {
+    const id = exportId(req, res);
+    if (!id) return;
+    const m = await loadManifest(id);
+    if (!m) { res.status(404).json({ error: 'No such export.' }); return; }
+    const who = await ctx.access(req, res, 'recording.export', m.cameraId);
+    if (!who) return;
+    const dir = path.join(ctx.exportsDir, id);
+    let fileOk: boolean | null = null;
+    try { fileOk = (await sha256File(path.join(dir, `${m.cameraId}.mp4`))) === m.sha256; } catch { fileOk = false; }
+    const sig = await loadSignature(id);
+    const signature = !sig ? 'unsigned' : ctx.signing && sig.keyId === ctx.signing.keyId ? (verifyManifest(m, sig, ctx.signing.publicPem) ? 'valid' : 'INVALID') : 'other-key';
+    const chain = verifyCustody(await readCustody(dir).catch(() => []));
+    await appendCustody(dir, { by: who.uid, action: 'verified', detail: `file ${fileOk ? 'matches' : 'DOES NOT MATCH'}; signature ${signature}; custody ${chain.ok ? 'intact' : 'BROKEN'}`, at: now() });
+    res.json({ fileMatchesManifest: fileOk, signature, custody: chain, ok: fileOk === true && (signature === 'valid' || signature === 'unsigned') && chain.ok });
   });
 
   app.get('/api/recording-exports/:id/file', async (req, res) => {
@@ -169,8 +207,10 @@ export function registerRecordingRoutes(app: Express, ctx: RecordingRoutesContex
     if (!id) return;
     const m = await loadManifest(id);
     if (!m) { res.status(404).json({ error: 'No such export.' }); return; }
-    if (!(await ctx.access(req, res, 'recording.export', m.cameraId))) return;
+    const who = await ctx.access(req, res, 'recording.export', m.cameraId);
+    if (!who) return;
     const file = path.join(ctx.exportsDir, id, `${m.cameraId}.mp4`);
+    await appendCustody(path.join(ctx.exportsDir, id), { by: who.uid, action: 'downloaded', at: now() }).catch(() => undefined);
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${m.cameraId}-${id.slice(0, 8)}.mp4"`);
     res.setHeader('X-Content-SHA256', String(m.sha256 ?? ''));

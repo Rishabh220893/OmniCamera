@@ -34,6 +34,8 @@ export interface Incident {
   createdAt: string;
   closedAt?: string;
   closedBy?: string;
+  /** When the incident was announced as an `incident.opened` event (once). */
+  notifiedAt?: string;
   notes: IncidentNote[];
 }
 

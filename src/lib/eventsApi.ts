@@ -12,7 +12,7 @@ export interface AlertRow {
   cameraId: string; cameraName: string; department?: string; eventCount: number; createdAt: string; lastEventAt: string;
   ackBy?: string; resolvedBy?: string; deliveries: Array<{ channel: string; ok: boolean; error?: string }>;
 }
-export type ChannelCfg = { type: 'webhook'; url: string; secret?: string } | { type: 'log' };
+export type ChannelCfg = { type: 'webhook'; url: string; secret?: string } | { type: 'email'; to: string[] } | { type: 'sms'; to: string[] } | { type: 'recording-hold'; beforeMinutes: number; afterMinutes: number } | { type: 'log' };
 export interface RuleRow {
   id: string; name: string; enabled: boolean; department?: string;
   match: { types?: string[]; minSeverity?: Severity; tags?: string[]; cameraIds?: string[]; departments?: string[]; sources?: string[] };
@@ -49,6 +49,7 @@ export const eventsApi = {
   acknowledge: (id: string) => call<{ alert: AlertRow }>(`/api/alerts/${encodeURIComponent(id)}/acknowledge`, { method: 'POST', body: {} }).then((r) => r.alert),
   resolve: (id: string) => call<{ alert: AlertRow }>(`/api/alerts/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: {} }).then((r) => r.alert),
   rules: () => call<{ rules: RuleRow[] }>('/api/alert-rules').then((r) => list(r.rules)),
+  channels: () => call<{ channels: string[] }>('/api/event-channels').then((r) => r.channels),
   createRule: (rule: RuleInput) => call<{ rule: RuleRow }>('/api/alert-rules', { method: 'POST', body: rule }).then((r) => r.rule),
   updateRule: (id: string, rule: RuleInput) => call<{ rule: RuleRow }>(`/api/alert-rules/${encodeURIComponent(id)}`, { method: 'PUT', body: rule }).then((r) => r.rule),
   deleteRule: (id: string) => call<{ status: string }>(`/api/alert-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),

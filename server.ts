@@ -33,6 +33,7 @@ import { createRecordingStore } from './server/recording/store';
 import { createS3Client } from './server/recording/s3';
 import { createS3ColdTier } from './server/recording/coldTier';
 import { createHoldStore, createPolicyStore, runRetention } from './server/recording/retention';
+import { createDiskWatch, readDisk, signingKeyFromEnv } from './server/recording/evidence';
 import { registerRecordingRoutes } from './server/recording/routes';
 import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
 import { eventScope, type Principal } from './server/authz/policy';
@@ -77,7 +78,8 @@ import { makeEvent, type PlatformEvent } from './server/events/schema';
 import { createFirestoreGatewayDocs, createGatewayCentral } from './server/gateway/central';
 import { captureRawBody, registerGatewayRoutes } from './server/gateway/routes';
 import type { AssignedCamera } from './server/gateway/protocol';
-import { createChannelRegistry, createLogChannel, createWebhookChannel } from './server/events/channels';
+import { createChannelRegistry, createEmailChannel, createLogChannel, createRecordingHoldChannel, createSmsChannel, createSmtpSender, createWebhookChannel } from './server/events/channels';
+import { announceIncidents } from './server/incidents/notify';
 import { registerEventRoutes } from './server/events/routes';
 import { createCorrelator } from './server/incidents/correlator';
 import { registerIncidentRoutes } from './server/incidents/routes';
@@ -1318,6 +1320,9 @@ Analyze this context to answer user queries:
   // ---- Recording and playback (server/recording, docs/recording.md) ----
   // On when RECORDINGS_DIR is set and Firebase Admin is configured (camera ownership and departments are checked against the camera record).
   const recEnv = recordingEnv(process.env);
+  // Late-bound: the recording block comes before the event bus exists, but the disk watch and the hold channel need both.
+  const lateEmit: { fn: ((events: PlatformEvent[]) => Promise<unknown>) | null } = { fn: null };
+  let recordingHolds: ReturnType<typeof createHoldStore> | null = null;
   if (recEnv && registryDb) {
     const db = registryDb;
     const recStore = createRecordingStore({
@@ -1326,8 +1331,12 @@ Analyze this context to answer user queries:
     });
     const recPolicies = createPolicyStore(recEnv.policyFile);
     const recHolds = createHoldStore(recEnv.holdsFile);
+    recordingHolds = recHolds;
+    // Export manifests are signed when EVIDENCE_SIGNING_KEY is set (npm run evidence-key makes one); otherwise they are hashed but unsigned.
+    const evidenceKey = (() => { try { return signingKeyFromEnv(process.env); } catch (e) { console.warn('[RECORDING]', e instanceof Error ? e.message : e); return null; } })();
+    console.log(`[RECORDING] Evidence manifests are ${evidenceKey ? `signed (key ${evidenceKey.keyId})` : 'not signed (EVIDENCE_SIGNING_KEY is not set)'}.`);
     registerRecordingRoutes(app, {
-      store: recStore, policies: recPolicies, holds: recHolds, exportsDir: recEnv.exportsDir, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays,
+      store: recStore, policies: recPolicies, holds: recHolds, exportsDir: recEnv.exportsDir, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays, signing: evidenceKey,
       access: async (req, res, permission, cameraId) => {
         const p = await authz.authenticate(req, res);
         if (!p) return null;
@@ -1353,6 +1362,19 @@ Analyze this context to answer user queries:
     };
     setTimeout(retentionTick, 60_000).unref();
     setInterval(retentionTick, 3_600_000).unref();
+    // The recording disk: one event when it gets low, one when it is nearly full, one when it recovers (docs/recording.md).
+    const diskWatch = createDiskWatch({
+      read: () => readDisk(recEnv.dir),
+      lowPercent: Number(process.env.RECORDING_DISK_LOW_PERCENT) || 15, criticalPercent: Number(process.env.RECORDING_DISK_CRITICAL_PERCENT) || 5,
+      emit: async (level, r) => {
+        const pct = r.totalBytes > 0 ? Math.round((r.freeBytes / r.totalBytes) * 1000) / 10 : 100;
+        const type = level === 'critical' ? 'recording.disk_critical' : level === 'low' ? 'recording.disk_low' : 'recording.disk_ok';
+        console.warn(`[RECORDING] disk ${level}: ${pct}% free`);
+        await lateEmit.fn?.([makeEvent({ type, summary: level === 'ok' ? `The recording disk has ${pct}% free again` : `The recording disk has ${pct}% free (${Math.round(r.freeBytes / 1e9)} GB)`, data: { freeBytes: r.freeBytes, totalBytes: r.totalBytes, percentFree: pct }, dedupeKey: `${level}:${Math.floor(Date.now() / 60_000)}` }, { source: 'recording-monitor', camera: { id: 'recorder', name: 'Recording disk', userId: 'system' }, ts: new Date() })]);
+      },
+    });
+    setTimeout(() => void diskWatch.tick(), 30_000).unref();
+    setInterval(() => void diskWatch.tick(), Math.max(10_000, Number(process.env.RECORDING_DISK_CHECK_MS) || 60_000)).unref();
     console.log(`[RECORDING] Playback is on; segments are read from ${recEnv.dir}${recEnv.warmDir ? ` and ${recEnv.warmDir}` : ''}.`);
   } else if (recEnv) console.warn('[RECORDING] RECORDINGS_DIR is set but Firebase Admin is not configured, so playback routes are off.');
 
@@ -1369,13 +1391,23 @@ Analyze this context to answer user queries:
     try { await alertStore.ensureSchema(); }
     catch (e) { console.warn('[ALERTS] Could not prepare the alert tables, keeping alerts in memory:', e instanceof Error ? e.message : e); alertStore = createMemoryAlertStore(); }
   } else alertStore = createMemoryAlertStore();
-  const alertChannels = createChannelRegistry([createWebhookChannel({ allowPrivate: process.env.ALERT_WEBHOOK_ALLOW_PRIVATE === 'true' }), createLogChannel()]);
+  // Delivery channels. E-mail needs SMTP_URL (+ ALERT_EMAIL_FROM), SMS needs SMS_GATEWAY_URL (+ SMS_GATEWAY_TOKEN); a rule that names a channel this server does not have is refused with a sentence saying so.
+  const alertChannels = createChannelRegistry([
+    createWebhookChannel({ allowPrivate: process.env.ALERT_WEBHOOK_ALLOW_PRIVATE === 'true' }), createLogChannel(),
+    ...(process.env.SMTP_URL ? [createEmailChannel({ send: createSmtpSender(process.env.SMTP_URL), from: process.env.ALERT_EMAIL_FROM || 'OmniSee <alerts@localhost>', allowedDomains: (process.env.ALERT_EMAIL_DOMAINS || '').split(',').map((d) => d.trim()).filter(Boolean), maxPerHour: Number(process.env.ALERT_EMAIL_MAX_PER_HOUR) || undefined })] : []),
+    ...(process.env.SMS_GATEWAY_URL && process.env.SMS_GATEWAY_TOKEN ? [createSmsChannel({ gatewayUrl: process.env.SMS_GATEWAY_URL, token: process.env.SMS_GATEWAY_TOKEN, from: process.env.SMS_FROM || undefined, maxPerHour: Number(process.env.ALERT_SMS_MAX_PER_HOUR) || undefined })] : []),
+    ...(recordingHolds ? [createRecordingHoldChannel({ holds: recordingHolds, emit: async (h) => { await lateEmit.fn?.([makeEvent({ type: 'recording.hold_placed', summary: `Footage of ${h.cameraName} kept from ${h.from.toISOString().slice(11, 16)} to ${h.to.toISOString().slice(11, 16)} UTC (alert ${h.alertId})`, data: { holdId: h.holdId, from: h.from.toISOString(), to: h.to.toISOString(), alertId: h.alertId }, dedupeKey: h.holdId }, { source: 'recording-hold', camera: { id: h.cameraId, name: h.cameraName, userId: h.userId, department: h.department }, ts: new Date() })]); } })] : []),
+  ]);
   const alertEngine = createAlertEngine({ store: alertStore, channels: alertChannels });
   // Incidents: events that belong together (one plate on several cameras, a watchlist hit, two systems agreeing on a camera). Runs after the events are stored.
   const correlator = createCorrelator({ events: alertStore, store: incidentStore });
   const ingestAndCorrelate = async (events: PlatformEvent[]) => {
     const result = await alertEngine.ingest(events);
-    await correlator.observe(events).catch((e) => console.warn('[INCIDENTS] Correlation failed:', e instanceof Error ? e.message : e));
+    try {
+      const changed = await correlator.observe(events);
+      // A new incident is announced once as an `incident.opened` event, so alert rules (and their e-mail, SMS and webhook channels) can tell people.
+      if (changed.length) await announceIncidents({ store: incidentStore, incidents: changed, emit: (e) => alertEngine.ingest(e) });
+    } catch (e) { console.warn('[INCIDENTS] Correlation failed:', e instanceof Error ? e.message : e); }
     return result;
   };
   console.log(`[INCIDENTS] Incident store: ${incidentStore.kind}.`);
@@ -1415,6 +1447,7 @@ Analyze this context to answer user queries:
   }
   const eventPipeline = await createEventPipeline({ bus, ingest: emitEvents });
   const publishEvents = (events: PlatformEvent[]) => eventPipeline.publish(events);
+  lateEmit.fn = publishEvents;
   console.log(`[EVENTS] Events go through the ${bus.kind} bus to alerting.`);
 
   // ---- Webhook receiver: devices and systems that can only push (server/connectors/webhook, docs/connectors-vms.md) ----
@@ -1462,6 +1495,8 @@ Analyze this context to answer user queries:
     const vms = createVmsService({
       types: createVmsConnectorTypes(), bus, systemsFile: process.env.VMS_SYSTEMS_FILE || path.join(dataDir, 'vms-systems.json'),
       cursors: createFileCursorStore(path.join(dataDir, 'vms-cursors.json')), allowPrivate: process.env.VMS_ALLOW_PRIVATE === 'true',
+      // Logins of department systems are sealed in the systems file when SOURCE_SECRET_KEY is set (a clear-text file is sealed on the next start).
+      box: (() => { try { return secretBoxFromEnv(process.env); } catch (e) { console.warn('[VMS]', e instanceof Error ? e.message : e); return null; } })(),
     });
     registerVmsRoutes(app, { service: vms, allow: async (req, res, permission) => { const p = await authz.require(req, res, permission); return p ? { uid: p.uid } : null; } });
     await vms.load();
