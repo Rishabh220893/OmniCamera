@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { AlertTriangle, CheckCircle2, Loader2, Maximize2, Minimize2, RefreshCw, X, XCircle, Circle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, Maximize2, Minimize2, RefreshCw, Sparkles, X, XCircle, Circle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig } from '../types';
 import { gridCamId, mediaPathId, mediaAuthHeader, mediaPlaylistUrl, useMediaConfig, type MediaConfig } from '../lib/mediaServer';
@@ -89,6 +89,28 @@ function startRecipe(recipe: RecipeId, c: Ctx): Attempt {
   return { ready, cleanup: () => { abort.abort(); if (timer) clearTimeout(timer); if (current) URL.revokeObjectURL(current); c.setStill(null); } };
 }
 
+const AI_INTERVAL_MS = 10_000;
+const AI_MAX_SIDE = 1024;
+
+/** What the scene analysis said about one frame, as shown in the caption. */
+interface Caption { summary: string; people: number; vehicles: number; plates: string[]; alerts: string[]; unusual: boolean; at: Date }
+
+/** The picture now on screen (the playing video, or the refreshed still) as base64 JPEG, at most 1024 px on the long side. */
+function grabBase64(el: HTMLVideoElement | HTMLImageElement | null): string {
+  if (!el) throw new Error('There is no picture to analyse yet.');
+  const w = el instanceof HTMLVideoElement ? el.videoWidth : el.naturalWidth, h = el instanceof HTMLVideoElement ? el.videoHeight : el.naturalHeight;
+  if (!w || !h) throw new Error('There is no picture to analyse yet.');
+  const k = Math.min(1, AI_MAX_SIDE / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(w * k); canvas.height = Math.round(h * k);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(el, 0, 0, canvas.width, canvas.height);
+  const b64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+  if (!b64) throw new Error('Could not capture the picture.');
+  return b64;
+}
+
 interface Props {
   camera: CameraConfig;
   streamAccessEmail: string;
@@ -105,6 +127,11 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
   const media = useMediaConfig();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const stillRef = useRef<HTMLImageElement | null>(null);
+  const [aiOn, setAiOn] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [caption, setCaption] = useState<Caption | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [still, setStill] = useState<string | null>(null);
   const [playing, setPlaying] = useState<RecipeId | null>(null);
@@ -177,6 +204,43 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
     return () => { cancelled = true; cleanup?.(); };
   }, [recipes, round, camera, camId, mediaId, media, streamAccessEmail, streamAccessPassword]);
 
+  // AI captions: while the button is on and the camera shows a picture, one frame every 10 s goes to the scene analysis (one at a time),
+  // and what it says is shown at the bottom. Off when the camera closes or the button is pressed again; nothing is stored from here.
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
+  useEffect(() => {
+    setCaption(null); setAiError(null);
+    if (!aiOn) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      if (stopped) return;
+      if (playingRef.current) {
+        setAiBusy(true);
+        try {
+          const jpeg = grabBase64(playingRef.current === 'stills' ? stillRef.current : videoRef.current);
+          const res = await fetch('/api/gemini/analyze-frame', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageBase64: jpeg, knownFaces: [], watchlist: [], camera: { id: camera.id, name: camera.name, sensitivity: camera.sensitivity, peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold, suspiciousRules: camera.suspiciousRules, aiAnalysis: camera.aiAnalysis } }),
+          });
+          if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error || `The analysis answered ${res.status}.`);
+          const d = await res.json();
+          if (!stopped) {
+            setCaption({
+              summary: String(d.summary ?? '').trim() || 'Nothing to report.', people: Number(d.counts?.people) || 0, vehicles: Number(d.counts?.vehicles) || 0,
+              plates: Array.isArray(d.detected_plates) ? d.detected_plates.map(String).slice(0, 4) : [], alerts: Array.isArray(d.alerts) ? d.alerts.map(String).slice(0, 3) : [], unusual: !!d.isUnusual, at: new Date(),
+            });
+            setAiError(null);
+          }
+        } catch (e) { if (!stopped) setAiError(e instanceof Error ? e.message : 'The analysis failed.'); }
+        finally { if (!stopped) setAiBusy(false); }
+      }
+      if (!stopped) timer = setTimeout(() => void tick(), AI_INTERVAL_MS);
+    };
+    void tick();
+    return () => { stopped = true; if (timer) clearTimeout(timer); setAiBusy(false); };
+  }, [aiOn, camera.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const allFailed = recipes !== null && steps.length > 0 && steps.every((s) => s.state === 'failed');
   const title = (camId ?? camera.name).toUpperCase();
 
@@ -207,7 +271,36 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
 
       <div className="relative flex-1 min-h-0 bg-black">
         <video ref={videoRef} className={cn('absolute inset-0 w-full h-full object-contain', playing === 'stills' && 'hidden')} autoPlay muted playsInline />
-        {playing === 'stills' && still && <img src={still} alt={`${title} latest picture`} className="absolute inset-0 w-full h-full object-contain" />}
+        {playing === 'stills' && still && <img ref={stillRef} src={still} alt={`${title} latest picture`} className="absolute inset-0 w-full h-full object-contain" />}
+
+        {playing && (
+          <button
+            onClick={() => setAiOn((v) => !v)}
+            className={cn('absolute top-3 left-1/2 -translate-x-1/2 z-10 h-9 px-4 rounded-full text-xs font-semibold flex items-center gap-2 border backdrop-blur', aiOn ? 'bg-accent text-white border-accent' : 'bg-black/60 text-white border-white/25 hover:bg-black/80')}
+            aria-pressed={aiOn} title={aiOn ? 'Stop the AI captions' : 'Describe what the camera sees, every 10 seconds'} data-testid="overlay-ai"
+          >
+            {aiBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+            AI {aiOn ? 'on' : 'off'}
+          </button>
+        )}
+
+        {aiOn && playing && (aiError || caption || aiBusy) && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-[min(90%,52rem)] pointer-events-none" data-testid="overlay-caption" aria-live="polite">
+            <div className={cn('rounded-xl px-4 py-3 text-center backdrop-blur-md border', aiError || caption?.unusual ? 'bg-red-950/80 border-red-400/50' : 'bg-black/75 border-white/15')}>
+              {aiError ? (
+                <p className="text-sm text-red-200">AI analysis: {aiError}</p>
+              ) : caption ? (<>
+                <p className="text-sm sm:text-base leading-snug">{caption.summary}</p>
+                <p className="mt-1.5 text-[11px] text-white/70 flex flex-wrap justify-center gap-x-3 gap-y-0.5">
+                  <span>{caption.people} {caption.people === 1 ? 'person' : 'people'}</span><span>{caption.vehicles} {caption.vehicles === 1 ? 'vehicle' : 'vehicles'}</span>
+                  {caption.plates.length > 0 && <span className="font-mono">{caption.plates.join(' · ')}</span>}
+                  <span>{caption.at.toLocaleTimeString()}{aiBusy ? ' · updating…' : ''}</span>
+                </p>
+                {caption.alerts.length > 0 && <p className="mt-1 text-xs font-semibold text-red-300">{caption.alerts.join(' · ')}</p>}
+              </>) : <p className="text-sm text-white/80">Analysing the first picture…</p>}
+            </div>
+          </div>
+        )}
 
         {!playing && (
           <div className="absolute inset-0 flex items-center justify-center p-6">

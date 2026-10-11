@@ -92,3 +92,8 @@ need the default. Not covered: real cameras, a real face, the grid's account lim
 | `TRACK_GATE_MAX_SKIP_S` | 60 | Longest a camera goes without being analysed when its scene does not change |
 | `TRACKING_FAKE_FRAMES_DIR` | unset | Test mode, see above |
 | `ANPR_SERVICE_URL`, `ANPR_API_KEY`, `ANPR_TIMEOUT_MS` | unset, unset, 8000 | The plate reader (`node scripts/demo.mjs up --anpr` starts it) |
+
+## AI captions on an open camera
+
+Once a camera is playing full screen, an **AI off / AI on** button appears at the top centre of the picture. Switched on, one frame every 10 seconds (one at a time) is sent to the same scene analysis the Feed uses (`/api/gemini/analyze-frame`), and the result is shown as a caption at the bottom centre: the summary, people and vehicle counts, any plates, the time, and the alerts in red (the caption turns red when the analysis calls the scene unusual). It works on the playing video and on the refreshed-stills fallback. It stops when you press the button again or close the camera; nothing is saved to the logs or events from here, and the known-faces and watchlist checks are not applied (the empty lists are sent). Each analysed frame is a model call (about 6 a minute while it is on). Code: `src/components/CameraOverlay.tsx`.
+**Type-checked only: not tried on a playing camera** (the guest demo has no playable remote camera to open).
