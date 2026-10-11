@@ -12,6 +12,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
+import type { Readable } from 'node:stream';
 import path from 'node:path';
 import type { Express, Request, Response } from 'express';
 import { PolicyError, parsePolicy } from './policy';
@@ -20,6 +21,7 @@ import { ClipError, makeClip, type ClipResult } from './clip';
 import { overlapsHold, runRetention, type HoldStore, type PolicyStore } from './retention';
 import { appendCustody, readCustody, signManifest, verifyCustody, verifyManifest, type ManifestSignature, type SigningKey } from './evidence';
 import { sha256File } from './clip';
+import { CryptoError, exportFile, exportSha256, openExport, sealExport } from './exportCrypto';
 
 export type RecordingPermission = 'recording.view' | 'recording.export' | 'recording.manage';
 
@@ -38,6 +40,8 @@ export interface RecordingRoutesContext {
   now?: () => Date;
   /** Signs export manifests (EVIDENCE_SIGNING_KEY). Without it manifests are hashed but unsigned, and say so. */
   signing?: SigningKey | null;
+  /** Encrypts exports at rest (EVIDENCE_ENCRYPTION_KEY). Without it they are plain files. */
+  encryptionKey?: Buffer | null;
   maxClipSeconds?: number;
   maxExportSeconds?: number;
   /** At most this many clips are being cut at once (each is an ffmpeg process). */
@@ -146,6 +150,8 @@ export function registerRecordingRoutes(app: Express, ctx: RecordingRoutesContex
       const hold = await ctx.holds.add({ cameraId: id, from: r.from, to: r.to, reason, by: who.uid });
       const manifest = { id: exportId, cameraId: id, reason, exportedBy: who.uid, exportedAt: now().toISOString(), holdId: hold.id, ...clipSummary(clip) };
       const dir = path.join(ctx.exportsDir, exportId);
+      const encrypted = await sealExport(dir, id, ctx.encryptionKey ?? null);
+      Object.assign(manifest, { encryptedAtRest: encrypted });
       await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
       let signature: ManifestSignature | null = null;
       if (ctx.signing) { signature = signManifest(manifest, ctx.signing, now()); await fs.writeFile(path.join(dir, 'manifest.sig.json'), JSON.stringify(signature, null, 2)); }
@@ -194,7 +200,7 @@ export function registerRecordingRoutes(app: Express, ctx: RecordingRoutesContex
     if (!who) return;
     const dir = path.join(ctx.exportsDir, id);
     let fileOk: boolean | null = null;
-    try { fileOk = (await sha256File(path.join(dir, `${m.cameraId}.mp4`))) === m.sha256; } catch { fileOk = false; }
+    try { fileOk = (await exportSha256(dir, m.cameraId, ctx.encryptionKey ?? null)) === m.sha256; } catch { fileOk = false; }
     const sig = await loadSignature(id);
     const signature = !sig ? 'unsigned' : ctx.signing && sig.keyId === ctx.signing.keyId ? (verifyManifest(m, sig, ctx.signing.publicPem) ? 'valid' : 'INVALID') : 'other-key';
     const chain = verifyCustody(await readCustody(dir).catch(() => []));
@@ -209,12 +215,17 @@ export function registerRecordingRoutes(app: Express, ctx: RecordingRoutesContex
     if (!m) { res.status(404).json({ error: 'No such export.' }); return; }
     const who = await ctx.access(req, res, 'recording.export', m.cameraId);
     if (!who) return;
-    const file = path.join(ctx.exportsDir, id, `${m.cameraId}.mp4`);
+    let stream: Readable | null;
+    try { stream = await openExport(path.join(ctx.exportsDir, id), m.cameraId, ctx.encryptionKey ?? null); }
+    catch (e) { res.status(e instanceof CryptoError ? 409 : 500).json({ error: e instanceof Error ? e.message : 'The exported file cannot be read.' }); return; }
+    if (!stream) { res.status(404).json({ error: 'The exported file is gone.' }); return; }
     await appendCustody(path.join(ctx.exportsDir, id), { by: who.uid, action: 'downloaded', at: now() }).catch(() => undefined);
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${m.cameraId}-${id.slice(0, 8)}.mp4"`);
     res.setHeader('X-Content-SHA256', String(m.sha256 ?? ''));
-    createReadStream(file).on('error', () => { if (!res.headersSent) res.status(404).json({ error: 'The exported file is gone.' }); else res.destroy(); }).pipe(res);
+    if (typeof m.bytes === 'number') res.setHeader('Content-Length', String(m.bytes));
+    // A part that fails its check ends the download with an error rather than delivering damaged video as if it were whole.
+    stream.on('error', () => { if (!res.headersSent) res.status(500).json({ error: 'The exported file failed its integrity check.' }); else res.destroy(); }).pipe(res);
   });
 
   app.get('/api/recording-holds', async (req, res) => {

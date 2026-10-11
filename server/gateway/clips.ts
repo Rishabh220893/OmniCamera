@@ -19,6 +19,7 @@ import path from 'node:path';
 import type { Express, Request, Response } from 'express';
 import { HEADER, createNonceCache, verifyRequest, type NonceCache } from './protocol';
 import { appendCustody, signManifest, type SigningKey } from '../recording/evidence';
+import { sealExport } from '../recording/exportCrypto';
 import { CAMERA_RE } from '../recording/store';
 
 export type ClipState = 'pending' | 'working' | 'ready' | 'failed';
@@ -121,6 +122,8 @@ export interface ClipRoutesContext {
   /** Where evidence exports live: a fetched clip is filed here as an ordinary export (same folder layout as `recording/routes.ts`). */
   exportsDir: string;
   signing?: SigningKey | null;
+  /** Encrypts the filed clip at rest (EVIDENCE_ENCRYPTION_KEY), as the other exports are. */
+  encryptionKey?: Buffer | null;
   /** The signed-in user allowed `permission` on this camera, or null after replying 401/403/404 (the recording routes' access check). */
   access(req: Request, res: Response, permission: 'recording.export' | 'recording.manage', cameraId?: string): Promise<{ uid: string } | null>;
   gateways: {
@@ -195,11 +198,12 @@ export function registerClipUpload(app: Express, getCtx: () => ClipRoutesContext
         return;
       }
       await fs.rename(part, path.join(dir, `${r.cameraId}.mp4`));
+      const encrypted = await sealExport(dir, r.cameraId, ctx.encryptionKey ?? null);
       const m = r.meta;
       const at = (ctx.now?.() ?? new Date());
       const manifest = {
         id, cameraId: r.cameraId, reason: r.reason, exportedBy: r.requestedBy, exportedAt: at.toISOString(), holdId: m.holdId ?? null, source: `gateway:${r.gatewayId}`,
-        requestedFrom: r.from, requestedTo: r.to, actualFrom: m.actualFrom, durationSec: Math.round(m.durationSec * 10) / 10, bytes: m.bytes, sha256: m.sha256, segments: m.segments, gaps: m.gaps,
+        encryptedAtRest: encrypted, requestedFrom: r.from, requestedTo: r.to, actualFrom: m.actualFrom, durationSec: Math.round(m.durationSec * 10) / 10, bytes: m.bytes, sha256: m.sha256, segments: m.segments, gaps: m.gaps,
         note: `Cut from the recordings kept by gateway ${r.gatewayId} next to the camera, without re-encoding, and sent to the centre. The hold that keeps the originals is at the gateway.`,
       };
       await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));

@@ -32,7 +32,7 @@ function seg(dir: string, cam: string, start: Date, sec: number) {
 
 type Who = { uid: string; role: 'viewer' | 'operator' | 'admin' } | null;
 
-async function withRoutes(run: (c: { call: (method: string, p: string, body?: unknown, who?: string) => Promise<{ status: number; json: any; headers: Headers; buf: Buffer }>; dir: string; exportsDir: string; holds: ReturnType<typeof createHoldStore>; denied: string[] }) => Promise<void>, over: { maxConcurrent?: number; signing?: SigningKey | null } = {}) {
+async function withRoutes(run: (c: { call: (method: string, p: string, body?: unknown, who?: string) => Promise<{ status: number; json: any; headers: Headers; buf: Buffer }>; dir: string; exportsDir: string; holds: ReturnType<typeof createHoldStore>; denied: string[] }) => Promise<void>, over: { maxConcurrent?: number; signing?: SigningKey | null; encryptionKey?: Buffer | null } = {}) {
   const dir = mkdtempSync(path.join(root, 'r-'));
   seg(dir, 'camA', at(0), 4); seg(dir, 'camA', at(4), 4); seg(dir, 'camA', at(12), 4);
   const exportsDir = path.join(dir, 'exports');
@@ -45,7 +45,7 @@ async function withRoutes(run: (c: { call: (method: string, p: string, body?: un
   const app = express();
   app.use(express.json());
   registerRecordingRoutes(app, {
-    store, policies, holds, exportsDir, now: () => at(100), maxConcurrent: over.maxConcurrent, signing: over.signing,
+    store, policies, holds, exportsDir, now: () => at(100), maxConcurrent: over.maxConcurrent, signing: over.signing, get encryptionKey() { return over.encryptionKey; },
     access: async (req, res, permission: RecordingPermission, cameraId) => {
       const a = accounts[String(req.header('X-User'))];
       if (!a) { res.status(401).json({ error: 'Sign-in required.' }); return null; }
@@ -265,4 +265,43 @@ test('unsigned server: the manifest says it is unsigned, verification still chec
     assert.deepEqual([v.json.signature, v.json.fileMatchesManifest, v.json.ok], ['unsigned', true, true]);
     assert.equal((await call('POST', '/api/recording-exports/' + r.json.export.id + '/verify', undefined, 'eve')).status, 403, 'a viewer cannot verify');
   });
+});
+
+test('encrypted at rest: the export is stored encrypted, downloads as the plain video with the manifest hash, verifies, and a tampered file is refused at download and verification', { skip, timeout: 60_000 }, async () => {
+  const encryptionKey = (await import('node:crypto')).randomBytes(32);
+  await withRoutes(async ({ call, exportsDir }) => {
+    const r = await call('POST', '/api/recordings/camA/export', { from: at(0).toISOString(), to: at(8).toISOString(), reason: 'FIR 55/2026' });
+    assert.equal(r.status, 201);
+    const m = r.json.export, dir = path.join(exportsDir, m.id);
+    assert.equal(m.encryptedAtRest, true);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.startsWith('camA')), ['camA.mp4.enc'], 'only the encrypted file is on disk');
+    const dl = await call('GET', '/api/recording-exports/' + m.id + '/file');
+    assert.equal(dl.status, 200);
+    assert.equal(dl.buf.length, m.bytes, 'the length of the plain video');
+    assert.equal((await import('node:crypto')).createHash('sha256').update(dl.buf).digest('hex'), m.sha256, 'the bytes are the video the manifest describes');
+    assert.equal(dl.headers.get('content-length'), String(m.bytes));
+    const v = await call('POST', '/api/recording-exports/' + m.id + '/verify');
+    assert.deepEqual([v.json.fileMatchesManifest, v.json.ok], [true, true]);
+    const fs = await import('node:fs');
+    const enc = path.join(dir, 'camA.mp4.enc');
+    const bytes = fs.readFileSync(enc); bytes[bytes.length - 30] ^= 0xff; fs.writeFileSync(enc, bytes);
+    const bad = await call('POST', '/api/recording-exports/' + m.id + '/verify');
+    assert.deepEqual([bad.json.fileMatchesManifest, bad.json.ok], [false, false]);
+    const dl2 = await call('GET', '/api/recording-exports/' + m.id + '/file').catch(() => ({ status: 0 }));
+    assert.notEqual(dl2.status === 200 && (dl2 as any).buf?.length === m.bytes, true, 'a damaged file is not delivered as if it were whole');
+  }, { encryptionKey });
+});
+
+test('encrypted export on a server that lost its key: the download is refused with a clear 409 rather than served as noise, and verification reports it', { skip, timeout: 60_000 }, async () => {
+  const over = { encryptionKey: (await import('node:crypto')).randomBytes(32) as Buffer | null };
+  await withRoutes(async ({ call }) => {
+    const r = await call('POST', '/api/recordings/camA/export', { from: at(0).toISOString(), to: at(8).toISOString(), reason: 'FIR 56/2026' });
+    const id = r.json.export.id;
+    over.encryptionKey = null; // the server restarts without the key
+    const dl = await call('GET', '/api/recording-exports/' + id + '/file');
+    assert.equal(dl.status, 409);
+    assert.match(dl.json.error, /no EVIDENCE_ENCRYPTION_KEY/);
+    const v = await call('POST', '/api/recording-exports/' + id + '/verify');
+    assert.deepEqual([v.json.fileMatchesManifest, v.json.ok], [false, false]);
+  }, over);
 });

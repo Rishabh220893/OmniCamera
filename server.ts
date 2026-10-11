@@ -37,6 +37,9 @@ import { createS3Client } from './server/recording/s3';
 import { createS3ColdTier } from './server/recording/coldTier';
 import { createHoldStore, createPolicyStore, runRetention } from './server/recording/retention';
 import { createDiskWatch, readDisk, signingKeyFromEnv } from './server/recording/evidence';
+import { masterKeyFromEnv } from './server/recording/exportCrypto';
+import { registerCspReport, securityMiddleware } from './server/security/headers';
+import { auditCsv, buildAuditExport } from './server/security/auditExport';
 import { registerRecordingRoutes } from './server/recording/routes';
 import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
 import { decide, eventScope, type Principal } from './server/authz/policy';
@@ -344,6 +347,14 @@ async function startServer() {
   // base64-encoded known-face reference images easily runs several MB.
   // The webhook receiver is public (a camera cannot sign in; a per-source token protects it), so it is mounted BEFORE the global JSON parser below,
   // which would read up to 25 MB of an unauthenticated body. It has its own 512 KB limit. The service behind it is created further down.
+  // Security headers on every response, HTTPS enforcement when asked, and a place for CSP violation reports (server/security/headers.ts).
+  if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', true);
+  app.use(securityMiddleware({
+    csp: (['report', 'enforce', 'off'].includes(process.env.SECURITY_CSP || '') ? process.env.SECURITY_CSP : 'report') as 'report' | 'enforce' | 'off',
+    extraOrigins: (process.env.SECURITY_CSP_EXTRA || '').split(',').map((s) => s.trim()).filter(Boolean), forceHttps: process.env.FORCE_HTTPS === 'true', trustProxy: process.env.TRUST_PROXY === 'true',
+  }));
+  app.post('/api/csp-report', express.json({ type: ['application/csp-report', 'application/reports+json', 'application/json'], limit: '16kb' }));
+  registerCspReport(app);
   const webhookRef: { service: WebhookService | null } = { service: null };
   if (process.env.WEBHOOK_ENABLED !== 'false') registerWebhookIngest(app, () => webhookRef.service);
   // The federation client routes (API-key identities, event push, session leases) are public in the same way, with their own small limits.
@@ -1296,6 +1307,12 @@ Analyze this context to answer user queries:
   // ---- Who may do what (server/authz, docs/authz.md) ----
   // Roles come from Firebase custom claims (npm run set-role). Accounts without a claim fall back to the old self-set role on their
   // user document unless AUTHZ_LEGACY_ROLE=false. Refusals and sensitive uses are logged in memory and, with Firestore, in 'accessLog'.
+  // The key that signs evidence manifests and audit exports (EVIDENCE_SIGNING_KEY) and the one that encrypts exports at rest (EVIDENCE_ENCRYPTION_KEY).
+  // A key that is set but malformed is reported, and the feature stays off rather than silently running without it.
+  const evidenceKey = (() => { try { return signingKeyFromEnv(process.env); } catch (e) { console.warn('[SECURITY]', e instanceof Error ? e.message : e); return null; } })();
+  const evidenceSigningKey = () => evidenceKey;
+  const evidenceMaster = (() => { try { return masterKeyFromEnv(process.env); } catch (e) { console.warn('[SECURITY]', e instanceof Error ? e.message : e); return null; } })();
+  console.log(`[SECURITY] Evidence manifests and audit exports are ${evidenceKey ? `signed (key ${evidenceKey.keyId})` : 'not signed (EVIDENCE_SIGNING_KEY is not set)'}; exports are ${evidenceMaster ? 'encrypted at rest' : 'stored as plain files (EVIDENCE_ENCRYPTION_KEY is not set)'}.`);
   const accessRing = createRingLog(2000);
   const accessDurable = registryDb
     ? createBatchedLog(async (batch) => {
@@ -1320,6 +1337,32 @@ Analyze this context to answer user queries:
   if (registryDb) {
     registerAdminRoutes(app, { directory: createFirebaseDirectory(getAuth(), registryDb), requireAdmin: async (req, res) => { const p = await authz.require(req, res, 'user.manage'); return p ? { uid: p.uid } : null; } });
   }
+  // The access log as a sealed document for an auditor: hashed, and signed when EVIDENCE_SIGNING_KEY is set (server/security/auditExport.ts).
+  app.get('/api/access-log/export', async (req, res) => {
+    const p = await authz.require(req, res, 'audit.read');
+    if (!p) return;
+    try {
+      const d = (v: unknown) => { const t = typeof v === 'string' ? new Date(v) : null; return t && !Number.isNaN(t.getTime()) ? t : undefined; };
+      const filter = { from: d(req.query.from), to: d(req.query.to), uid: typeof req.query.uid === 'string' ? req.query.uid : undefined, allowed: req.query.allowed === 'false' ? false : req.query.allowed === 'true' ? true : undefined };
+      let entries = accessRing.recent(2000);
+      const caveats = [`Only the newest ${entries.length} entries kept in memory are included${registryDb ? ' plus the saved ones' : ''}.`];
+      if (registryDb) {
+        // The durable log has everything that was saved; read the period from it (newest first, at most 20,000).
+        let q: FirebaseFirestore.Query = registryDb.collection('accessLog');
+        if (filter.from) q = q.where('timestamp', '>=', filter.from);
+        if (filter.to) q = q.where('timestamp', '<', filter.to);
+        const snap = await q.orderBy('timestamp', 'desc').limit(20_000).get();
+        entries = snap.docs.map((x) => { const { timestamp: _t, ...e } = x.data(); return e as unknown as AccessLogEntry; });
+        caveats.length = 0;
+        if (snap.size >= 20_000) caveats.push('The period has more than 20,000 entries: only the newest 20,000 are included.');
+      }
+      const out = buildAuditExport(entries, { filter, by: p.uid, signing: evidenceSigningKey(), caveats });
+      res.setHeader('Cache-Control', 'no-store');
+      if (req.query.format === 'csv') { res.type('text/csv; charset=utf-8').setHeader('Content-Disposition', 'attachment; filename="access-log.csv"'); res.send(auditCsv(out.entries)); return; }
+      res.setHeader('Content-Disposition', 'attachment; filename="access-log.json"');
+      res.json(out);
+    } catch (e) { console.error('[AUDIT]', e instanceof Error ? e.message : e); res.status(500).json({ error: 'The export could not be made.' }); }
+  });
   app.get('/api/access-log', async (req, res) => {
     if (!(await authz.require(req, res, 'audit.read'))) return;
     res.json({
@@ -1344,13 +1387,11 @@ Analyze this context to answer user queries:
     const recPolicies = createPolicyStore(recEnv.policyFile);
     const recHolds = createHoldStore(recEnv.holdsFile);
     recordingHolds = recHolds;
-    // Export manifests are signed when EVIDENCE_SIGNING_KEY is set (npm run evidence-key makes one); otherwise they are hashed but unsigned.
-    const evidenceKey = (() => { try { return signingKeyFromEnv(process.env); } catch (e) { console.warn('[RECORDING]', e instanceof Error ? e.message : e); return null; } })();
     // Clips cut at a regional gateway and sent here become evidence exports in the same folder; they need the gateway service, which is set up later.
     clipGateways.ready = true;
     const clipCtx: ClipRoutesContext = {
       store: createClipRequestStore({ file: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'gateway-clips.json') }),
-      exportsDir: recEnv.exportsDir, signing: evidenceKey,
+      exportsDir: recEnv.exportsDir, signing: evidenceKey, encryptionKey: evidenceMaster,
       access: async (req, res, permission, cameraId) => {
         const p = await authz.authenticate(req, res);
         if (!p) return null;
@@ -1374,7 +1415,7 @@ Analyze this context to answer user queries:
     registerClipRoutes(app, clipCtx);
     console.log(`[RECORDING] Evidence manifests are ${evidenceKey ? `signed (key ${evidenceKey.keyId})` : 'not signed (EVIDENCE_SIGNING_KEY is not set)'}.`);
     registerRecordingRoutes(app, {
-      store: recStore, policies: recPolicies, holds: recHolds, exportsDir: recEnv.exportsDir, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays, signing: evidenceKey,
+      store: recStore, policies: recPolicies, holds: recHolds, exportsDir: recEnv.exportsDir, hotDays: recEnv.hotDays, coldDays: recEnv.coldDays, signing: evidenceKey, encryptionKey: evidenceMaster,
       access: async (req, res, permission, cameraId) => {
         const p = await authz.authenticate(req, res);
         if (!p) return null;

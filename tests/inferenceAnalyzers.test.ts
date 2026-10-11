@@ -74,7 +74,7 @@ test('anomaly: a crowd far above the usual raises one event with the numbers, an
   assert.equal(out.length, 1);
   const e = out[0];
   assert.deepEqual([e.type, e.severity, e.source, e.cameraId, e.department, e.data.metric, e.data.direction, e.data.count], ['count.anomaly', 'warning', 'anomaly-baseline', 'gate', 'Traffic', 'people', 'high', 45]);
-  assert.equal(e.data.expected! >= 9 && e.data.expected! <= 12, true);
+  assert.equal(Number(e.data.expected) >= 9 && Number(e.data.expected) <= 12, true);
   assert.match(e.summary, /Unusually many people at Camera gate: 45 \(usually about 1\d at this hour\)/);
   assert.deepEqual(det.handle([seen('person.seen', 'gate', new Date(at(13, 18).getTime() + 5 * 60_000), 50)]), [], 'cooldown');
   assert.equal(det.handle([seen('person.seen', 'gate', new Date(at(13, 18).getTime() + 20 * 60_000), 50)]).length, 1, 'after the cooldown it can raise again');
