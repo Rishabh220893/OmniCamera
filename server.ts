@@ -42,7 +42,7 @@ import { createS3ColdTier } from './server/recording/coldTier';
 import { createHoldStore, createPolicyStore, runRetention } from './server/recording/retention';
 import { createDiskWatch, readDisk, signingKeyFromEnv } from './server/recording/evidence';
 import { masterKeyFromEnv } from './server/recording/exportCrypto';
-import { registerCspReport, securityMiddleware } from './server/security/headers';
+import { mediaServerOrigins, registerCspReport, securityMiddleware } from './server/security/headers';
 import { registerOps } from './server/security/ops';
 import { createPathAccess, createStreamTokens, registerMediaAuth } from './server/media/streamAuth';
 import { mediaPathId } from './src/lib/gridCamId';
@@ -363,7 +363,7 @@ async function startServer() {
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', true);
   app.use(securityMiddleware({
     csp: (['report', 'enforce', 'off'].includes(process.env.SECURITY_CSP || '') ? process.env.SECURITY_CSP : 'report') as 'report' | 'enforce' | 'off',
-    extraOrigins: (process.env.SECURITY_CSP_EXTRA || '').split(',').map((s) => s.trim()).filter(Boolean), forceHttps: process.env.FORCE_HTTPS === 'true', trustProxy: process.env.TRUST_PROXY === 'true',
+    extraOrigins: [...(process.env.SECURITY_CSP_EXTRA || '').split(',').map((s) => s.trim()).filter(Boolean), ...mediaServerOrigins(process.env.MEDIA_SERVER_URL)], forceHttps: process.env.FORCE_HTTPS === 'true', trustProxy: process.env.TRUST_PROXY === 'true',
   }));
   // Health probes for an orchestrator (liveness, readiness) and, when METRICS_ENABLED=true, Prometheus metrics (server/security/ops.ts, deploy/k8s).
   registerOps(app, {

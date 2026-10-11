@@ -235,3 +235,41 @@ test('audit filters and CSV: allowed/denied, a person; spreadsheet formulas are 
   assert.match(csv[4], /"'=HYPERLINK\(""http:\/\/x""\)"/);
   assert.match(csv[4], /"\/a,b"/);
 });
+
+test('media server: its address and its per-camera sub-addresses are allowed in the policy, so playing 30 cameras does not write thousands of violations', async () => {
+  const { mediaServerOrigins } = await import('../server/security/headers.ts');
+  assert.deepEqual(mediaServerOrigins('http://localhost:8888'), ['http://localhost:8888', 'http://*.localhost:8888']);
+  assert.deepEqual(mediaServerOrigins('https://media.example.gov.in/'), ['https://media.example.gov.in', 'https://*.media.example.gov.in']);
+  assert.deepEqual(mediaServerOrigins('http://10.0.0.5:8888'), ['http://10.0.0.5:8888'], 'an IP address has no sub-addresses');
+  assert.deepEqual(mediaServerOrigins(''), []);
+  assert.deepEqual(mediaServerOrigins(undefined), []);
+  assert.deepEqual(mediaServerOrigins('not a url'), []);
+  assert.deepEqual(mediaServerOrigins('javascript:alert(1)'), []);
+  const csp = cspFor(mediaServerOrigins('http://localhost:8888'));
+  for (const d of ['connect-src', 'media-src', 'img-src']) assert.match(csp, new RegExp(`${d}[^;]*http://\*\.localhost:8888`), `${d} allows the per-camera addresses`);
+  assert.doesNotMatch(csp, /script-src[^;]*localhost:8888/, 'scripts are not allowed from the media server');
+});
+
+test('csp reports: the same blocked address is logged once per ten minutes (per directive and host, not per path); a different one is logged', async () => {
+  const logs: string[] = [];
+  let t = 1_000_000;
+  const app = express();
+  app.post('/api/csp-report', express.json({ type: ['application/csp-report', 'application/json'] }));
+  registerCspReport(app, { log: { warn: (m: string) => logs.push(m) }, perMinute: 1000, now: () => t });
+  const server = http.createServer(app);
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (directive: string, uri: string) => fetch(`${base}/api/csp-report`, { method: 'POST', headers: { 'Content-Type': 'application/csp-report' }, body: JSON.stringify({ 'csp-report': { 'effective-directive': directive, 'blocked-uri': uri, 'document-uri': 'http://app/' } }) });
+  try {
+    for (let i = 0; i < 50; i++) assert.equal((await post('connect-src', `http://cam03.localhost:8888/cam03/seg${i}.mp4?session=x`)).status, 204);
+    assert.equal(logs.length, 1, 'fifty segments of one camera are one line');
+    await post('connect-src', 'http://cam05.localhost:8888/cam05/seg0.mp4');
+    assert.equal(logs.length, 2, 'another camera is another address');
+    await post('img-src', 'http://cam03.localhost:8888/x.png');
+    assert.equal(logs.length, 3, 'another directive for the same host is new');
+    t += 601_000;
+    await post('connect-src', 'http://cam03.localhost:8888/cam03/seg999.mp4');
+    assert.equal(logs.length, 4, 'after ten minutes it is reported again');
+    assert.match(logs[0], /further reports for cam03\.localhost:8888 are not logged/);
+  } finally { server.close(); }
+});

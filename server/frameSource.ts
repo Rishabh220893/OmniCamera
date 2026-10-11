@@ -141,25 +141,34 @@ export async function grabFrame(req: FrameRequest): Promise<Buffer> {
   const camId = gridCameraId(url);
 
   let frame: Buffer | null = null;
+  // What each way of getting the picture did, so a failure says why (a timeout after 25 s is a different problem from a refusal) instead of one fixed sentence.
+  const tried: string[] = [];
   if (camId) {
     const rtsp = `rtsp://${encodeURIComponent(creds.email).replace(/@/g, '%40')}:${encodeURIComponent(creds.password)}@${gridRtspHost}/stream/${encodeURIComponent(camId)}`;
     const rtspTry = await extractFrameDetailed(rtsp, true, rtspTimeoutMs());
     frame = rtspTry.buffer;
+    if (!frame) tried.push(`rtsp ${rtspTry.failure === 'timeout' ? `no picture in ${Math.round(rtspTimeoutMs() / 1000)} s` : rtspTry.failure}`);
     // The grid answers an account that is over its viewing-time limit with 401 on RTSP. Trying the HLS route next would only add load.
     if (!frame && /\b401\b|Unauthorized/i.test(rtspTry.stderrTail)) throw new GridRefusedError('the grid answered 401 Unauthorized on RTSP (viewing-time limit or a rejected login)');
     if (!frame) {
       const proxied = `${localBaseUrl}/api/proxy-hls?url=${encodeURIComponent(url)}&password=${encodeURIComponent(creds.password)}&email=${encodeURIComponent(creds.email)}`;
-      frame = await extractFrameWithFfmpeg(proxied, false, hlsTimeoutMs());
+      const hlsTry = await extractFrameDetailed(proxied, false, hlsTimeoutMs());
+      frame = hlsTry.buffer;
+      if (!frame) tried.push(`hls ${hlsTry.failure === 'timeout' ? `no picture in ${Math.round(hlsTimeoutMs() / 1000)} s` : hlsTry.failure}`);
     }
   } else if (url.startsWith('rtsp://')) {
-    frame = await extractFrameWithFfmpeg(url, true, rtspTimeoutMs());
+    const t = await extractFrameDetailed(url, true, rtspTimeoutMs());
+    frame = t.buffer;
+    if (!frame) tried.push(`rtsp ${t.failure === 'timeout' ? `no picture in ${Math.round(rtspTimeoutMs() / 1000)} s` : t.failure}`);
   } else if (/\.(jpe?g|png)(\?|$)/i.test(url)) {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (res.ok) frame = Buffer.from(await res.arrayBuffer());
   } else {
-    frame = await extractFrameWithFfmpeg(url, false, hlsTimeoutMs());
+    const t = await extractFrameDetailed(url, false, hlsTimeoutMs());
+    frame = t.buffer;
+    if (!frame) tried.push(`stream ${t.failure === 'timeout' ? `no picture in ${Math.round(hlsTimeoutMs() / 1000)} s` : t.failure}`);
   }
 
-  if (!frame || frame.length < 500) throw new Error('Could not capture a frame from the camera stream');
+  if (!frame || frame.length < 500) throw new Error(`Could not capture a frame from the camera stream${tried.length ? ` (${tried.join('; ')})` : ''}`);
   return frame;
 }

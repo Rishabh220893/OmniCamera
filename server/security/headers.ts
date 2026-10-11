@@ -29,6 +29,20 @@ const FIREBASE = ['https://*.googleapis.com', 'https://*.firebaseio.com', 'https
 /** Where the browser fetches TURN credentials for WebRTC video (src/lib/whepClient.ts); without it an enforced policy would break live video behind NAT. */
 const TURN = ['https://turn.elixir-webrtc.org'];
 
+/**
+ * The addresses the browser must reach to play video from the platform's own media server: its origin, and the per-camera sub-addresses it hands out
+ * (http://cam10.localhost:8888/...), so one address pattern per camera does not have to be listed by hand. An IP address has no sub-addresses.
+ */
+export function mediaServerOrigins(url: string | undefined): string[] {
+  if (!url) return [];
+  let u: URL;
+  try { u = new URL(url.trim()); } catch { return []; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return [];
+  const out = [u.origin];
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(u.hostname) && !u.hostname.includes(':')) out.push(`${u.protocol}//*.${u.host}`);
+  return out;
+}
+
 export function cspFor(extra: string[] = []): string {
   const ex = extra.filter((o) => /^(https?|wss?):\/\/[^\s;,]+$/i.test(o));
   const connect = ["'self'", ...FIREBASE, ...TURN, ...ex, 'ws:', 'wss:'];
@@ -87,14 +101,23 @@ export function registerCspReport(app: Express, o: { log?: Pick<Console, 'warn'>
   const log = o.log ?? console;
   const limit = o.perMinute ?? 30, now = o.now ?? Date.now;
   let windowStart = 0, count = 0, dropped = 0;
+  // The same blocked address is reported once per ten minutes: a page that plays 30 cameras otherwise writes thousands of identical lines (one per video segment).
+  const seen = new Map<string, number>();
   app.post('/api/csp-report', (req: Request, res: Response) => {
     const t = now();
+    if (seen.size > 500) seen.clear();
     if (t - windowStart > 60_000) { if (dropped) log.warn(`[CSP] ${dropped} more report(s) in the last minute were not logged.`); windowStart = t; count = 0; dropped = 0; }
     if (count >= limit) { dropped++; res.status(204).end(); return; }
     count++;
     const raw = (req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>)['csp-report'] ?? (Array.isArray(req.body) ? (req.body as Array<{ body?: unknown }>)[0]?.body : req.body) : null) as Record<string, unknown> | null;
     const f = (k: string) => (typeof raw?.[k] === 'string' ? String(raw[k]).slice(0, 200) : '');
-    log.warn(`[CSP] ${f('effective-directive') || f('violated-directive') || f('effectiveDirective')} blocked ${f('blocked-uri') || f('blockedURL')} on ${f('document-uri') || f('documentURL')}`);
+    const directive = f('effective-directive') || f('violated-directive') || f('effectiveDirective'), blocked = f('blocked-uri') || f('blockedURL');
+    // Per directive and per host (not per path): ten thousand segment addresses are one problem.
+    let hostKey = blocked; try { hostKey = new URL(blocked).host; } catch { /* inline, eval, or a bare keyword */ }
+    const key = `${directive}|${hostKey}`;
+    if (t - (seen.get(key) ?? -Infinity) < 600_000) { count--; res.status(204).end(); return; }
+    seen.set(key, t);
+    log.warn(`[CSP] ${directive} blocked ${blocked} on ${f('document-uri') || f('documentURL')} (further reports for ${hostKey} are not logged for 10 minutes)`);
     res.status(204).end();
   });
 }
