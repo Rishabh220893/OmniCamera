@@ -1,3 +1,5 @@
+import { parseFilter, filterCameras, toGeoJson, toCsv, type RegistryCamera } from './server/registry/query';
+import { createRegistryMirror, startRegistrySync, type RegistryMirror } from './server/registry/postgis';
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -1131,14 +1133,66 @@ async function startServer() {
     }
   });
 
+  // ---- Registry spatial mirror (PostGIS) ----
+  // Firestore stays the record. With REGISTRY_POSTGIS=true and DATABASE_URL a copy is kept in PostgreSQL + PostGIS for spatial queries; the registry
+  // API reads it while it is healthy and falls back to Firestore on any problem. Off by default; a failure here never reaches the app (docs/registry-postgis.md).
+  let registryMirror: RegistryMirror | null = null;
+  if (process.env.REGISTRY_POSTGIS === 'true') {
+    if (!process.env.DATABASE_URL || !registryDb) console.warn('[REGISTRY POSTGIS] REGISTRY_POSTGIS=true needs DATABASE_URL and FIREBASE_SERVICE_ACCOUNT; the mirror is off.');
+    else {
+      try {
+        const { Pool } = await import('pg');
+        const mirrorPool = new Pool({ connectionString: process.env.DATABASE_URL, max: 2, connectionTimeoutMillis: 8000, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+        mirrorPool.on('error', (e: Error) => console.warn('[REGISTRY POSTGIS] pool:', e.message));
+        const m = createRegistryMirror(mirrorPool);
+        // In the background: the server does not wait for the database to start serving.
+        void m.init().then((okInit) => {
+          if (!okInit) { console.warn('[REGISTRY POSTGIS] Could not prepare the table (is the PostGIS extension allowed?). The mirror is off; Firestore is used.'); return; }
+          registryMirror = m;
+          startRegistrySync(registryDb as never, m);
+        });
+      } catch (e) { console.warn('[REGISTRY POSTGIS] Could not start:', e instanceof Error ? e.message : e); }
+    }
+  }
+
+  app.get('/api/registry/status', async (req, res) => {
+    if (!requireRegistryAuth(req, res)) return;
+    res.json({ postgis: registryMirror ? registryMirror.status() : { enabled: false, ready: false, mirrored: 0, lastSyncAt: null, errors: 0, lastError: process.env.REGISTRY_POSTGIS === 'true' ? 'starting or unavailable' : null } });
+  });
+
+  // Uncovered zones for one user's cameras, computed in the database (needs the mirror; 503 when it is not ready).
+  app.get('/api/registry/gaps', async (req, res) => {
+    if (!requireRegistryAuth(req, res)) return;
+    const userId = req.query.userId as string;
+    if (!userId) return res.status(400).json({ error: "Query param 'userId' is required" });
+    const radius = req.query.radius === undefined ? 300 : Number(req.query.radius);
+    if (!Number.isFinite(radius) || radius < 20 || radius > 5000) return res.status(400).json({ error: "'radius' must be 20 to 5000 metres." });
+    const department = typeof req.query.department === 'string' && req.query.department.trim() ? req.query.department.trim().slice(0, 200) : undefined;
+    const g = registryMirror ? await registryMirror.gaps(userId, { radiusMeters: radius, department }) : null;
+    if (!g) return res.status(503).json({ error: 'The spatial mirror is not available (REGISTRY_POSTGIS, DATABASE_URL, PostGIS). The Registry screen computes the same report in the browser.' });
+    res.json(g);
+  });
+
   // ---- Registry API (Model 1 — API-based camera onboarding) ----
   app.get('/api/registry/cameras', async (req, res) => {
     if (!requireRegistryAuth(req, res)) return;
     const userId = req.query.userId as string;
     if (!userId) return res.status(400).json({ error: "Query param 'userId' is required" });
     try {
-      const snapshot = await registryDb!.collection('cameras').where('userId', '==', userId).get();
-      res.status(200).json({ cameras: snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) });
+      // Optional search and filters (department, status, maintenance, type, text, bounding box, installed before) and output formats (json, geojson, csv).
+      let filter;
+      try { filter = parseFilter(req.query as Record<string, unknown>); } catch (e) { return res.status(400).json({ error: e instanceof Error ? e.message : 'Bad filter' }); }
+      // From the PostGIS copy while it is healthy; otherwise (or on any error there) from Firestore, as before.
+      let cameras: RegistryCamera[] | null = registryMirror ? await registryMirror.list(userId, filter) : null;
+      if (!cameras) {
+        const snapshot = await registryDb!.collection('cameras').where('userId', '==', userId).get();
+        cameras = filterCameras(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as RegistryCamera[], filter);
+      }
+      const format = req.query.format === undefined ? 'json' : String(req.query.format);
+      if (format === 'geojson') return res.status(200).type('application/geo+json').send(JSON.stringify(toGeoJson(cameras)));
+      if (format === 'csv') return res.status(200).type('text/csv; charset=utf-8').set('Content-Disposition', 'attachment; filename="cameras.csv"').send(toCsv(cameras));
+      if (format !== 'json') return res.status(400).json({ error: "'format' must be json, geojson or csv." });
+      res.status(200).json({ cameras, count: cameras.length });
     } catch (err: unknown) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list cameras' });
     }
