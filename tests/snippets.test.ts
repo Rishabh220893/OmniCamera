@@ -9,7 +9,7 @@ import express from 'express';
 import { mkdtempSync, rmSync, existsSync, readFileSync, createReadStream, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import { createFileSnippetStore, createPostgresSnippetStore, type Snippet, type SnippetStore } from '../server/snippets/store.ts';
 import { recordClip, streamCandidates, buildRecordArgs } from '../server/snippets/recorder.ts';
@@ -93,7 +93,8 @@ test('stream candidates: grid cameras try RTSP then HLS (credentials encoded); o
   assert.deepEqual(streamCandidates({ url: 'https://cam.example/live.m3u8', creds, gridRtspHost: 'x', localBaseUrl: 'y' }).map((c) => c.label), ['HTTP']);
   assert.deepEqual(streamCandidates({ url: 'https://cam.example/snap.jpg', creds, gridRtspHost: 'x', localBaseUrl: 'y' }), []);
   const a = buildRecordArgs({ url: 'rtsp://x/y', isRtsp: true, label: 'RTSP' }, 12, 'o.mp4', false);
-  assert.ok(a.includes('-c:v') && a.includes('copy') && a.includes('12') && a.includes('tcp'));
+  assert.ok(a.includes('-c:v') && a.includes('copy') && a.includes('tcp') && a.includes('-progress'));
+  assert.equal(a[a.indexOf('-t') + 1], String(12 * 3 + 30), 'only a distant safety cap, not the length: the recorder stops ffmpeg itself');
   assert.ok(buildRecordArgs({ url: 'http://x/y', isRtsp: false, label: 'HTTP' }, 5, 'o.mp4', true).includes('libx264'));
 });
 
@@ -297,4 +298,73 @@ test('routes: a snippet folder inside a dot-folder (the default .data/snippets) 
     assert.equal((await app.call('GET', done.thumbUrl, 'alice')).status, 200, 'and the picture');
     assert.equal((await app.call('GET', `${done.fileUrl}?download=1`, 'alice')).status, 200);
   } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+// ---- length: counted from the first frame, whatever the connection does ----------------------------------------------------------------
+
+/** A live-like camera: real-time MPEG-TS over HTTP. Each connection waits delayMs[n] before the first frame and ends after lengthsS[n] seconds (stall: stays open and silent). */
+async function startLiveCamera(plan: Array<{ delayMs: number; seconds: number; stall?: boolean }>) {
+  let n = 0;
+  const server = http.createServer((req, res) => {
+    const p = plan[Math.min(n++, plan.length - 1)];
+    const timer = setTimeout(() => {
+      res.writeHead(200, { 'Content-Type': 'video/mp2t' });
+      const ff = spawn('ffmpeg', ['-loglevel', 'error', '-re', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=10', '-t', String(p.seconds), '-c:v', 'libx264', '-preset', 'ultrafast', '-g', '10', '-f', 'mpegts', 'pipe:1'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      ff.stdout.pipe(res, { end: !p.stall });
+      res.on('close', () => ff.kill('SIGKILL'));
+    }, p.delayMs);
+    res.on('close', () => clearTimeout(timer));
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/live.ts`, connections: () => n, close: () => new Promise<void>((r) => { server.closeAllConnections?.(); server.close(() => r()); }) };
+}
+const durationOf = (file: string) => Number(spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nw=1:nk=1', file]).stdout.toString().trim());
+
+test('length (real ffmpeg): a camera that takes 6 seconds to send its first frame still gives the full length, because counting starts at the first frame', { skip: !hasFfmpeg }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'snp-'));
+  const cam = await startLiveCamera([{ delayMs: 6000, seconds: 60 }]);
+  try {
+    const out = join(dir, 'clip.mp4'); const t0 = Date.now();
+    const r = await recordClip([{ url: cam.url, isRtsp: false, label: 'HTTP' }], 6, out);
+    assert.equal(r.ok, true, r.failure);
+    const d = durationOf(out);
+    assert.ok(d >= 5.8 && d < 9, `asked for 6 s, the file holds ${d} s`);
+    assert.ok(Date.now() - t0 >= 11_000, 'it really waited for the first frame, then recorded the full length');
+    assert.equal(r.parts, 1);
+  } finally { await cam.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('length (real ffmpeg): a source that drops after 3 seconds is reconnected and the parts are joined, so the clip still has the full length', { skip: !hasFfmpeg }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'snp-'));
+  const cam = await startLiveCamera([{ delayMs: 0, seconds: 3 }, { delayMs: 500, seconds: 60 }]);
+  try {
+    const out = join(dir, 'clip.mp4');
+    const r = await recordClip([{ url: cam.url, isRtsp: false, label: 'HTTP' }], 8, out);
+    assert.equal(r.ok, true, r.failure);
+    assert.ok((r.parts ?? 0) >= 2 && cam.connections() >= 2, 'it reconnected');
+    const d = durationOf(out);
+    assert.ok(d >= 7.4 && d < 12, `asked for 8 s across a drop, the file holds ${d} s`);
+    assert.equal(spawnSync('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_name', '-of', 'default=nw=1:nk=1', out]).stdout.toString().trim(), 'h264');
+    assert.equal(existsSync(out + '.part1.mp4') || existsSync(out + '.list.txt'), false, 'no temporary parts are left behind');
+  } finally { await cam.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('length (real ffmpeg): a source that goes silent mid-clip is given up on after the stall limit and what was captured is kept; a source that gives under 3 seconds fails with a sentence', { skip: !hasFfmpeg }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'snp-'));
+  const stalling = await startLiveCamera([{ delayMs: 0, seconds: 12, stall: true }]);
+  try {
+    const out = join(dir, 'clip.mp4');
+    const r = await recordClip([{ url: stalling.url, isRtsp: false, label: 'HTTP' }], 20, out, { stallAfterMs: 7000, connectTimeoutMs: 20_000 });
+    assert.equal(r.ok, true, r.failure);
+    const d = durationOf(out);
+    assert.ok(d >= 3 && d < 14, `kept the captured part (${d} s of the 20 asked for)`);
+  } finally { await stalling.close(); }
+  const brief = await startLiveCamera([{ delayMs: 0, seconds: 1.5, stall: true }]);
+  try {
+    const r = await recordClip([{ url: brief.url, isRtsp: false, label: 'HTTP' }], 20, join(dir, 'brief.mp4'), { stallAfterMs: 4000, connectTimeoutMs: 6000 });
+    assert.equal(r.ok, false);
+    assert.match(r.failure ?? '', /only|no video|HTTP/);
+    assert.equal(existsSync(join(dir, 'brief.mp4')), false);
+  } finally { await brief.close(); rmSync(dir, { recursive: true, force: true }); }
 });
