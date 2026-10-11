@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { AlertTriangle, CheckCircle2, Loader2, Maximize2, Minimize2, RefreshCw, Sparkles, X, XCircle, Circle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, History, Loader2, Maximize2, Minimize2, RefreshCw, Sparkles, X, XCircle, Circle } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { CameraConfig } from '../types';
+import { CameraConfig, LogEntry } from '../types';
 import { gridCamId, mediaPathId, mediaAuthHeader, mediaPlaylistUrl, useMediaConfig, type MediaConfig } from '../lib/mediaServer';
 import { startWhep } from '../lib/whepClient';
 import { plannedRecipes, RECIPE_LABEL, type RecipeId } from '../lib/panelTiles';
 import type { TrackAlert } from '../lib/tracking';
 import { captureFrame, setLastFrame } from '../lib/lastFrame';
+import { factsFromAnswer, markOf, shouldRecord, type LiveMark } from '../lib/liveAnalysis';
 
 const STILL_REFRESH_MS = 4_000;
 const RECIPE_TIMEOUT_MS: Record<RecipeId, number> = { media: 45_000, whep: 25_000, proxy: 60_000, stills: 30_000 };
@@ -94,7 +95,7 @@ const AI_INTERVAL_MS = 10_000;
 const AI_MAX_SIDE = 1024;
 
 /** What the scene analysis said about one frame, as shown in the caption. */
-interface Caption { summary: string; people: number; vehicles: number; plates: string[]; alerts: string[]; unusual: boolean; at: Date }
+interface Caption { summary: string; people: number; vehicles: number; plates: string[]; alerts: string[]; unusual: boolean; at: Date; saved?: boolean }
 
 /** The picture now on screen (the playing video, or the refreshed still) as base64 JPEG, at most 1024 px on the long side. */
 function grabBase64(el: HTMLVideoElement | HTMLImageElement | null): string {
@@ -118,18 +119,26 @@ interface Props {
   streamAccessPassword: string;
   alert?: TrackAlert | null;
   onClose: () => void;
+  /** The Logs entries of this camera (the same list as the Logs section), newest first: shown in the History sidebar. */
+  history?: LogEntry[];
+  /** Saves what the AI view says about the picture as a log entry, like every other analysis. */
+  onAnalysis?: (camera: CameraConfig, data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /**
  * One camera, full screen. Nothing loads until it is opened; then each way of playing it is tried in turn
  * (media server, WebRTC, the app's proxy, refreshed stills) until one shows a picture, and the list shows how far it got.
  */
-export default function CameraOverlay({ camera, streamAccessEmail, streamAccessPassword, alert, onClose }: Props) {
+export default function CameraOverlay({ camera, streamAccessEmail, streamAccessPassword, alert, onClose, history = [], onAnalysis }: Props) {
   const media = useMediaConfig();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stillRef = useRef<HTMLImageElement | null>(null);
   const [aiOn, setAiOn] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const markRef = useRef<LiveMark | null>(null);
+  const onAnalysisRef = useRef(onAnalysis);
+  onAnalysisRef.current = onAnalysis;
   const [aiBusy, setAiBusy] = useState(false);
   const [caption, setCaption] = useState<Caption | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -230,6 +239,7 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
   }, [close]);
   useEffect(() => {
     setCaption(null); setAiError(null);
+    markRef.current = null; // the first answer of a new run is always saved
     if (!aiOn) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -251,6 +261,12 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
               plates: Array.isArray(d.detected_plates) ? d.detected_plates.map(String).slice(0, 4) : [], alerts: Array.isArray(d.alerts) ? d.alerts.map(String).slice(0, 3) : [], unusual: !!d.isUnusual, at: new Date(),
             });
             setAiError(null);
+            // Save it as a log entry (Logs section, this camera's history) when it is the first, when what it reports has changed, or once a minute.
+            const facts = factsFromAnswer(d), nowMs = Date.now();
+            if (onAnalysisRef.current && shouldRecord(markRef.current, facts, nowMs)) {
+              markRef.current = markOf(facts, nowMs);
+              Promise.resolve(onAnalysisRef.current(camera, d)).then(() => { if (!stopped) setCaption((c) => (c ? { ...c, saved: true } : c)); }).catch(() => { if (!stopped) setAiError('The description could not be saved to the Logs.'); });
+            }
           }
         } catch (e) { if (!stopped) setAiError(e instanceof Error ? e.message : 'The analysis failed.'); }
         finally { if (!stopped) setAiBusy(false); }
@@ -275,6 +291,9 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {(allFailed || playing) && <button onClick={() => setRound((r) => r + 1)} className="h-9 px-3 rounded-lg bg-white/10 hover:bg-white/20 text-xs font-semibold flex items-center gap-1.5" title="Start again from the first way of playing"><RefreshCw className="w-3.5 h-3.5" /> Retry</button>}
+          <button onClick={() => setHistoryOpen((v) => !v)} className={cn('h-9 px-3 rounded-lg text-xs font-semibold flex items-center gap-1.5', historyOpen ? 'bg-accent text-white' : 'bg-white/10 hover:bg-white/20')} aria-pressed={historyOpen} title="Earlier analyses of this camera (the same entries as the Logs section)" data-testid="overlay-history">
+            <History className="w-4 h-4" /> History{history.length > 0 && <span className="ml-0.5 rounded-full bg-white/20 px-1.5 text-[10px]">{history.length}</span>}
+          </button>
           <button onClick={() => (full ? document.exitFullscreen?.() : goFullscreen())} className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center" aria-label={full ? 'Leave full screen' : 'Full screen'}>
             {full ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
@@ -289,7 +308,8 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
         </div>
       )}
 
-      <div className="relative flex-1 min-h-0 bg-black">
+      <div className="flex flex-1 min-h-0">
+      <div className="relative flex-1 min-w-0 bg-black">
         <video ref={videoRef} className={cn('absolute inset-0 w-full h-full object-contain', playing === 'stills' && 'hidden')} autoPlay muted playsInline />
         {playing === 'stills' && still && <img ref={stillRef} src={still} alt={`${title} latest picture`} className="absolute inset-0 w-full h-full object-contain" />}
 
@@ -314,7 +334,7 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
                 <p className="mt-1.5 text-[11px] text-white/70 flex flex-wrap justify-center gap-x-3 gap-y-0.5">
                   <span>{caption.people} {caption.people === 1 ? 'person' : 'people'}</span><span>{caption.vehicles} {caption.vehicles === 1 ? 'vehicle' : 'vehicles'}</span>
                   {caption.plates.length > 0 && <span className="font-mono">{caption.plates.join(' · ')}</span>}
-                  <span>{caption.at.toLocaleTimeString()}{aiBusy ? ' · updating…' : ''}</span>
+                  <span>{caption.at.toLocaleTimeString()}{aiBusy ? ' · updating…' : ''}{caption.saved ? ' · saved to Logs' : ''}</span>
                 </p>
                 {caption.alerts.length > 0 && <p className="mt-1 text-xs font-semibold text-red-300">{caption.alerts.join(' · ')}</p>}
               </>) : <p className="text-sm text-white/80">Analysing the first picture…</p>}
@@ -344,6 +364,30 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
             </div>
           </div>
         )}
+      </div>
+      {historyOpen && (
+        <aside className="w-80 max-w-[85vw] shrink-0 border-l border-white/10 bg-black/90 flex flex-col" aria-label={`Analysis history of ${title}`} data-testid="overlay-history-panel">
+          <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-white/10">
+            <p className="text-sm font-semibold flex items-center gap-2"><History className="w-4 h-4" /> History <span className="text-white/50 font-normal">{history.length}</span></p>
+            <button onClick={() => setHistoryOpen(false)} className="w-7 h-7 rounded-md bg-white/10 hover:bg-white/20 flex items-center justify-center" aria-label="Close history"><X className="w-3.5 h-3.5" /></button>
+          </div>
+          <p className="px-4 py-2 text-[11px] text-white/50">The same entries as the Logs section, for this camera, newest first. Turn AI on to add to it.</p>
+          {history.length === 0 && <p className="px-4 py-6 text-xs text-white/60" data-testid="overlay-history-empty">No analysis of this camera yet.</p>}
+          <ul className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
+            {history.map((l) => (
+              <li key={l.id} className={cn('rounded-lg border px-3 py-2 text-xs', l.isUnusual || l.isWatchlistMatch ? 'border-red-400/50 bg-red-950/50' : 'border-white/10 bg-white/5')} data-testid="overlay-history-item">
+                <p className="text-[10px] text-white/50">{new Date(l.timestamp).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' })}{l.isWatchlistMatch ? ' · watchlist hit' : l.isUnusual ? ' · unusual' : ''}</p>
+                <p className="mt-0.5 leading-snug">{l.summary.replace(/\s*People: N\/A$/, '')}</p>
+                <p className="mt-1 text-[10px] text-white/60 flex flex-wrap gap-x-2">
+                  <span>{l.counts.people} people</span><span>{l.counts.vehicles} vehicles</span>
+                  {l.detectedPlates && l.detectedPlates.length > 0 && <span className="font-mono">{l.detectedPlates.join(' · ')}</span>}
+                </p>
+                {l.alerts.length > 0 && <p className="mt-1 text-[11px] font-semibold text-red-300">{l.alerts.join(' · ')}</p>}
+              </li>
+            ))}
+          </ul>
+        </aside>
+      )}
       </div>
     </div>
   );

@@ -900,44 +900,9 @@ export default function App() {
     return base64Image;
   }, []);
 
-  // Parameterized by camera (rather than closing over a single activeCamera)
-  // so multiple cameras — the focused one plus any grid-view checkboxes —
-  // can run their own capture/analysis cycles concurrently.
-  const captureAndAnalyzeCamera = useCallback(async (camera: CameraConfig) => {
-    if (inFlightAnalysisRef.current.has(camera.id)) return;
-    if (!mediaRefs.current.get(camera.id)) return; // this camera's feed hasn't reported its DOM refs yet
-
-    inFlightAnalysisRef.current.add(camera.id);
-    setAnalyzingCameraIds(prev => new Set(prev).add(camera.id));
-    setAnalysisErrors(prev => { if (!prev.has(camera.id)) return prev; const next = new Map(prev); next.delete(camera.id); return next; });
-
-    const finish = () => {
-      inFlightAnalysisRef.current.delete(camera.id);
-      setAnalyzingCameraIds(prev => { if (!prev.has(camera.id)) return prev; const next = new Set(prev); next.delete(camera.id); return next; });
-    };
-
-    try {
-      const base64Image = await captureFrameBase64(camera);
-
-      const analyzeResponse = await fetch('/api/gemini/analyze-frame', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: base64Image,
-          knownFaces: knownFaces.slice(0, 6).map(f => ({ name: f.name, imageData: f.imageData })),
-          watchlist: watchlist.map(w => w.plate),
-          camera: {
-            id: camera.id, name: camera.name, sensitivity: camera.sensitivity,
-            peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold,
-            suspiciousRules: camera.suspiciousRules, aiAnalysis: camera.aiAnalysis
-          }
-        })
-      });
-      if (!analyzeResponse.ok) {
-        const errBody = await analyzeResponse.json().catch(() => ({}));
-        throw new Error(errBody.error || `Frame analysis request failed (${analyzeResponse.status})`);
-      }
-      const data = await analyzeResponse.json();
-
+  // What happens to an answer of the frame analysis, whichever screen asked for it (the background analysis, or the AI view of a camera opened full screen):
+  // it becomes a log entry (Firestore, or the local list in the offline demo), plate sightings, the alert and webhook syncs and the sheet row.
+  const recordAnalysis = useCallback(async (camera: CameraConfig, data: any) => {
       const detectedPlates: string[] = data.detected_plates || [];
       const watchlistMatches: string[] = data.watchlistMatches || [];
       const isWatchlistMatch = watchlistMatches.length > 0;
@@ -995,11 +960,52 @@ export default function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cameraId: camera.id, cameraName: camera.name, summary: newEntry.summary, timestamp: newEntry.timestamp.toISOString(), counts: newEntry.counts })
       }).catch(err => console.warn('Sheets sync failed:', err));
+  }, [knownFaces, user]);
+
+  // Parameterized by camera (rather than closing over a single activeCamera)
+  // so multiple cameras — the focused one plus any grid-view checkboxes —
+  // can run their own capture/analysis cycles concurrently.
+  const captureAndAnalyzeCamera = useCallback(async (camera: CameraConfig) => {
+    if (inFlightAnalysisRef.current.has(camera.id)) return;
+    if (!mediaRefs.current.get(camera.id)) return; // this camera's feed hasn't reported its DOM refs yet
+
+    inFlightAnalysisRef.current.add(camera.id);
+    setAnalyzingCameraIds(prev => new Set(prev).add(camera.id));
+    setAnalysisErrors(prev => { if (!prev.has(camera.id)) return prev; const next = new Map(prev); next.delete(camera.id); return next; });
+
+    const finish = () => {
+      inFlightAnalysisRef.current.delete(camera.id);
+      setAnalyzingCameraIds(prev => { if (!prev.has(camera.id)) return prev; const next = new Set(prev); next.delete(camera.id); return next; });
+    };
+
+    try {
+      const base64Image = await captureFrameBase64(camera);
+
+      const analyzeResponse = await fetch('/api/gemini/analyze-frame', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: base64Image,
+          knownFaces: knownFaces.slice(0, 6).map(f => ({ name: f.name, imageData: f.imageData })),
+          watchlist: watchlist.map(w => w.plate),
+          camera: {
+            id: camera.id, name: camera.name, sensitivity: camera.sensitivity,
+            peopleThreshold: camera.peopleThreshold, vehicleThreshold: camera.vehicleThreshold,
+            suspiciousRules: camera.suspiciousRules, aiAnalysis: camera.aiAnalysis
+          }
+        })
+      });
+      if (!analyzeResponse.ok) {
+        const errBody = await analyzeResponse.json().catch(() => ({}));
+        throw new Error(errBody.error || `Frame analysis request failed (${analyzeResponse.status})`);
+      }
+      const data = await analyzeResponse.json();
+
+      await recordAnalysis(camera, data);
     } catch (err: unknown) {
       console.warn(`Frame analysis failed for "${camera.name}":`, err);
       setAnalysisErrors(prev => new Map(prev).set(camera.id, err instanceof Error ? err.message : String(err)));
     } finally { finish(); }
-  }, [knownFaces, watchlist, user, captureFrameBase64]);
+  }, [knownFaces, watchlist, recordAnalysis, captureFrameBase64]);
 
   // One shared 1s tick checks every selected camera's own interval setting
   // rather than juggling a separate setInterval per camera — simpler, and
@@ -1382,7 +1388,7 @@ export default function App() {
                   <MonitorTab
                     cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
                     onAddCamera={addCamera} isCapturing={isCapturing}
-                    cameraError={cameraError} analysisError={analysisError} logs={logs}
+                    cameraError={cameraError} analysisError={analysisError} logs={logs} onLiveAnalysis={recordAnalysis}
                     viewMode={viewMode} onChangeViewMode={setViewMode} containerRef={containerRef} isAdmin={isAdmin} isGuest={user?.uid === 'demo-guest'}
                     isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
                     onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}

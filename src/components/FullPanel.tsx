@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { AlertTriangle, Car, CheckCircle2, ImagePlus, Loader2, Play, ScanFace, Search, ShieldAlert, Square, X } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { CameraConfig } from '../types';
+import { CameraConfig, LogEntry } from '../types';
 import { geminiCallsPerMinute, tileSubtitle, tileTitle } from '../lib/panelTiles';
 import { ageLabel } from '../lib/cameraProfileView';
 import type { TrackAlert, TrackMode, TrackingController } from '../lib/tracking';
@@ -41,13 +41,17 @@ interface Props {
   openAlert: TrackAlert | null;
   onOpenCamera: (id: string) => void;
   onCloseCamera: () => void;
+  /** The Logs section's entries: the open camera's own are shown in its History sidebar. */
+  logs?: LogEntry[];
+  /** Saves what the AI view says as a log entry. */
+  onLiveAnalysis?: (camera: CameraConfig, data: Record<string, unknown>) => Promise<void> | void;
 }
 
 /**
  * Feed > Full Panel: every camera as a tile that loads nothing until it is clicked, and three ways to watch all of them
  * at once in the background: a licence plate, a face, or the suspicious-activity rules.
  */
-export default function FullPanel({ cameras, activeCamera, tracking, streamAccessEmail, streamAccessPassword, openCameraId, openAlert, onOpenCamera, onCloseCamera }: Props) {
+export default function FullPanel({ cameras, activeCamera, tracking, streamAccessEmail, streamAccessPassword, openCameraId, openAlert, onOpenCamera, onCloseCamera, logs = [], onLiveAnalysis }: Props) {
   const { status, alerts } = tracking;
   const running = status?.active === true;
   const [mode, setMode] = useState<TrackMode | null>(null);
@@ -274,7 +278,8 @@ export default function FullPanel({ cameras, activeCamera, tracking, streamAcces
       )}
 
       {openCamera && (
-        <CameraOverlay key={openCamera.id} camera={openCamera} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} alert={openAlert && openAlert.cameraId === openCamera.id ? openAlert : null} onClose={onCloseCamera} />
+        <CameraOverlay key={openCamera.id} camera={openCamera} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} alert={openAlert && openAlert.cameraId === openCamera.id ? openAlert : null} onClose={onCloseCamera}
+          history={logs.filter((l) => l.cameraId === openCamera.id).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())} onAnalysis={onLiveAnalysis} />
       )}
       {openCameraId && !openCamera && <button onClick={onCloseCamera} className="sr-only"><X /> Close</button>}
     </div>

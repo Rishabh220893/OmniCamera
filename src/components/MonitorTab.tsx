@@ -432,6 +432,8 @@ interface MonitorTabProps {
   cameraError: string | null;
   analysisError: string | null;
   logs: LogEntry[];
+  /** Saves the full-screen AI view's description as a log entry. */
+  onLiveAnalysis?: (camera: CameraConfig, data: Record<string, unknown>) => Promise<void> | void;
   viewMode: ViewMode;
   onChangeViewMode: (mode: ViewMode) => void;
   containerRef: MutableRefObject<HTMLDivElement | null>;
@@ -465,7 +467,7 @@ interface MonitorTabProps {
 
 export default function MonitorTab({
   cameras, activeCameraId, onSelectCamera, onAddCamera, isCapturing,
-  cameraError, analysisError, logs, viewMode, onChangeViewMode, containerRef,
+  cameraError, analysisError, logs, onLiveAnalysis, viewMode, onChangeViewMode, containerRef,
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
   onFallbackToSimulated, onChangeTab, streamAccessPassword, streamAccessEmail,
   analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange,
@@ -594,6 +596,7 @@ export default function MonitorTab({
             streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword}
             openCameraId={panelOpenCameraId} openAlert={panelAlert}
             onOpenCamera={(id) => { onSelectCamera(id); onPanelOpenCamera(id); }} onCloseCamera={onPanelCloseCamera}
+            logs={logs} onLiveAnalysis={onLiveAnalysis}
           />
         </div>
       )}

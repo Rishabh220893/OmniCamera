@@ -165,6 +165,15 @@ Auto: `tests/lastFrame.test.ts`. Feed > Full Panel.
 5. Reopen the first camera and leave it open: its tile still shows the OLD frame until you close the window; then it changes to the newer one.
 6. Reload the page: the frames are still there (they are cleared when the browser tab is closed).
 
+## 16e. AI analysis kept: History sidebar and Logs
+
+Auto: `tests/liveAnalysis.test.ts`. Needs the AI model configured. Feed > Full Panel.
+1. Open a camera (full screen). Top right: **History** with a count (0 or more). Press **AI** (top centre): a caption appears every 10 s.
+2. **Expected:** captions that report something new say "saved to Logs"; a repeat of the same scene does not save again until a minute has passed.
+3. Press **History**: a sidebar opens on the right with this camera's analyses, newest first; the one just saved is at the top (red if flagged unusual).
+4. Close the window. Open the **Logs** section: the same entries are there. Reopen the same camera: History shows them again.
+5. A different camera's History does not show this camera's entries.
+
 ## 17. Known gaps to check by eye (not covered by anything)
 
 The wrong-camera tile in the pinned grid (root cause not found); admin screens (Federation, All departments, Report) opened signed-in against live Firebase; Postgres plate column (`platform_events_plate`) creation on Neon: run the Pg tests with `TEST_DATABASE_URL`.
