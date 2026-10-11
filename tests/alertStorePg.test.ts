@@ -21,7 +21,8 @@ import type { Alert } from '../server/events/channels.ts';
 
 const URL = process.env.TEST_DATABASE_URL;
 const skip = !URL && 'set TEST_DATABASE_URL to run against PostgreSQL';
-const T0 = new Date('2026-10-10T10:00:00.000Z');
+// A day ahead of now, so the test's events are the newest in the table: "all owners, newest 500" would otherwise miss them on a database that already holds more than 500 newer events. Rows are removed afterwards.
+const T0 = new Date(Math.floor((Date.now() + 86_400_000) / 1000) * 1000);
 const at = (ms: number) => new Date(T0.getTime() + ms);
 
 const suffix = randomBytes(4).toString('hex');
