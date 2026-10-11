@@ -243,6 +243,8 @@ export default function App() {
   const mediaRefs = useRef<Map<string, CameraMediaRefs>>(new Map());
   const inFlightAnalysisRef = useRef<Set<string>>(new Set());
   const lastAnalysisAttemptRef = useRef<Map<string, number>>(new Map());
+  // Cameras whose first analysis after "Analyze" was taken from the picture already on screen (see the tick below).
+  const instantAnalysisDoneRef = useRef<Set<string>>(new Set());
   // Server hand-over bookkeeping for the guard (see the effect further down).
   const serverGuardIdsRef = useRef<Set<string>>(new Set());
   const serverGuardFailedRef = useRef<Set<string>>(new Set());
@@ -947,7 +949,9 @@ export default function App() {
         )).catch(err => console.warn('Could not record plate sightings:', err));
       }
 
-      setCameras(prev => prev.map(c => c.id === camera.id ? { ...c, lastAnalysisTime: new Date() } : c));
+      setCameras(prev => prev.map(c => c.id === camera.id ? { ...c, lastAnalysisTime: new Date(), lastAnalysisError: undefined } : c));
+      // A failure the server worker saved on the camera ("Not working right now") is stale once an analysis has just worked.
+      if (camera.lastAnalysisError && user && user.uid !== 'demo-guest') updateDoc(doc(db, 'cameras', camera.id), { lastAnalysisError: '', lastAnalysisTime: new Date() }).catch(() => { /* not allowed to write this camera: the server clears it on its next success */ });
 
       const payload = { camera_id: camera.id, camera_name: camera.name, alert: newEntry.summary, timestamp: newEntry.timestamp, data: { ...newEntry, raw_ai_data: data } };
       fetch('/api/alerts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(err => console.warn('Internal sync failed:', err));
@@ -1010,6 +1014,20 @@ export default function App() {
     } finally { finish(); }
   }, [knownFaces, watchlist, recordAnalysis, captureFrameBase64]);
 
+  // True when this camera's picture is already on screen in this tab, so its current frame can be sent without any network grab.
+  const frameOnScreen = useCallback((camera: CameraConfig): boolean => {
+    const refs = mediaRefs.current.get(camera.id);
+    if (!refs) return false;
+    if (camera.useSimulatedFeed) return !!refs.canvas;
+    if (camera.useRemoteFeed && camera.remoteStreamUrl) {
+      const t = detectStreamType(camera.remoteStreamUrl);
+      if (t === 'video' || t === 'hls') return !!refs.video && refs.video.videoWidth > 0 && refs.video.readyState >= 2;
+      if (t === 'image') return !!refs.img && refs.img.naturalWidth > 0;
+      return false;
+    }
+    return !!refs.video && refs.video.videoWidth > 0 && refs.video.readyState >= 2;
+  }, []);
+
   // One shared 1s tick checks every selected camera's own interval setting
   // rather than juggling a separate setInterval per camera — simpler, and
   // avoids re-deriving N timers whenever the camera list changes.
@@ -1017,9 +1035,19 @@ export default function App() {
     if (!isCapturing) return;
     const tick = () => {
       const now = Date.now();
-      for (const id of analysisCameraIds) {
+      // The camera in focus goes first.
+      const ordered = [...analysisCameraIds].sort((x, y) => (x === activeCameraId ? -1 : 0) - (y === activeCameraId ? -1 : 0));
+      for (const id of ordered) {
         const camera = camerasRef.current.find(c => c.id === id);
         if (!camera) continue;
+        // Instant first analysis: the picture is already loaded in this tab, so send its current frame now instead of waiting for the
+        // server to fetch one from the camera grid (20-40 s). The server worker keeps the schedule after this.
+        if (!instantAnalysisDoneRef.current.has(id) && frameOnScreen(camera)) {
+          instantAnalysisDoneRef.current.add(id);
+          lastAnalysisAttemptRef.current.set(id, now);
+          captureAndAnalyzeCamera(camera);
+          continue;
+        }
         if (camera.serverAnalysis) continue; // the server worker owns this camera's schedule
         // Cameras the guard is handing to the server are skipped from the first tick: the flag only lands a moment
         // later, and analysing here in the meantime produced one duplicate log per camera at activation.
@@ -1035,7 +1063,8 @@ export default function App() {
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [isCapturing, analysisCameraIds, captureAndAnalyzeCamera, serverAnalysisAvailable, user]);
+  }, [isCapturing, analysisCameraIds, captureAndAnalyzeCamera, serverAnalysisAvailable, user, activeCameraId, frameOnScreen]);
+  useEffect(() => { if (!isCapturing) instantAnalysisDoneRef.current.clear(); }, [isCapturing]);
 
   const exportData = () => {
     const csvHeader = 'Timestamp,Camera,Summary,People,Vehicles,Other,IsUnusual,Plates,Alerts\n';
