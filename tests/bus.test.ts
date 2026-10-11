@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryBus } from '../server/bus/memoryBus.ts';
 import { createRedisBus } from '../server/bus/redisBus.ts';
+import { createKafkaBus } from '../server/bus/kafkaBus.ts';
+import { createFakeKafka } from './lab/fakeKafka.ts';
 import { compareIds } from '../server/bus/types.ts';
 import { busConformance } from './busConformance.ts';
 
@@ -18,6 +20,16 @@ busConformance('redis bus', async () => {
   bus.close = async () => { await close(); main.disconnect(); };
   return bus;
 }, { skip: redisUrl ? false : 'set TEST_REDIS_URL to run against Redis' });
+
+// The Kafka bus against an in-memory stand-in for the client (tests/lab/fakeKafka.ts): proves the bus's own logic, NOT Kafka.
+busConformance('kafka bus (fake client)', async () => createKafkaBus(createFakeKafka() as never, { prefix: `t${Date.now()}.`, log: { warn: () => {} } }));
+
+// The same suite against a real broker, when one is provided (comma separated list). It has never been run.
+const brokers = process.env.TEST_KAFKA_BROKERS;
+busConformance('kafka bus (real broker)', async () => {
+  const { Kafka, logLevel } = await import('kafkajs');
+  return createKafkaBus(new Kafka({ clientId: 'omnisee-test', brokers: brokers!.split(','), logLevel: logLevel.NOTHING }), { prefix: `test${Date.now()}.`, log: { warn: () => {} } });
+}, { skip: brokers ? false : 'set TEST_KAFKA_BROKERS to run against Kafka' });
 
 test('memory bus: retention by count drops the oldest, and a slow group is told it skipped messages rather than failing', async () => {
   const warnings: string[] = [];

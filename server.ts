@@ -13,6 +13,7 @@ import { registerConnectorRoutes } from './server/connectors/routes';
 import { createFirebaseDirectory } from './server/admin/firebaseDirectory';
 import { registerAdminRoutes } from './server/admin/routes';
 import { createMemoryBus } from './server/bus/memoryBus';
+import { createKafkaBus } from './server/bus/kafkaBus';
 import { createRedisBus } from './server/bus/redisBus';
 import type { EventBus } from './server/bus/types';
 import { createVmsConnectorTypes } from './server/connectors/vms/index';
@@ -1435,6 +1436,16 @@ Analyze this context to answer user queries:
     const { default: IORedis } = await import('ioredis');
     const connect = () => new IORedis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
     bus = createRedisBus(connect(), connect);
+  } else if (process.env.EVENT_BUS === 'kafka' && process.env.KAFKA_BROKERS) {
+    // EVENT_BUS=kafka + KAFKA_BROKERS=host:9092,host2:9092 (KAFKA_SSL=true, KAFKA_SASL_MECHANISM/USERNAME/PASSWORD for a secured cluster, KAFKA_REPLICATION for a cluster).
+    // NOT run against a real broker yet (server/bus/kafkaBus.ts says why): try it on a test cluster first.
+    const { Kafka, logLevel } = await import('kafkajs');
+    const mechanism = (process.env.KAFKA_SASL_MECHANISM || 'plain') as 'plain' | 'scram-sha-256' | 'scram-sha-512';
+    const kafka = new Kafka({
+      clientId: process.env.KAFKA_CLIENT_ID || 'omnisee', brokers: process.env.KAFKA_BROKERS.split(',').map((b) => b.trim()).filter(Boolean), logLevel: logLevel.WARN,
+      ssl: process.env.KAFKA_SSL === 'true', ...(process.env.KAFKA_SASL_USERNAME ? { sasl: { mechanism, username: process.env.KAFKA_SASL_USERNAME, password: process.env.KAFKA_SASL_PASSWORD || '' } as never } : {}),
+    });
+    bus = createKafkaBus(kafka, { prefix: process.env.KAFKA_PREFIX || 'omnisee.', replicationFactor: Number(process.env.KAFKA_REPLICATION) || 1, retentionMs: Number(process.env.KAFKA_RETENTION_HOURS) > 0 ? Number(process.env.KAFKA_RETENTION_HOURS) * 3_600_000 : undefined });
   } else bus = createMemoryBus();
   // The grid guard's state is shared between server processes through Redis when it is configured (the worker that grabs and the
   // server that shows the Health tab are different processes); without Redis it lives in this process.
