@@ -22,6 +22,12 @@ The table is created by the server on start (`CREATE TABLE IF NOT EXISTS`). If t
 
 Why files for the video and a database for the details: the database answers "which snippets, by whom, of which camera" quickly and survives moving the app; video bytes belong on disk (or later object storage), not in database rows.
 
+## How long it records (the length is counted from the first frame)
+
+The recorder does not use a timer that starts when it connects. It watches ffmpeg's own progress, starts counting at the **first frame** (so connecting, and waiting for a keyframe, are not part of the length), and stops ffmpeg cleanly when the file holds the length you chose. If the source ends or drops before that, it **reconnects and carries on**, and the parts are joined without re-encoding (up to 4 connections). A source that delivers faster than real time and overshoots is cut to the exact length. A source that goes silent for longer than twice the length plus 20 s is given up on and what was captured is kept (if it is at least 3 seconds; otherwise the recording fails with a sentence). The row shows the true length of the file.
+
+Verified with a live-like camera (real-time video over HTTP): a camera that takes 6 s to send its first frame still gives the full length; a source that drops after 3 s is reconnected and joined; a source that goes silent keeps what it gave. Not verified on the real grid's RTSP/HLS: if a clip is still shorter than chosen there, the row says how long it really is and the server log line shows why.
+
 ## How it records
 
 The server needs the camera's stream address, which it **reads from the camera's own record** (never from the request) and checks is not an internal address. It then runs ffmpeg for the requested length, **copying the video without re-encoding** (so it costs almost no CPU), and tries, in order:
@@ -35,6 +41,17 @@ A still-image address cannot be recorded. If the grid answers 401, it stops and 
 The stream login comes from the same place the app already uses for snapshots (`X-Stream-Email` and `X-Stream-Password` from Settings, or `STREAM_EMAIL` and `STREAM_PASSWORD` on the server).
 
 After recording, the server measures the true length (ffprobe), makes a thumbnail, and stores the SHA-256 of the file.
+
+## AI analysis of a recorded clip
+
+Open a clip (Play) and press **AI analysis** (or the sparkles button on the clip's row). The browser takes frames evenly across the video (every 4 s or more, at most 12), sends them one at a time to the same frame analysis the live views use (`/api/gemini/analyze-frame`), and shows:
+- progress ("Analysing frame 3 of 6") with a Stop button;
+- a summary (frames analysed, most people and vehicles, plates seen, when something unusual was flagged);
+- a timeline, one line per frame (time, what the scene shows, counts, plates, alerts); click a line to jump the video there;
+- captions at the bottom of the video that follow the playhead (red when the frame was flagged unusual).
+It stops after three failed frames in a row (for example the model is not configured) and says why. Each frame is a call to the AI model, so a 30 s clip costs about 7 calls. Results are kept in the page while it is open; they are not stored on the server.
+
+Checked in a browser with a mocked analysis: six different real frames, progress, summary, timeline seek, captions, failure. **Not checked against the real model.**
 
 ## Who may use it
 

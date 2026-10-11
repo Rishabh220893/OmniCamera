@@ -152,6 +152,9 @@ Auto: `tests/snippets.test.ts` (real ffmpeg; the PostgreSQL case with `TEST_DATA
 7. **PostgreSQL store check:** `TEST_DATABASE_URL=... TEST_DATABASE_SSL=true node --import tsx --test tests/snippets.test.ts` (scratch schema, dropped afterwards).
 **For a demo:** record 2 or 3 snippets of your best cameras beforehand (30 s is enough), check each one plays, and keep them as the fallback if the live grid is slow.
 
+8. **Length:** record 30 seconds from a slow camera. **Expected:** the row says about 30 s (not 21): counting starts at the first frame. If it is shorter, the row shows the real length.
+9. **AI analysis:** Play a ready clip, press **AI analysis** (or the sparkles on its row). **Expected:** "Analysing frame N of M", then a summary and a timeline; click a line and the video jumps there; captions follow the video. Needs the AI model configured (a clear message appears if not).
+
 ## 16d. Last frame on the Full Panel tile
 
 Auto: `tests/lastFrame.test.ts`. Feed > Full Panel.
