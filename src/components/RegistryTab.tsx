@@ -10,6 +10,7 @@ import { GapAnalysisReport, gapReportToCsv } from '../lib/registryReport';
 import MapTab from './MapTab';
 import CameraProfilesPanel from './CameraProfilesPanel';
 import SourcesPanel from './SourcesPanel';
+import SnippetsPanel from './SnippetsPanel';
 import { gridCamId } from '../lib/mediaServer';
 
 interface RegistryTabProps {
@@ -33,6 +34,10 @@ interface RegistryTabProps {
   onSetServerAnalysisAll?: (enabled: boolean) => void;
   gapReport: GapAnalysisReport;
   auditTrail: RegistryAuditEntry[];
+  /** For the snippet recorder: the stream login the app already holds, and whether the user is signed in to the server (not the offline demo). */
+  streamAccessEmail?: string;
+  streamAccessPassword?: string;
+  signedIn?: boolean;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -45,7 +50,7 @@ const MAINTENANCE_BADGE: Record<string, string> = {
 export default function RegistryTab({
   cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute,
   isAdmin, onAddCamera, onRemoveCamera, onCsvUpload, onExportCsv, onLoadDemoGrid, isLoadingDemoGrid, demoGridStatus, onDismissDemoGridStatus,
-  serverAnalysisAvailable, onSetServerAnalysisAll, gapReport, auditTrail
+  serverAnalysisAvailable, onSetServerAnalysisAll, gapReport, auditTrail, streamAccessEmail = '', streamAccessPassword = '', signedIn = false
 }: RegistryTabProps) {
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('all');
@@ -170,6 +175,9 @@ export default function RegistryTab({
 
       {/* Cameras from ONVIF devices, Hikvision / Dahua recorders and plain RTSP addresses */}
       <SourcesPanel isAdmin={isAdmin} />
+
+      {/* Short recordings taken from a camera's stream, kept on the server */}
+      <SnippetsPanel cameras={cameras} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} signedIn={signedIn} />
 
       {/* GIS map */}
       <MapTab

@@ -140,6 +140,18 @@ Auto: `tests/registryReport.test.ts`, `tests/registryQuery.test.ts`. Registry ta
 9. **PostGIS mirror (optional, off by default):** first `DATABASE_URL=... DATABASE_SSL=true npm run registry-postgis-check -- --yes` (scratch schema, dropped afterwards; all lines must say ok). Then set `REGISTRY_POSTGIS=true`, restart, and watch the log for `First copy applied (N cameras); the mirror is live.`. `GET /api/registry/status` (header `X-Registry-Api-Key`) shows `ready: true`. Add a camera in the app; within seconds `...cameras?userId=U` lists it. Break it on purpose (wrong password in `DATABASE_URL`, restart): the log says so, `/api/registry/status` shows `ready: false`, and `...cameras?userId=U` still answers from Firestore. `GET /api/registry/gaps?userId=U` returns uncovered zones (503 while not ready). See `docs/registry-postgis.md`.
 10. **Role-based access:** sign in as a department user: only that department's cameras are listed; as admin: all (see `docs/authz.md`).
 
+## 16c. Recorded snippets (demo recordings)
+
+Auto: `tests/snippets.test.ts` (real ffmpeg; the PostgreSQL case with `TEST_DATABASE_URL`). Needs Firebase Admin (a signed-in operator or admin), ffmpeg on the server, and a camera with a stream address. Full explanation: `docs/snippets.md`.
+1. **Record:** Registry > **Recorded snippets** > pick a camera, length 10 s, title "Test 1" > **Record**. **Expected:** a row "Recording N of 10 s"; after about 10 to 20 seconds it turns "Ready" with a thumbnail, the length, the size and a SHA-256 start.
+2. **Play and download:** press Play: the video plays in the page and can be seeked. Download saves an MP4 that opens in any player.
+3. **Where it lives:** the files are in `.data/snippets` (`snp_....mp4` and `.jpg`); with `DATABASE_URL` set the row is in the `recording_snippets` table (server log says "metadata in PostgreSQL"). Restart the server: the snippets are still listed.
+4. **Failure:** record a camera that is down or has a wrong stream login. **Expected:** the row turns "Failed: ..." with the reason (for the grid, a 401 says to check the stream access email and password); no password in the message.
+5. **Access:** sign in as a different operator: they do not see your snippets; an administrator sees all. A viewer-role account cannot record (403).
+6. **Limits:** record 3 at once as one user (the 4th is refused); delete from the list removes the row and both files.
+7. **PostgreSQL store check:** `TEST_DATABASE_URL=... TEST_DATABASE_SSL=true node --import tsx --test tests/snippets.test.ts` (scratch schema, dropped afterwards).
+**For a demo:** record 2 or 3 snippets of your best cameras beforehand (30 s is enough), check each one plays, and keep them as the fallback if the live grid is slow.
+
 ## 17. Known gaps to check by eye (not covered by anything)
 
 The wrong-camera tile in the pinned grid (root cause not found); admin screens (Federation, All departments, Report) opened signed-in against live Firebase; Postgres plate column (`platform_events_plate`) creation on Neon: run the Pg tests with `TEST_DATABASE_URL`.

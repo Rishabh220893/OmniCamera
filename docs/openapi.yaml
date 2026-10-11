@@ -1176,6 +1176,66 @@ paths:
         '200': { description: "Allowed" }
         '401': { description: Not signed in or key not accepted }
         '403': { description: Not allowed for this role or department }
+  /api/snippets:
+    get:
+      tags: [snippets]
+      summary: "The caller's recorded snippets, newest first (an administrator sees all); ?cameraId= filters"
+      responses:
+        '200': { description: "Snippets" }
+        '401': { description: Not signed in }
+        '403': { description: Not allowed for this role or camera }
+        '404': { description: No such snippet or camera }
+    post:
+      tags: [snippets]
+      summary: "Record seconds (3-120) from a camera; 202 with the snippet (status recording); poll GET /api/snippets/{id}"
+      responses:
+        '200': { description: "Snippet started" }
+        '401': { description: Not signed in }
+        '403': { description: Not allowed for this role or camera }
+        '404': { description: No such snippet or camera }
+  /api/snippets/{id}:
+    get:
+      tags: [snippets]
+      summary: "One snippet: status recording, ready or failed"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Snippet" }
+        '401': { description: Not signed in }
+        '403': { description: Not allowed for this role or camera }
+        '404': { description: No such snippet or camera }
+    delete:
+      tags: [snippets]
+      summary: "Remove the video and the row"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Removed" }
+        '401': { description: Not signed in }
+        '403': { description: Not allowed for this role or camera }
+        '404': { description: No such snippet or camera }
+  /api/snippets/{id}/file:
+    get:
+      tags: [snippets]
+      summary: "The MP4 (Range supported); ?download=1 offers it as a file"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Video" }
+        '401': { description: Not signed in }
+        '403': { description: Not allowed for this role or camera }
+        '404': { description: No such snippet or camera }
+  /api/snippets/{id}/thumb:
+    get:
+      tags: [snippets]
+      summary: "A small JPEG picture"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Picture" }
+        '401': { description: Not signed in }
+        '403': { description: Not allowed for this role or camera }
+        '404': { description: No such snippet or camera }
 components:
   securitySchemes:
     registryKey: { type: apiKey, in: header, name: X-Registry-Api-Key }

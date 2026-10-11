@@ -31,6 +31,8 @@ import { registerTrailRoutes } from './server/trail/routes';
 import { createWallService } from './server/wall/service';
 import { createClipRequestStore, registerClipRoutes, registerClipUpload, type ClipRoutesContext } from './server/gateway/clips';
 import { registerWallRoutes } from './server/wall/routes';
+import { registerSnippetRoutes } from './server/snippets/routes';
+import { createFileSnippetStore, createPostgresSnippetStore, type SnippetStore } from './server/snippets/store';
 import { createRedisUsageStore, type UsageStore } from './server/federation/usageStore';
 import { registerFederationAdminRoutes, registerFederationClientRoutes } from './server/federation/routes';
 import { recordingEnv } from './server/recording/env';
@@ -1658,6 +1660,55 @@ Analyze this context to answer user queries:
     registerWallRoutes(app, { service: wallService, allow: async (req, res, permission) => authz.require(req, res, permission) });
     console.log('[WALL] Video wall API on at /api/walls and /api/wall-layouts.');
   }
+
+  // ---- Recorded snippets (server/snippets, docs/snippets.md) ----
+  // Short clips taken from a camera's stream, kept as files in SNIPPETS_DIR with their metadata in PostgreSQL (DATABASE_URL) or, without it, a JSON file.
+  // Needs Firebase Admin (who is asking, and the camera's record). SNIPPETS_ENABLED=false turns it off.
+  if (process.env.SNIPPETS_ENABLED !== 'false' && registryDb) {
+    const db = registryDb;
+    const snippetsDir = process.env.SNIPPETS_DIR || path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'snippets');
+    let snippetStore: SnippetStore = createFileSnippetStore(path.join(snippetsDir, 'snippets.json'));
+    if (process.env.DATABASE_URL && process.env.SNIPPETS_STORE !== 'file') {
+      try {
+        const { Pool } = await import('pg');
+        const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 2, connectionTimeoutMillis: 8000, ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined });
+        pool.on('error', (e: Error) => console.warn('[SNIPPETS] pool:', e.message));
+        const pg = createPostgresSnippetStore(pool);
+        await pg.init();
+        snippetStore = pg;
+      } catch (e) { console.warn('[SNIPPETS] PostgreSQL is not usable, keeping the snippet list in a file instead:', e instanceof Error ? e.message : e); }
+    }
+    const cut = await snippetStore.failInterrupted('The server restarted while this was recording.', new Date()).catch(() => 0);
+    if (cut) console.warn(`[SNIPPETS] ${cut} snippet(s) were cut off by the last restart and are marked failed.`);
+    const mediaBase = (process.env.MEDIA_SERVER_URL || '').trim().replace(/\/+$/, '');
+    registerSnippetRoutes(app, {
+      store: snippetStore, dir: snippetsDir, gridRtspHost: `${SENTINEL_GRID_HOST}:8554`, localBaseUrl: `http://localhost:${PORT}`,
+      maxSeconds: Number(process.env.SNIPPETS_MAX_SECONDS) || undefined, maxConcurrent: Number(process.env.SNIPPETS_MAX_CONCURRENT) || undefined,
+      maxTotalBytes: Number(process.env.SNIPPETS_MAX_MB) ? Number(process.env.SNIPPETS_MAX_MB) * 1_000_000 : undefined,
+      creds: (req) => streamCredentials(req),
+      urlAllowed: (url) => isSafeCameraUrl(url) || (!!mediaBase && url.startsWith(mediaBase)),
+      guard: (c) => { const b = c.email && c.password ? gridBlockedFor(c.email, c.password) : null; return b ? `The camera grid is refusing this account (${b.message}). Try again in ${b.retryAfterSec}s.` : null; },
+      camera: async (id) => {
+        const c = (await db.collection('cameras').doc(id).get()).data();
+        if (!c) return null;
+        return { id, name: String(c.name || id), url: typeof c.remoteStreamUrl === 'string' ? c.remoteStreamUrl : '', department: typeof c.departmentId === 'string' ? c.departmentId : typeof c.department === 'string' ? c.department : null };
+      },
+      access: async (req, res, permission, cameraId) => {
+        const p = await authz.authenticate(req, res);
+        if (!p) return null;
+        let department: string | undefined, owner = true;
+        if (cameraId) {
+          const c = (await db.collection('cameras').doc(cameraId).get()).data();
+          if (!c) { res.status(404).json({ error: 'No such camera.' }); return null; }
+          owner = c.userId === p.uid;
+          department = typeof c.departmentId === 'string' ? c.departmentId : typeof c.department === 'string' ? c.department : undefined;
+        }
+        if (!authz.check(p, permission, cameraId && !owner ? { department } : undefined, req)) { res.status(403).json({ error: owner ? 'Your role cannot do that.' : 'That camera belongs to a department you do not work for.' }); return null; }
+        return { uid: p.uid, admin: authz.check(p, 'recording.manage', undefined, req) };
+      },
+    });
+    console.log(`[SNIPPETS] Snippet recorder on at /api/snippets (${snippetStore.kind === 'postgres' ? 'metadata in PostgreSQL' : 'metadata in a file'}, videos in ${snippetsDir}).`);
+  } else if (process.env.SNIPPETS_ENABLED !== 'false') console.warn('[SNIPPETS] Firebase Admin is not configured, so the snippet recorder is off.');
 
   // ---- Department systems (server/connectors/vms, docs/connectors-vms.md) ----
   // VMS_ENABLED=true starts one runner per configured department system (VMS_SYSTEMS_FILE, default .data/vms-systems.json); what they find

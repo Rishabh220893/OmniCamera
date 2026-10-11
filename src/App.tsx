@@ -1410,6 +1410,7 @@ export default function App() {
                       onLoadDemoGrid={loadDemoGrid} isLoadingDemoGrid={isLoadingDemoGrid} demoGridStatus={demoGridStatus} onDismissDemoGridStatus={() => setDemoGridStatus(null)}
                       serverAnalysisAvailable={serverAnalysisAvailable} onSetServerAnalysisAll={setServerAnalysisForAll}
                       gapReport={gapReport} auditTrail={auditTrail}
+                      streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} signedIn={!!user && user.uid !== 'demo-guest'}
                     />
                   )}
                   {activeTab === 'settings' && (
