@@ -97,6 +97,7 @@ export default function FederationPanel() {
 
           <div className="space-y-3">
             <p className="text-xs font-semibold">Add a client</p>
+            <p className="text-[11px] text-ink-muted">These limits are for the new client only. To change an existing client, use Limits in its row below.</p>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <label className="text-xs space-y-1"><span className="text-ink-muted font-semibold">Name (letters, digits, - _)</span>
                 <input value={id} onChange={(e) => setId(e.target.value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40))} placeholder="police-nvr" className="input !py-2 text-sm font-mono" /></label>
