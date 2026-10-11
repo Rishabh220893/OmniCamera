@@ -43,6 +43,22 @@ curl -H "X-Registry-Api-Key: $KEY" \
   "https://your-deployment/api/registry/cameras?userId=abc123"
 ```
 
+**Search, filter and export** (all optional, combine freely; a value that cannot be read is a 400, not ignored):
+
+| Parameter | Meaning |
+|---|---|
+| `q` | text in name, department, ownership or storage details |
+| `department`, `status`, `maintenance`, `type` | exact match (department ignores case); a camera with no status counts as `unknown` |
+| `bbox` | `minLng,minLat,maxLng,maxLat`; cameras without coordinates never match |
+| `installedBefore` | `YYYY-MM-DD`: ageing infrastructure |
+| `format` | `json` (default, with a `count`), `geojson` (RFC 7946 FeatureCollection for QGIS, ArcGIS, Leaflet) or `csv` (the bulk-import columns, so an export can be edited and imported again) |
+
+```bash
+curl -H "X-Registry-Api-Key: $KEY" "https://your-deployment/api/registry/cameras?userId=abc123&department=Transport&status=offline&format=geojson"
+```
+
+Tested in `tests/registryQuery.test.ts` (the filters and formats); the route itself was not run against Firestore.
+
 ### `POST /api/registry/cameras`
 Creates one camera.
 

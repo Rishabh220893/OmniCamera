@@ -126,6 +126,19 @@ Auto: `tests/k8sManifests.test.ts` (structure only). Manual: `kubectl apply -k d
 
 `node --import tsx scripts/capacity/platform.ts --quick` (seconds) or without `--quick` (about a minute; writes `scripts/capacity/results/platform.json`), then `node --import tsx scripts/capacity/platformReport.ts`. Compare with `docs/load-test-report.md`; numbers differ by machine.
 
+## 16b. Registry and GIS map (Model 1)
+
+Auto: `tests/registryReport.test.ts`, `tests/registryQuery.test.ts`. Registry tab, signed in as admin.
+1. **Bulk import:** Bulk import CSV with `docs/sample-cameras.csv`. **Expected:** "CSV import: N added", pins on the map, rows in the list. Import it again: existing cameras are not duplicated.
+2. **Manual entry:** Add camera, fill location, department, type, ownership, install date, storage details. **Expected:** it appears on the map and in the list, and in the audit trail as `create` via manual.
+3. **API onboarding:** `POST /api/registry/cameras` with `X-Registry-Api-Key` (see `docs/registry-api.md`). **Expected:** 201 and the camera in the list (audit: via api).
+4. **Map layers:** use the layer control (top right of the map): switch Status layers, Coverage and Uncovered zones on and off; tick or untick Departments and Camera types above the map. **Expected:** pins and circles appear and disappear; the "N of M located cameras shown" line follows.
+5. **Gap analysis:** open Gap analysis report. **Expected:** unlocated, offline/degraded, ageing, stale, incomplete metadata (which fields are missing per camera), uncovered zones (with the share of the area covered). Download report (CSV) opens in a spreadsheet; Print gives a printable page.
+6. **Filters and export:** search, department, status and type filters narrow both the list and the map; Export CSV downloads what you can see; the audit trail has Export audit trail (CSV).
+7. **API filters:** `...cameras?userId=U&status=offline`, `&bbox=77.5,12.9,77.7,13.1`, `&format=geojson` (opens in QGIS), `&format=csv`; a bad `bbox` gives 400.
+8. **Sample report:** `npm run registry-gap-report -- docs/sample-cameras.csv` prints the report (see `docs/sample-gap-report.md`).
+9. **Role-based access:** sign in as a department user: only that department's cameras are listed; as admin: all (see `docs/authz.md`).
+
 ## 17. Known gaps to check by eye (not covered by anything)
 
 The wrong-camera tile in the pinned grid (root cause not found); admin screens (Federation, All departments, Report) opened signed-in against live Firebase; Postgres plate column (`platform_events_plate`) creation on Neon: run the Pg tests with `TEST_DATABASE_URL`.
