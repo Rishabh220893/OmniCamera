@@ -134,10 +134,13 @@ export async function trailFor(deps: TrailDeps, scope: TrailScope, plateRaw: str
     const mine = new Set(scope.departments ?? []);
     const others = (await deps.departments().catch(() => [])).filter((d) => !mine.has(d.name));
     const probe = [t.plate, ...t.confirmed];
+    // Reads the viewer can already see (a camera of their own in another department's name) are not "elsewhere".
+    const visible = new Map<string, number>();
+    for (const e of events) if (e.department && probe.includes(plateOf(e))) visible.set(e.department, (visible.get(e.department) ?? 0) + 1);
     const counted = await Promise.all(others.map(async (d) => {
       let n = 0;
       for (const p of probe) n += await deps.events.countEvents({ userId: scope.userId, all: true, types: ['plate.read'], department: d.name, plate: p, from: o.from, to: o.to });
-      return { department: d.name, reads: n };
+      return { department: d.name, reads: Math.max(0, n - (visible.get(d.name) ?? 0)) };
     }));
     t.elsewhere = counted.filter((c) => c.reads > 0).sort((a, b) => b.reads - a.reads);
     if (t.elsewhere.length) t.notes.push('Other departments also read this plate; you can see how many reads, not where or when. Ask them, or an administrator, for the rest.');

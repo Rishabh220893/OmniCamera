@@ -151,3 +151,12 @@ test('plate filter: the store finds a plate however it was typed, by its letters
   assert.equal(await store.countEvents({ userId: '', all: true, plate: 'ZZ99ZZ9999' }), 0);
   assert.equal((await store.queryEvents({ userId: '', all: true, plate: '', limit: 50 })).length, 4, 'an empty plate is no filter');
 });
+
+test('visibility: reads already in the trail (a user with no department sees their own cameras) are not counted again as elsewhere', async () => {
+  const { store, deps } = await world();
+  await store.saveEvents([read(cam('own-police', 'Police', 23.1, 72.6, 'tom'), 'GJ05AB1234', 30), read(cam('own-traffic', 'Traffic', 23.0, 72.5, 'tom'), 'GJ05AB1234', 20)]);
+  const t = await trailFor(deps, { userId: 'tom' }, 'GJ05AB1234', w7);
+  assert.deepEqual(t.route.segments.map((s) => s.cameraId).sort(), ['own-police', 'own-traffic']);
+  // Others' reads in the window: Traffic 2 (amd), Police 1 (gnr), Municipal 1 (srt) and one 20 days old (outside); their own two are not counted twice.
+  assert.deepEqual(t.elsewhere, [{ department: 'Traffic', reads: 2 }, { department: 'Police', reads: 1 }, { department: 'Municipal', reads: 1 }]);
+});
