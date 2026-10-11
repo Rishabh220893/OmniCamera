@@ -1,4 +1,5 @@
 import { MutableRefObject, useEffect, useMemo, useState } from 'react';
+import { isFreshLog } from '../lib/incidentUtils';
 import { summariseAnalysis } from '../lib/analysisStatus';
 import { motion } from 'motion/react';
 import {
@@ -84,7 +85,10 @@ function CameraTile({
   const shouldConnect = isActive || isSelectedForAnalysis || !hidden;
   const hasCached = hasCachedSnapshot(camera.id);
   const protocol = getProtocolBadge(camera);
-  const isAnomaly = latestLog && (latestLog.sentiment === 'critical' || latestLog.isUnusual || latestLog.isWatchlistMatch);
+  // A flag counts only while it is recent: the newest stored log of a camera can be days old (it is loaded at start-up), and that is history, not an alert.
+  const [, setFreshTick] = useState(0); // re-renders the tile every 30 s so an old flag drops off while the page stays open
+  useEffect(() => { const t = setInterval(() => setFreshTick((n) => n + 1), 30_000); return () => clearInterval(t); }, []);
+  const isAnomaly = !!latestLog && isFreshLog(latestLog) && (latestLog.sentiment === 'critical' || latestLog.isUnusual || latestLog.isWatchlistMatch);
 
   useEffect(() => {
     if (status !== 'error' || !shouldConnect) return;

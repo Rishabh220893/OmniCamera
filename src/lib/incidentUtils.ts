@@ -20,6 +20,20 @@ export const CRITICAL_SECURITY_KEYWORDS: readonly string[] = [
 ];
 
 /**
+ * How long an alert stays "live" on a camera tile and in the alert window. The app loads the stored logs when it starts, and the newest log of a
+ * camera may be days old; an old flag is history (it stays in Logs), not something happening now, so it must not raise a banner or pulse a tile.
+ */
+export const ALERT_FRESH_MS = 15 * 60_000;
+
+/** True when the log is recent enough to count as happening now. A log with no usable time is not fresh. */
+export function isFreshLog(log: Pick<LogEntry, 'timestamp'> | null | undefined, now: number = Date.now(), windowMs: number = ALERT_FRESH_MS): boolean {
+  if (!log) return false;
+  const t = log.timestamp instanceof Date ? log.timestamp.getTime() : new Date(log.timestamp as unknown as string).getTime();
+  if (!Number.isFinite(t)) return false;
+  return now - t <= windowMs && t - now < 5 * 60_000; // not older than the window, and not dated far in the future
+}
+
+/**
  * Tightened harness to determine whether a log entry qualifies as an
  * ACTUAL critical alert for the bottom alert window and urgent operator escalation.
  *

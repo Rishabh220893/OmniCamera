@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Eye, ScanLine, ShieldAlert } from 'lucide-react';
 import { LogEntry, TabId, NotificationPrefs } from '../types';
-import { isActualCriticalIncident } from '../lib/incidentUtils';
+import { isActualCriticalIncident, isFreshLog } from '../lib/incidentUtils';
 
 interface IncidentAlertDrawerProps {
   logs: LogEntry[];
@@ -23,6 +23,9 @@ export default function IncidentAlertDrawer({
 }: IncidentAlertDrawerProps) {
   const [dismissedLogIds, setDismissedLogIds] = useState<Set<string>>(new Set());
   const [activeIncident, setActiveIncident] = useState<LogEntry | null>(null);
+  // Re-check every 30 s so an alert stops showing once it is no longer recent.
+  const [clock, setClock] = useState(0);
+  useEffect(() => { const t = setInterval(() => setClock((n) => n + 1), 30_000); return () => clearInterval(t); }, []);
 
   // Pick the newest ACTUAL critical incident or watchlist hit that hasn't been dismissed
   useEffect(() => {
@@ -32,7 +35,7 @@ export default function IncidentAlertDrawer({
     }
 
     const latestCritical = logs.find(
-      (l) => isActualCriticalIncident(l) && !dismissedLogIds.has(l.id)
+      (l) => isFreshLog(l) && isActualCriticalIncident(l) && !dismissedLogIds.has(l.id)
     );
 
     if (latestCritical) {
@@ -40,7 +43,7 @@ export default function IncidentAlertDrawer({
     } else {
       setActiveIncident(null);
     }
-  }, [logs, dismissedLogIds, notificationPrefs]);
+  }, [logs, dismissedLogIds, notificationPrefs, clock]);
 
   // Only feed ('monitor') and logs ('analytics') pages should show the alert window
   const isFeedOrLogs = activeTab === 'monitor' || activeTab === 'analytics';
