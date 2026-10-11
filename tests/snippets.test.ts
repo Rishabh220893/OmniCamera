@@ -135,7 +135,7 @@ test('recorder (real ffmpeg): records a few seconds without re-encoding; a dead 
 
 // ---- the routes -----------------------------------------------------------------------------------------------------------------------
 
-async function startApp(o: { dir: string; camUrl: string; record?: any; maxConcurrent?: number; maxTotalBytes?: number }) {
+async function startApp(o: { dir: string; camUrl: string; record?: any; thumb?: any; maxConcurrent?: number; maxTotalBytes?: number }) {
   const store = createFileSnippetStore(join(o.dir, 'snippets.json'));
   const app = express(); app.use(express.json());
   const cameras: Record<string, { id: string; name: string; url: string; department: string | null; owner: string }> = {
@@ -145,7 +145,7 @@ async function startApp(o: { dir: string; camUrl: string; record?: any; maxConcu
     nourl: { id: 'nourl', name: 'No URL', url: '', department: null, owner: 'alice' },
   };
   const routes = registerSnippetRoutes(app, {
-    store, dir: join(o.dir, 'files'), gridRtspHost: 'x', localBaseUrl: 'http://localhost:3000', maxConcurrent: o.maxConcurrent, maxTotalBytes: o.maxTotalBytes, record: o.record,
+    store, dir: join(o.dir, 'files'), gridRtspHost: 'x', localBaseUrl: 'http://localhost:3000', maxConcurrent: o.maxConcurrent, maxTotalBytes: o.maxTotalBytes, record: o.record, thumb: o.thumb,
     creds: () => ({ email: '', password: '' }),
     urlAllowed: (u) => u.startsWith(o.camUrl.slice(0, 16)) || !/^https?:\/\/(10\.|localhost|127\.)/.test(u),
     camera: async (id) => { const c = cameras[id]; return c ? { id: c.id, name: c.name, url: c.url, department: c.department } : null; },
@@ -276,4 +276,25 @@ test('routes: a failed recording is kept with its reason; limits (at once, per u
     const r = await small.call('POST', '/api/snippets', 'alice', { cameraId: 'cam1', seconds: 30 });
     assert.equal(r.status, 507, 'a 30 s clip would not fit in a 0.5 MB store');
   } finally { await small.close(); rmSync(dir2, { recursive: true, force: true }); }
+});
+
+test('routes: a snippet folder inside a dot-folder (the default .data/snippets) still serves its video and picture', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'snp-'));
+  const dotted = join(dir, '.data');           // the real default is <project>/.data/snippets: Express refuses to send from any path with a dot-folder unless given a root
+  const fake = async (_c: unknown, _s: number, out: string) => { const { writeFileSync } = await import('node:fs'); writeFileSync(out, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(4000)])); return { ok: true, bytes: 4012 }; };
+  const app = await startApp({ dir: dotted, camUrl: 'http://127.0.0.1:1/x', record: fake, thumb: async (_f: string, out: string) => { const { writeFileSync } = await import('node:fs'); writeFileSync(out, Buffer.alloc(500, 1)); return true; } });
+  try {
+    const s = (await app.json(await app.call('POST', '/api/snippets', 'alice', { cameraId: 'cam1', seconds: 5 }))).snippet;
+    await app.routes.idle();
+    const done = (await app.json(await app.call('GET', `/api/snippets/${s.id}`, 'alice'))).snippet;
+    assert.equal(done.status, 'ready');
+    const file = await app.call('GET', done.fileUrl, 'alice');
+    assert.equal(file.status, 200, 'the video is served');
+    assert.equal((await file.arrayBuffer()).byteLength, 4012);
+    const part = await app.call('GET', done.fileUrl, 'alice', undefined, { Range: 'bytes=0-9' });
+    assert.equal(part.status, 206);
+    assert.equal(done.hasThumb, true);
+    assert.equal((await app.call('GET', done.thumbUrl, 'alice')).status, 200, 'and the picture');
+    assert.equal((await app.call('GET', `${done.fileUrl}?download=1`, 'alice')).status, 200);
+  } finally { await app.close(); rmSync(dir, { recursive: true, force: true }); }
 });

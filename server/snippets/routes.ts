@@ -134,7 +134,8 @@ export function registerSnippetRoutes(app: Express, ctx: SnippetRoutesContext): 
     res.setHeader('Cache-Control', 'private, max-age=3600');
     if (kind === 'file') res.type('video/mp4');
     if (kind === 'file' && req.query.download === '1') res.attachment(`${o.s.title.replace(/[^\w.-]+/g, '_').slice(0, 80) || o.s.id}.mp4`);
-    res.sendFile(path.resolve(kind === 'file' ? fileOf(o.s.id) : thumbOf(o.s.id)), { dotfiles: 'deny' }, (err) => { if (err && !res.headersSent) res.status(404).json({ error: 'The file is gone.' }); });
+    // With a root, only the part below it is checked for dot-files; the default folder .data/snippets itself contains one and would otherwise be refused.
+    res.sendFile(`${o.s.id}.${kind === 'file' ? 'mp4' : 'jpg'}`, { root: path.resolve(ctx.dir), dotfiles: 'deny' }, (err) => { if (err && !res.headersSent) res.status(404).json({ error: 'The file is gone.' }); });
   };
   app.get('/api/snippets/:id/file', send('file'));
   app.get('/api/snippets/:id/thumb', send('thumb'));
