@@ -20,7 +20,8 @@
     "start": "node dist/server.cjs",
     "lint": "eslint .",
     "test": "node --import tsx --test tests/*.test.ts",
-    "registry-gap-report": "tsx scripts/registry-gap-report.ts"
+    "registry-gap-report": "tsx scripts/registry-gap-report.ts",
+    "registry-postgis-check": "tsx scripts/registry-postgis-check.ts"
   },
   "dependencies": {
     "@google/genai": "^1.52.0",

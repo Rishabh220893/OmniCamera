@@ -1,6 +1,7 @@
 -- Registry in PostgreSQL + PostGIS (Model 1's suggested store).
--- STATUS: a design and a set of queries. NOT wired into the app (the registry is read and written in Firestore today) and NOT run against any
--- database. Run it on a database where the PostGIS extension is allowed (Neon supports it) after reading it once.
+-- STATUS: the table and indexes are created by the server (server/registry/postgis.ts) when REGISTRY_POSTGIS=true; see docs/registry-postgis.md. This file shows
+-- the same schema and readable versions of the queries for GIS staff. The server DDL has department_id and gateway_id columns this older sketch lacks.
+-- Not run against a real database until npm run registry-postgis-check -- --yes is.
 
 CREATE EXTENSION IF NOT EXISTS postgis;
 

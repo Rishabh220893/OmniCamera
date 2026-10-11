@@ -137,7 +137,8 @@ Auto: `tests/registryReport.test.ts`, `tests/registryQuery.test.ts`. Registry ta
 6. **Filters and export:** search, department, status and type filters narrow both the list and the map; Export CSV downloads what you can see; the audit trail has Export audit trail (CSV).
 7. **API filters:** `...cameras?userId=U&status=offline`, `&bbox=77.5,12.9,77.7,13.1`, `&format=geojson` (opens in QGIS), `&format=csv`; a bad `bbox` gives 400.
 8. **Sample report:** `npm run registry-gap-report -- docs/sample-cameras.csv` prints the report (see `docs/sample-gap-report.md`).
-9. **Role-based access:** sign in as a department user: only that department's cameras are listed; as admin: all (see `docs/authz.md`).
+9. **PostGIS mirror (optional, off by default):** first `DATABASE_URL=... DATABASE_SSL=true npm run registry-postgis-check -- --yes` (scratch schema, dropped afterwards; all lines must say ok). Then set `REGISTRY_POSTGIS=true`, restart, and watch the log for `First copy applied (N cameras); the mirror is live.`. `GET /api/registry/status` (header `X-Registry-Api-Key`) shows `ready: true`. Add a camera in the app; within seconds `...cameras?userId=U` lists it. Break it on purpose (wrong password in `DATABASE_URL`, restart): the log says so, `/api/registry/status` shows `ready: false`, and `...cameras?userId=U` still answers from Firestore. `GET /api/registry/gaps?userId=U` returns uncovered zones (503 while not ready). See `docs/registry-postgis.md`.
+10. **Role-based access:** sign in as a department user: only that department's cameras are listed; as admin: all (see `docs/authz.md`).
 
 ## 17. Known gaps to check by eye (not covered by anything)
 
