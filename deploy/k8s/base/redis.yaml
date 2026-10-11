@@ -1,0 +1,46 @@
+# Redis for the queue, the event bus and the shared counters. One pod with a volume: fine for a pilot. For production use a managed Redis or a
+# replicated setup (Sentinel / cluster); the app only needs REDIS_URL. See docs/disaster-recovery.md for what is lost if it is lost.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: omnisee-redis
+  namespace: omnisee
+  labels: { app.kubernetes.io/name: omnisee, app.kubernetes.io/component: redis, app.kubernetes.io/part-of: omnisee }
+spec:
+  serviceName: omnisee-redis
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: omnisee, app.kubernetes.io/component: redis }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: omnisee, app.kubernetes.io/component: redis, app.kubernetes.io/part-of: omnisee }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, fsGroup: 999, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          args: ["--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+          ports: [{ name: redis, containerPort: 6379 }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 768Mi }
+          readinessProbe: { tcpSocket: { port: redis }, periodSeconds: 5 }
+          livenessProbe: { tcpSocket: { port: redis }, periodSeconds: 15, failureThreshold: 4 }
+          volumeMounts: [{ name: redis-data, mountPath: /data }]
+  volumeClaimTemplates:
+    - metadata: { name: redis-data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 5Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omnisee-redis
+  namespace: omnisee
+  labels: { app.kubernetes.io/name: omnisee, app.kubernetes.io/component: redis }
+spec:
+  clusterIP: None
+  selector: { app.kubernetes.io/name: omnisee, app.kubernetes.io/component: redis }
+  ports: [{ name: redis, port: 6379, targetPort: redis }]

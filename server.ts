@@ -39,6 +39,7 @@ import { createHoldStore, createPolicyStore, runRetention } from './server/recor
 import { createDiskWatch, readDisk, signingKeyFromEnv } from './server/recording/evidence';
 import { masterKeyFromEnv } from './server/recording/exportCrypto';
 import { registerCspReport, securityMiddleware } from './server/security/headers';
+import { registerOps } from './server/security/ops';
 import { auditCsv, buildAuditExport } from './server/security/auditExport';
 import { registerRecordingRoutes } from './server/recording/routes';
 import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
@@ -348,11 +349,28 @@ async function startServer() {
   // The webhook receiver is public (a camera cannot sign in; a per-source token protects it), so it is mounted BEFORE the global JSON parser below,
   // which would read up to 25 MB of an unauthenticated body. It has its own 512 KB limit. The service behind it is created further down.
   // Security headers on every response, HTTPS enforcement when asked, and a place for CSP violation reports (server/security/headers.ts).
+  app.disable('x-powered-by');
+  // Set when start-up has finished (readiness) and cleared when shutdown begins.
+  let serverReady = false;
+  let analysisWorker: AnalysisWorker | null = null;
+  const eventPipelineRef: { pipeline: { stats(): { delivered: number; failures: number; deadLettered: number } } | null } = { pipeline: null };
   if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', true);
   app.use(securityMiddleware({
     csp: (['report', 'enforce', 'off'].includes(process.env.SECURITY_CSP || '') ? process.env.SECURITY_CSP : 'report') as 'report' | 'enforce' | 'off',
     extraOrigins: (process.env.SECURITY_CSP_EXTRA || '').split(',').map((s) => s.trim()).filter(Boolean), forceHttps: process.env.FORCE_HTTPS === 'true', trustProxy: process.env.TRUST_PROXY === 'true',
   }));
+  // Health probes for an orchestrator (liveness, readiness) and, when METRICS_ENABLED=true, Prometheus metrics (server/security/ops.ts, deploy/k8s).
+  registerOps(app, {
+    ready: () => serverReady,
+    metrics: { enabled: process.env.METRICS_ENABLED === 'true', token: process.env.METRICS_TOKEN || undefined },
+    gauges: {
+      omnisee_analysis_queued: { help: 'Analysis jobs waiting.', value: () => analysisWorker?.status().queue.queued ?? 0 },
+      omnisee_analysis_active: { help: 'Analysis jobs running.', value: () => analysisWorker?.status().queue.active ?? 0 },
+      omnisee_analysis_cameras: { help: 'Cameras this process analyses.', value: () => analysisWorker?.status().cameras.length ?? 0 },
+      omnisee_events_delivered_total: { help: 'Events the alerting consumer handled since start.', value: () => eventPipelineRef.pipeline?.stats().delivered ?? 0 },
+      omnisee_events_dead_lettered_total: { help: 'Events moved to the dead-letter topic since start.', value: () => eventPipelineRef.pipeline?.stats().deadLettered ?? 0 },
+    },
+  });
   app.post('/api/csp-report', express.json({ type: ['application/csp-report', 'application/reports+json', 'application/json'], limit: '16kb' }));
   registerCspReport(app);
   const webhookRef: { service: WebhookService | null } = { service: null };
@@ -1535,6 +1553,7 @@ Analyze this context to answer user queries:
     } catch (e) { console.warn('[GRID] Could not share the grid guard through Redis, keeping it in this process:', e instanceof Error ? e.message : e); }
   }
   const eventPipeline = await createEventPipeline({ bus, ingest: emitEvents });
+  eventPipelineRef.pipeline = eventPipeline;
   const publishEvents = (events: PlatformEvent[]) => eventPipeline.publish(events);
   lateEmit.fn = publishEvents;
   // Unusual counts: the usual number of people and vehicles per camera and hour of the week is learned from the events, and a count far from it is
@@ -1642,7 +1661,6 @@ Analyze this context to answer user queries:
   // Opt-in: needs SERVER_ANALYSIS=true, the Admin SDK (FIREBASE_SERVICE_ACCOUNT)
   // and GEMINI_API_KEY. Cameras are picked up when their registry record has
   // `serverAnalysis: true`.
-  let analysisWorker: AnalysisWorker | null = null;
   let pgEvents: PostgresEventStore | null = null;
   // Events (logs, plate sightings): Postgres as the record when DATABASE_URL + EVENT_STORE=postgres, with Firestore kept as a bounded live feed
   // for the current UI (FIRESTORE_LOG_MODE: all|notable|none). Shared by this server's own analysis worker and by results sent in by regional gateways.
@@ -2237,6 +2255,7 @@ Analyze this context to answer user queries:
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`OMNISEE INTEGRATION SERVER RUNNING ON PORT ${PORT}`);
+    serverReady = true;
     analysisWorker?.start();
     checkFfmpeg().then((f) => {
       if (f.available) console.log(`[FFMPEG] ${f.version}`);

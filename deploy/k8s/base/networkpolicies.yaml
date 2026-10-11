@@ -1,0 +1,93 @@
+# Network segmentation (docs/security-architecture.md): everything is denied, then only the flows below are allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny, namespace: omnisee }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns, namespace: omnisee }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: web-from-ingress, namespace: omnisee }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: web } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ protocol: TCP, port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: metrics-from-monitoring, namespace: omnisee }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/name: omnisee } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports: [{ protocol: TCP, port: 3000 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: app-egress, namespace: omnisee }
+spec:
+  # The web, scheduler and worker pods: Redis, the media server, and HTTPS/RTSP out to the world (Firebase, the model API, cameras and department systems).
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/component, operator: In, values: [web, scheduler, worker] }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/component: redis } } }]
+      ports: [{ protocol: TCP, port: 6379 }]
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/component: mediamtx } } }]
+      ports: [{ protocol: TCP, port: 8554 }, { protocol: TCP, port: 8888 }, { protocol: TCP, port: 8889 }, { protocol: TCP, port: 9997 }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [169.254.169.254/32]    # the cloud metadata service: never reachable from a pod
+      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 554 }, { protocol: TCP, port: 8554 }, { protocol: TCP, port: 5432 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: redis-from-app, namespace: omnisee }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: redis } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/component, operator: In, values: [web, scheduler, worker] }
+      ports: [{ protocol: TCP, port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: mediamtx-traffic, namespace: omnisee }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: mediamtx } }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/component, operator: In, values: [web, scheduler, worker] }
+      ports: [{ protocol: TCP, port: 8554 }, { protocol: TCP, port: 8888 }, { protocol: TCP, port: 8889 }, { protocol: TCP, port: 9997 }]
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ protocol: TCP, port: 8888 }, { protocol: TCP, port: 8889 }]
+  egress:
+    - to:
+        - ipBlock: { cidr: 0.0.0.0/0, except: [169.254.169.254/32] }   # cameras and the grid: narrow this to their networks
+      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 554 }, { protocol: TCP, port: 8554 }]

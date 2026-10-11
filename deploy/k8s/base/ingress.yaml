@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omnisee
+  namespace: omnisee
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 30m          # the app accepts frames and faces up to 25 MB
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"    # long-lived video and event requests
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt               # or your own issuer
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [omnisee.example.org]
+      secretName: omnisee-tls
+  rules:
+    - host: omnisee.example.org
+      http:
+        paths:
+          - { path: /, pathType: Prefix, backend: { service: { name: omnisee-web, port: { name: http } } } }

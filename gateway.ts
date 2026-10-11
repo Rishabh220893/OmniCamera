@@ -9,7 +9,8 @@
  *
  *   required   CENTRAL_URL  GATEWAY_ID  GATEWAY_SECRET  GEMINI_API_KEY
  *   optional   GATEWAY_DATA_DIR (./gateway-data)   GATEWAY_REGION   GATEWAY_MEDIA_URL (where this region's media server is reachable)
- *              GATEWAY_OUTBOX_MAX_MB (200)   GATEWAY_OUTBOX_MAX_DAYS (7)   GATEWAY_STATUS_PORT (off; local status page on 127.0.0.1)
+ *              GATEWAY_OUTBOX_MAX_MB (200)   GATEWAY_OUTBOX_MAX_DAYS (7)   GATEWAY_STATUS_PORT (off; status page on 127.0.0.1, or GATEWAY_STATUS_HOST=0.0.0.0
+ *              for an orchestrator's probes: then restrict who can reach it)
  *              ANALYSIS_CONCURRENCY (4)   ANALYSIS_GATE=off   ANALYZERS_OFF=camera-tamper,anpr-plates   ANPR_SERVICE_URL / ANPR_API_KEY
  *              STREAM_EMAIL / STREAM_PASSWORD / GATEWAY_GRID_RTSP_HOST  (only for cameras on the camera grid)
  *   recording at the edge (docs/regional-gateway.md, "Recorded video"): GATEWAY_RECORDINGS_DIR (where this region's media server writes segments;
@@ -89,7 +90,7 @@ if (statusPort) {
     if (req.url !== '/status') { res.writeHead(404).end(); return; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ gatewayId, link: agent.status(), outbox: outbox.stats(), cameras: runtime.cameraCounts(), worker: runtime.worker.status() }));
-  }).listen(statusPort, '127.0.0.1', () => console.log(`[GATEWAY] status on http://127.0.0.1:${statusPort}/status`));
+  }).listen(statusPort, process.env.GATEWAY_STATUS_HOST || '127.0.0.1', () => console.log(`[GATEWAY] status on http://${process.env.GATEWAY_STATUS_HOST || '127.0.0.1'}:${statusPort}/status`));
 }
 
 async function shutdown() {

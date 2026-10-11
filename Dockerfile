@@ -18,6 +18,10 @@ COPY . .
 RUN npm run build
 
 ENV NODE_ENV=production
+# Runs as the unprivileged `node` user (uid 1000), which the Kubernetes manifests (deploy/k8s) rely on. /data is where the server keeps its small state files
+# (set VMS_DATA_DIR=/data and mount a volume there).
+RUN mkdir -p /data && chown -R node:node /app /data
+USER node
 # The server binds to $PORT when the host provides one, otherwise 3000.
 EXPOSE 3000
 CMD ["node", "dist/server.cjs"]

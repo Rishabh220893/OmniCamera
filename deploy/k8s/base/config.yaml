@@ -1,0 +1,21 @@
+# Settings that are not secret. Secrets (keys, passwords, the service account) go in a Secret named `omnisee-secrets` (see secrets.example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnisee-config
+  namespace: omnisee
+data:
+  NODE_ENV: production
+  PORT: "3000"
+  TRUST_PROXY: "true"            # behind the ingress, which sets X-Forwarded-Proto
+  FORCE_HTTPS: "true"
+  SECURITY_CSP: report           # change to `enforce` once /api/csp-report shows no violations
+  METRICS_ENABLED: "true"
+  VMS_DATA_DIR: /data            # sealed sources, walls, federation clients, gateway clips: a volume (see web.yaml)
+  EVENT_BUS: redis               # shared by every web, scheduler and worker pod
+  REDIS_URL: redis://omnisee-redis:6379
+  FEDERATION_STORE: redis        # quotas, session caps and wall sessions hold across pods
+  MEDIA_SERVER_URL: http://omnisee-mediamtx:8888
+  ANALYSIS_CONCURRENCY: "4"
+  GRID_GRABS_PER_MIN: "10"
+  ANOMALY_DETECTION: "on"

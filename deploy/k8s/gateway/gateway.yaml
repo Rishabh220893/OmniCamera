@@ -1,0 +1,117 @@
+# A regional gateway and its media server, run next to a group of cameras (docs/regional-gateway.md). This is applied to the REGION's cluster (or a single
+# edge host running k3s), not to the central one. It needs only outbound HTTPS to the centre and the local camera network; nothing inbound.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omnisee-gateway
+  labels: { pod-security.kubernetes.io/enforce: baseline }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnisee-gateway
+  namespace: omnisee-gateway
+  labels: { app.kubernetes.io/name: omnisee-gateway, app.kubernetes.io/component: gateway, app.kubernetes.io/part-of: omnisee }
+spec:
+  replicas: 1                      # one per site: the gateway holds the site's outbox and recordings
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: omnisee-gateway, app.kubernetes.io/component: gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: omnisee-gateway, app.kubernetes.io/component: gateway, app.kubernetes.io/part-of: omnisee }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: gateway
+          image: omnisee-app
+          imagePullPolicy: IfNotPresent
+          command: ["npx", "tsx", "gateway.ts"]
+          ports: [{ name: status, containerPort: 8080 }]
+          env:
+            - { name: CENTRAL_URL, value: "https://omnisee.example.org" }
+            - { name: GATEWAY_DATA_DIR, value: /data }
+            - { name: GATEWAY_STATUS_PORT, value: "8080" }
+            - { name: GATEWAY_STATUS_HOST, value: 0.0.0.0 }                  # for the kubelet's probes; the network policy keeps everything else out
+            - { name: GATEWAY_RECORDINGS_DIR, value: /recordings }          # recording at the edge: the centre asks for clips
+            - { name: GATEWAY_RECORDINGS_KEEP_DAYS, value: "7" }
+            - { name: RECORDINGS_NAME_TIME, value: utc }
+          envFrom: [{ secretRef: { name: omnisee-gateway-secrets } }]       # GATEWAY_ID, GATEWAY_SECRET, GEMINI_API_KEY, STREAM_EMAIL, STREAM_PASSWORD
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { cpu: "2", memory: 2Gi }
+          readinessProbe: { httpGet: { path: /status, port: status }, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /status, port: status }, periodSeconds: 30, failureThreshold: 4 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: recordings, mountPath: /recordings }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: gateway-data }
+        - name: recordings
+          persistentVolumeClaim: { claimName: gateway-recordings }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: gateway-data, namespace: omnisee-gateway }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: gateway-recordings, namespace: omnisee-gateway }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 1Ti } }   # bitrate x cameras x keep days (docs/load-test-report.md)
+---
+# The region's media server records the cameras into the same volume (path names are the camera ids; see `npm run edge-recording-config`).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnisee-gateway-media
+  namespace: omnisee-gateway
+  labels: { app.kubernetes.io/name: omnisee-gateway, app.kubernetes.io/component: media, app.kubernetes.io/part-of: omnisee }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: omnisee-gateway, app.kubernetes.io/component: media }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: omnisee-gateway, app.kubernetes.io/component: media, app.kubernetes.io/part-of: omnisee }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: mediamtx
+          image: bluenviron/mediamtx:1.9.3
+          ports: [{ name: hls, containerPort: 8888 }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits: { cpu: "4", memory: 4Gi }
+          readinessProbe: { tcpSocket: { port: hls }, periodSeconds: 10 }
+          livenessProbe: { tcpSocket: { port: hls }, periodSeconds: 30, failureThreshold: 4 }
+          volumeMounts:
+            - { name: recordings, mountPath: /recordings }
+            - { name: config, mountPath: /mediamtx.yml, subPath: mediamtx.yml }
+      volumes:
+        - name: recordings
+          persistentVolumeClaim: { claimName: gateway-recordings }
+        - name: config
+          configMap: { name: omnisee-gateway-media-config }   # the output of `npm run edge-recording-config`, under `paths:`
+---
+# The gateway reaches out only: the centre over HTTPS, the cameras on the local network. Nothing may come in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: gateway-egress-only, namespace: omnisee-gateway }
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } } }]
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0, except: [169.254.169.254/32] } }]
+      ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 554 }, { protocol: TCP, port: 8554 }]   # the centre, the model API, the cameras
+    - to: [{ podSelector: {} }]                                                                                # the gateway and its media server talk to each other
