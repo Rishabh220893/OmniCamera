@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, LayersControl, LayerGroup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, Rectangle, LayersControl, LayerGroup } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapPin, Navigation, X } from 'lucide-react';
@@ -20,6 +20,8 @@ interface MapPanelProps {
   uncoveredZones?: UncoveredZone[];
   /** How far a camera is taken to cover, in metres (the coverage layer's circles). */
   coverageRadiusMeters?: number;
+  /** Side of each uncovered square in metres (from the gap analysis); the squares are drawn at that size. */
+  zoneCellMeters?: number;
 }
 
 const STATUS_COLOR: Record<ConnectivityStatus, string> = {
@@ -53,7 +55,7 @@ function routeDotIcon(index: number) {
   });
 }
 
-export default function MapTab({ cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute, showCoverage = true, height = '65vh', uncoveredZones = [], coverageRadiusMeters = 250 }: MapPanelProps) {
+export default function MapTab({ cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute, showCoverage = true, height = '65vh', uncoveredZones = [], coverageRadiusMeters = 250, zoneCellMeters = 0 }: MapPanelProps) {
   // Department and camera-type layers: each can be switched off to see the rest. Status and coverage layers are in the map's own layer control.
   const [hiddenDepartments, setHiddenDepartments] = useState<Set<string>>(new Set());
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
@@ -164,9 +166,12 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
             </LayersControl.Overlay>
             <LayersControl.Overlay name={`Uncovered zones (emptiest ${uncoveredZones.length})`}>
               <LayerGroup>
-                {uncoveredZones.map((z, i) => (
-                  <Circle key={`gap-${i}`} center={[z.lat, z.lng]} radius={Math.max(60, coverageRadiusMeters / 2)} pathOptions={{ color: '#c8392a', fillColor: '#c8392a', fillOpacity: 0.12, weight: 0, opacity: 0 }} />
-                ))}
+                {uncoveredZones.map((z, i) => {
+                  // A square of the size the analysis used, so it is as big on the map as the gap it stands for.
+                  const half = Math.max(zoneCellMeters, coverageRadiusMeters) / 2;
+                  const dLat = half / 111_320, dLng = half / (111_320 * Math.max(0.1, Math.cos((z.lat * Math.PI) / 180)));
+                  return <Rectangle key={`gap-${i}`} bounds={[[z.lat - dLat, z.lng - dLng], [z.lat + dLat, z.lng + dLng]]} pathOptions={{ color: '#c8392a', fillColor: '#c8392a', fillOpacity: 0.28, weight: 1, opacity: 0.6 }} />;
+                })}
               </LayerGroup>
             </LayersControl.Overlay>
           </LayersControl>
