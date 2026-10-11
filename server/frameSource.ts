@@ -23,8 +23,8 @@ export interface FrameResult {
  * FRAME_RTSP_TIMEOUT_MS / FRAME_HLS_TIMEOUT_MS (milliseconds); a camera that is simply down still fails, after at most this long.
  */
 const envMs = (name: string, fallback: number) => { const n = Number(process.env[name]); return Number.isFinite(n) && n >= 1_000 && n <= 120_000 ? n : fallback; };
-export const rtspTimeoutMs = () => envMs('FRAME_RTSP_TIMEOUT_MS', 25_000);
-export const hlsTimeoutMs = () => envMs('FRAME_HLS_TIMEOUT_MS', 30_000);
+export const rtspTimeoutMs = () => envMs('FRAME_RTSP_TIMEOUT_MS', 40_000);
+export const hlsTimeoutMs = () => envMs('FRAME_HLS_TIMEOUT_MS', 60_000);
 
 export function buildFrameArgs(inputUrl: string, isRtsp: boolean): string[] {
   return [
@@ -37,6 +37,9 @@ export function buildFrameArgs(inputUrl: string, isRtsp: boolean): string[] {
     //   keyframe, which on a small CPU is most of the time these snapshots were taking.
     // - allowed_media_types video: do not set up the audio track at all.
     ...(isRtsp ? ['-rtsp_transport', 'tcp', '-allowed_media_types', 'video', '-fflags', 'nobuffer', '-analyzeduration', '1000000', '-probesize', '500000', '-skip_frame', 'nokey'] : []),
+    // HLS through this app's proxy: the segments are /api/proxy-hls?url=...seg1.ts, so their path has no .ts and newer ffmpeg
+    // ("is not in allowed_segment_extensions", then "Invalid data found") refuses them. The proxy only serves what the playlist lists.
+    ...(isRtsp ? [] : ['-allowed_segment_extensions', 'ALL', '-extension_picky', '0']),
     '-i', inputUrl,
     '-vframes', '1',
     '-f', 'image2',
