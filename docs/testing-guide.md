@@ -1,7 +1,7 @@
 # Testing guide for everything built in session 5 (2026-10-11)
 
 How to check each feature yourself: first the automated test that covers it, then the manual steps. "Expected" says what you should see; anything else is a bug to report.
-**On Windows PowerShell use  (not , which is an alias with different options), or .** Start the app with `npm run dev` (port 3000) unless a step says otherwise. Sign in as an **administrator** for admin screens and as an **operator/viewer** where a step says so (`npm run set-role` sets roles).
+**On Windows PowerShell use `curl.exe` (not `curl`, which is an alias with different options), or `Invoke-RestMethod -Uri <url> -Headers @{ Authorization = "Bearer <key>" }`.** Start the app with `npm run dev` (port 3000) unless a step says otherwise. Sign in as an **administrator** for admin screens and as an **operator/viewer** where a step says so (`npm run set-role` sets roles).
 
 ## 0. Automated checks
 
