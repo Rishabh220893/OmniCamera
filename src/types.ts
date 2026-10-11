@@ -50,6 +50,8 @@ export interface CameraConfig {
   serverAnalysis?: boolean;
   /** False: the AI model is not used for this camera; the server's built-in local detector (motion, zone, line) watches it instead. Absent or true: AI analysis. */
   aiAnalysis?: boolean;
+  /** Per-analyzer settings read by the server; for `local-detector`: `{ zone: {x,y,w,h}, line: {x1,y1,x2,y2}, motionPercent }` in fractions of the picture (drawn in Settings). */
+  analyzers?: Record<string, unknown>;
   /** Last error the server worker hit for this camera, cleared on recovery. */
   lastAnalysisError?: string;
 

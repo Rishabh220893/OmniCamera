@@ -81,8 +81,8 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 2. Run the **full suite once more** (and record the numbers here).
 3. **A7 federation service**: first slice built in session 5 (API-key identities, department stamp, quotas, session caps; `docs/federation-service.md`). Settings screen and Redis counters added later in session 5 (Redis never run). Still to do: mTLS, sharing/routing policy.
 4. **A10** built in session 5 (`docs/video-wall.md`). **A26** built too (`docs/federated-report.md`).
-5. A **screen to draw zones and lines** for the local detector (without it only motion is reported).
-6. **Plate sightings per department** (still per-owner), then **A18** statewide tracking and route reconstruction.
+5. Done in session 5: the **screen to draw zones and lines** (`docs/analytics.md`).
+6. Done in session 5: **plate sightings per department** and **A18** (`docs/vehicle-trail.md`).
 7. Small follow-ups: a department picker for people in several departments; an all-department view of faces, plates and logs for organisation-wide admins (needs a server route); an indexed plate column for incident lookups (they use the text search); incident notifications (webhook / e-mail); a sealed store for department-system logins; key rotation for `SOURCE_SECRET_KEY`; linking a runner's discovered cameras to the Registry; onboarded cameras assigned to a regional gateway; Kafka bus if needed; low-disk alert for recordings; automatic holds from alerts; signed evidence manifests; e-mail/SMS alert channels; pinning the wrong-camera tile's root cause.
 8. **Profile 1 only** (deliberately later): A16, A17, A21 to A25 (edge recording, GPU analyzers, encryption and per-user stream tokens, DR, Kubernetes, the 80,000-camera load test, architecture and security documents).
 

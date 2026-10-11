@@ -265,7 +265,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
         // Plate sightings feed vehicle search and route reconstruction. A failure here
         // must not discard the analysis that was just logged.
         const sightings = buildSightings(
-          { id: camera.id, name: camera.name, department: camera.department, location: camera.location },
+          { id: camera.id, name: camera.name, department: camera.department, departmentId: camera.departmentId, location: camera.location },
           doc.timestamp, doc.detectedPlates, doc.plateReads, doc.plateSource as PlateSighting['source'],
         );
         await deps.writeSightings(camera.userId, sightings).catch((err) => deps.log.warn(`[ANALYSIS] Could not record plate sightings for ${camera.name}:`, err));

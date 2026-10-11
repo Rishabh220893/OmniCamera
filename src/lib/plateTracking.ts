@@ -14,6 +14,8 @@ export interface PlateSighting {
   cameraId: string;
   cameraName: string;
   department?: string;
+  /** The department the camera was allotted to when the plate was read: members of it may read the sighting. */
+  departmentId?: string;
   /** Camera position when the plate was read (kept even if the camera is later moved or deleted). */
   location?: LatLng;
   timestamp: Date;
@@ -30,7 +32,7 @@ export const normalizePlate = (raw: string): string => String(raw ?? '').toUpper
 // Recording sightings
 // ---------------------------------------------------------------------------
 
-export interface SightingCamera { id: string; name: string; department?: string; location?: LatLng }
+export interface SightingCamera { id: string; name: string; department?: string; departmentId?: string; location?: LatLng }
 export interface PlateReadInfo { plate: string; confidence: number; formatValid?: boolean; corrected?: boolean }
 
 /** Stable id, so retrying a write can't create a duplicate sighting. */
@@ -53,7 +55,7 @@ export function buildSightings(
     const read = readByPlate.get(plate);
     out.push({
       id: sightingId(camera.id, at, plate), plate, cameraId: camera.id, cameraName: camera.name,
-      department: camera.department, location: camera.location, timestamp: at,
+      department: camera.department, ...(camera.departmentId ? { departmentId: camera.departmentId } : {}), location: camera.location, timestamp: at,
       confidence: read ? read.confidence : null, source,
       formatValid: read?.formatValid, corrected: read?.corrected,
     });

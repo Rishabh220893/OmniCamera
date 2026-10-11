@@ -75,7 +75,7 @@ Verdicts: **have** = built and tested (with fakes where stated); **partial**; **
 | A15 | **Object-storage tier** (S3-compatible: put/list/get/delete behind a `ColdTier`), cold tier, lifecycle | 1 | **built**: SigV4 client (reproduces AWS's documented signatures), cold tier in the store, retention hot -> warm -> cold -> delete, clips from cold footage; tested against a signature-checking fake S3, **not a real Ceph/MinIO/AWS** |
 | A16 | Recording at regional edges + central clip fetch through the gateway | 1 | missing |
 | A17 | **Analyzers**: face recognition at scale, crowd/vehicle counting, anomaly detection behind the analyzer contract; GPU inference service | 1 | partial (Gemini scene, ANPR, tamper) |
-| A18 | **Statewide tracking and route reconstruction** on shared data | 1, 2 | partial (single-user tracking) |
+| A18 | **Statewide tracking and route reconstruction** on shared data | 1, 2 | **built** (2026-10-11, `docs/vehicle-trail.md`): trail across departments from the shared event store, legs and flags, look-alike confirmation, CSV evidence, department-scoped, Events > Vehicle trail; sightings per department in Firestore; screen checked with the API mocked; not on Postgres or real reads |
 | A19 | AFIS/NAFIS contract + mock; SARTHI/VAHAN real connectors when access is granted | 1 | partial (mocks, no AFIS/NAFIS) |
 | A20 | Roles, departments, access log | all | **have** (not run on Firebase); needs A5 to bite |
 | A21 | **Encryption** (at rest for recordings/exports, in transit), network segmentation design, key management, audit export | 1 | missing |

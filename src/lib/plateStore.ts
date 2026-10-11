@@ -27,16 +27,22 @@ export async function recordSightings(userId: string, sightings: PlateSighting[]
 
 function docToSighting(id: string, d: DocumentData): PlateSighting {
   return {
-    id, plate: d.plate, cameraId: d.cameraId, cameraName: d.cameraName || 'Unknown camera', department: d.department,
+    id, plate: d.plate, cameraId: d.cameraId, cameraName: d.cameraName || 'Unknown camera', department: d.department, departmentId: typeof d.departmentId === 'string' ? d.departmentId : undefined,
     location: d.location, timestamp: toDate(d.timestamp), confidence: typeof d.confidence === 'number' ? d.confidence : null,
     source: d.source || 'gemini', formatValid: d.formatValid, corrected: d.corrected,
   };
 }
 
-export async function fetchSightingsForPlate(userId: string, plate: string): Promise<PlateSighting[]> {
-  // Two equality filters only — Firestore needs no composite index for that; sorted by the route builder.
-  const snap = await getDocs(query(collection(db, 'plateSightings'), where('userId', '==', userId), where('plate', '==', normalizePlate(plate)), limit(MAX_SIGHTINGS_PER_QUERY)));
-  return snap.docs.map((d) => docToSighting(d.id, d.data()));
+export async function fetchSightingsForPlate(userId: string, plate: string, departmentIds: string[] = []): Promise<PlateSighting[]> {
+  const p = normalizePlate(plate);
+  // Equality filters only — Firestore needs no composite index for that; sorted by the route builder.
+  const queries = [getDocs(query(collection(db, 'plateSightings'), where('userId', '==', userId), where('plate', '==', p), limit(MAX_SIGHTINGS_PER_QUERY)))];
+  // Sightings of the cameras of the person's departments, whoever owned the camera (at most 10 departments: the `in` limit).
+  const deps = departmentIds.filter(Boolean).slice(0, 10);
+  if (deps.length) queries.push(getDocs(query(collection(db, 'plateSightings'), where('departmentId', 'in', deps), where('plate', '==', p), limit(MAX_SIGHTINGS_PER_QUERY))));
+  const byId = new Map<string, PlateSighting>();
+  for (const snap of await Promise.all(queries)) for (const d of snap.docs) byId.set(d.id, docToSighting(d.id, d.data()));
+  return [...byId.values()];
 }
 
 /** Every distinct plate this user has ever seen, with sighting counts — the pool possible matches are drawn from. */

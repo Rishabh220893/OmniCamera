@@ -18,6 +18,8 @@ interface AnalyticsTabProps {
   onShowRoute: (plate: string, points: RoutePoint[]) => void;
   activeRoutePlate: string | null;
   userId: string | null;
+  /** The departments the person works for: their cameras' plate sightings are searched too. */
+  departmentIds?: string[];
   decidedBy: string;
   localSightings: PlateSighting[];
   /** Set when a chart point elsewhere was clicked — jumps to and briefly
@@ -27,7 +29,7 @@ interface AnalyticsTabProps {
   onHighlightHandled?: () => void;
 }
 
-export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate, userId, decidedBy, localSightings, highlightLogId, onHighlightHandled }: AnalyticsTabProps) {
+export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute, activeRoutePlate, userId, departmentIds, decidedBy, localSightings, highlightLogId, onHighlightHandled }: AnalyticsTabProps) {
   const [page, setPage] = useState(0);
   const totalPages = Math.max(1, Math.ceil(logs.length / ROWS_PER_PAGE));
   // Clamp rather than reset to 0 — new entries stream into page 1 (index 0)
@@ -131,7 +133,7 @@ export default function AnalyticsTab({ logs, onChangeTab, onExport, onShowRoute,
         </section>
       </div>
 
-      <VehicleTracker userId={userId} decidedBy={decidedBy} localSightings={localSightings} activeRoutePlate={activeRoutePlate} onShowRoute={onShowRoute} />
+      <VehicleTracker userId={userId} departmentIds={departmentIds} decidedBy={decidedBy} localSightings={localSightings} activeRoutePlate={activeRoutePlate} onShowRoute={onShowRoute} />
 
       <div className="card overflow-hidden">
         <div className="p-6 border-b border-border flex flex-wrap items-center justify-between bg-surface-muted gap-4">

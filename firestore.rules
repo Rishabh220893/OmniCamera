@@ -141,9 +141,12 @@ service cloud.firestore {
     // Plate sightings — one document per plate read at a camera, append-only
     // (like the audit trail): written by the app or the server worker, never
     // edited or deleted, so route evidence can't be altered after the fact.
+    // A sighting that carries the department its camera was allotted to is also readable by that department's members; the server worker
+    // (Admin SDK) stamps it. A person can stamp only a department they work for (or any, as an administrator).
     match /plateSightings/{sightingId} {
-      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || inMyDepartment(resource.data.get('departmentId', null)));
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid
+        && (!('departmentId' in request.resource.data) || inMyDepartment(request.resource.data.departmentId) || isAdmin());
       allow update, delete: if false;
     }
 

@@ -8,6 +8,7 @@ import {
 import { cn } from '../lib/utils';
 import AdminUsersPanel from './AdminUsersPanel';
 import FederationPanel from './FederationPanel';
+import ZoneLineEditor from './ZoneLineEditor';
 import { CameraConfig, KnownFace, NotificationPrefs, WatchlistEntry } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 
@@ -430,6 +431,7 @@ export default function SettingsTab(props: SettingsTabProps) {
         <div className="space-y-2">
           <label className="flex items-center gap-2 text-xs font-bold text-ink"><input type="checkbox" checked={activeCamera.aiAnalysis !== false} onChange={(e) => onUpdateActiveCamera({ aiAnalysis: e.target.checked })} aria-label="Analyze with AI" /> Analyze with AI</label>
           <p className="text-[11px] text-ink-muted">{activeCamera.aiAnalysis !== false ? 'The AI model describes the scene, counts people and vehicles and reads faces. Plates are read by the local plate reader either way.' : 'No AI model is used. The server watches this camera locally for movement, movement in a zone and movement across a line, plate reads and offline/online changes. People, faces and scene judgements need AI.'}</p>
+          {activeCamera.aiAnalysis === false && <ZoneLineEditor key={activeCamera.id} camera={activeCamera} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} onChange={(analyzers) => onUpdateActiveCamera({ analyzers })} />}
         </div>
 
         <div className="space-y-4">

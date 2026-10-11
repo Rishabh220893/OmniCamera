@@ -7,9 +7,10 @@ import HealthView from './events/HealthView';
 import IncidentsView from './events/IncidentsView';
 import ReportView from './events/ReportView';
 import RulesView from './events/RulesView';
+import TrailView from './events/TrailView';
 
-type Section = 'events' | 'alerts' | 'incidents' | 'report' | 'rules' | 'health';
-const SECTIONS: Array<{ id: Section; label: string }> = [{ id: 'events', label: 'Events' }, { id: 'alerts', label: 'Alerts' }, { id: 'incidents', label: 'Incidents' }, { id: 'report', label: 'Report' }, { id: 'rules', label: 'Rules' }, { id: 'health', label: 'Health' }];
+type Section = 'events' | 'alerts' | 'incidents' | 'trail' | 'report' | 'rules' | 'health';
+const SECTIONS: Array<{ id: Section; label: string }> = [{ id: 'events', label: 'Events' }, { id: 'alerts', label: 'Alerts' }, { id: 'incidents', label: 'Incidents' }, { id: 'trail', label: 'Vehicle trail' }, { id: 'report', label: 'Report' }, { id: 'rules', label: 'Rules' }, { id: 'health', label: 'Health' }];
 
 /** Everything the analyzers, connected systems and gateways report, and what is done about it. */
 export default function EventsTab({ cameras = [] }: { cameras?: CameraConfig[] }) {
@@ -33,6 +34,7 @@ export default function EventsTab({ cameras = [] }: { cameras?: CameraConfig[] }
       {section === 'events' && <EventsView />}
       {section === 'alerts' && <AlertsView onCount={setOpenAlerts} />}
       {section === 'incidents' && <IncidentsView onCount={setOpenIncidents} />}
+      {section === 'trail' && <TrailView />}
       {section === 'report' && <ReportView />}
       {section === 'rules' && <RulesView />}
       {section === 'health' && <HealthView cameras={cameras} />}

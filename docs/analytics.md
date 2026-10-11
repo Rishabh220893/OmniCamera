@@ -136,7 +136,7 @@ A camera with `aiAnalysis: false` (Settings > "Analyze with AI") is not sent to 
 come from the worker's run history (3 failed runs in a row, then the first good run), for every camera whatever the switch.
 
 Optional per-camera settings, on the camera document: `analyzers: { 'local-detector': { zone: {x,y,w,h}, line: {x1,y1,x2,y2}, motionPercent } }`
-(fractions of the picture). There is no screen to draw them yet. Without them only motion is reported.
+(fractions of the picture). **Settings > a camera with "Analyze with AI" off** has a screen to draw them: pick *Draw zone* or *Draw line*, drag on a picture from the camera (or the grey frame when there is no stream), clear either, set the motion sensitivity, then press Save settings. Checked in the in-app browser (guest mode) and with tests (`tests/detectorZones.test.ts`, which also checks the saved settings against the server's own reader); not run against a real camera picture. Without a zone or line only motion is reported.
 
 Limits: it cannot tell a person from a vehicle or a branch, cannot follow an object between frames, and frames arrive seconds apart, so
 "line crossing" means movement touching the line from both sides. People, faces, scene and unusual-activity events need AI. `vms.alarm`

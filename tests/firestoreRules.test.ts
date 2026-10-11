@@ -42,6 +42,8 @@ before(async () => {
     await db.doc('logs/l-personal').set({ userId: 'owner', cameraId: 'cam-plain', summary: 'mine' });
     await db.doc('logs/l-traffic').set({ userId: 'owner', cameraId: 'cam-traffic', summary: 'gate', departmentId: 'Traffic' });
     await db.doc('logs/l-water').set({ userId: 'someone', cameraId: 'cam-w', summary: 'tap', departmentId: 'Water' });
+    await db.doc('plateSightings/s-own').set({ userId: 'owner', plate: 'GJ01AA0001', cameraId: 'cam-plain' });
+    await db.doc('plateSightings/s-traffic').set({ userId: 'owner', plate: 'GJ01AA0001', cameraId: 'cam-traffic', departmentId: 'Traffic' });
   });
 });
 after(async () => { await env?.cleanup(); });
@@ -138,6 +140,20 @@ test('logs: a department\'s members read the logs of its cameras, and only those
   await denied(owner().doc('logs/l-traffic').update({ departmentId: 'Water' }));
   await ok(owner().doc('logs/l-traffic').update({ summary: 'edited' }));
   await denied(ann().doc('logs/l-traffic').delete(), /* department members read, they do not delete */);
+});
+
+test('plate sightings: the members of a department read the sightings at its cameras and their own, nobody else; a person stamps only a department they work for', { skip }, async () => {
+  await ok(ann().doc('plateSightings/s-traffic').get());
+  await ok(vic().doc('plateSightings/s-traffic').get());
+  await ok(ann().collection('plateSightings').where('departmentId', 'in', ['Traffic']).where('plate', '==', 'GJ01AA0001').get());
+  await denied(ann().doc('plateSightings/s-own').get());
+  await denied(wes().doc('plateSightings/s-traffic').get());
+  await ok(owner().doc('plateSightings/s-own').get());
+  await ok(owner().doc('plateSightings/s-traffic').get());
+  await ok(ann().collection('plateSightings').add({ userId: 'ann', plate: 'GJ02', cameraId: 'cam-traffic', departmentId: 'Traffic' }));
+  await denied(ann().collection('plateSightings').add({ userId: 'ann', plate: 'GJ02', cameraId: 'cam-w', departmentId: 'Water' }), /* not their department */);
+  await ok(ann().collection('plateSightings').add({ userId: 'ann', plate: 'GJ03', cameraId: 'x' }), /* untagged as before */);
+  await denied(ann().doc('plateSightings/s-traffic').update({ plate: 'X' }), /* still append-only */);
 });
 
 // ---- what stays as it was ---------------------------------------------------------------------------------------------------------

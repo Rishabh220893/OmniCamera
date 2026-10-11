@@ -11,6 +11,8 @@ import { clearDecision, fetchDecisions, fetchPlateIndex, fetchSightingsForPlate,
 interface VehicleTrackerProps {
   /** Signed-in user's id; null in guest mode, where only `localSightings` exist. */
   userId: string | null;
+  /** Departments the person works for: sightings at their cameras are searched too. */
+  departmentIds?: string[];
   decidedBy: string;
   /** Guest-mode sightings, derived from the in-memory event log. */
   localSightings: PlateSighting[];
@@ -58,7 +60,7 @@ function HighlightedPlate({ plate, edits }: { plate: string; edits: PlateEdit[] 
 
 const pairOf = (d: StoredDecision, plate: string) => (d.plates[0] === plate ? d.plates[1] : d.plates[0]);
 
-export default function VehicleTracker({ userId, decidedBy, localSightings, activeRoutePlate, onShowRoute }: VehicleTrackerProps) {
+export default function VehicleTracker({ userId, decidedBy, localSightings, activeRoutePlate, onShowRoute, departmentIds = [] }: VehicleTrackerProps) {
   const [input, setInput] = useState('');
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,9 +74,9 @@ export default function VehicleTracker({ userId, decidedBy, localSightings, acti
     try {
       let result: Loaded;
       if (userId) {
-        const [exact, index, decisions] = await Promise.all([fetchSightingsForPlate(userId, q), fetchPlateIndex(userId), fetchDecisions(userId)]);
+        const [exact, index, decisions] = await Promise.all([fetchSightingsForPlate(userId, q, departmentIds), fetchPlateIndex(userId), fetchDecisions(userId)]);
         const confirmed = decisions.filter(d => d.decision === 'confirmed' && d.plates.includes(q)).map(d => pairOf(d, q));
-        const aliasLists = await Promise.all(confirmed.map(p => fetchSightingsForPlate(userId, p)));
+        const aliasLists = await Promise.all(confirmed.map(p => fetchSightingsForPlate(userId, p, departmentIds)));
         result = { query: q, exact, aliases: aliasLists.flat(), index, decisions };
       } else {
         // Guest mode: no database, so decisions live only for this session.

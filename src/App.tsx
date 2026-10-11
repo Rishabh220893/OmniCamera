@@ -529,7 +529,7 @@ export default function App() {
           webhookUrl: data.webhookUrl || '', useRemoteFeed: !!data.useRemoteFeed, remoteStreamUrl: data.remoteStreamUrl || '',
           facingMode: data.facingMode || 'user', suspiciousRules: data.suspiciousRules || '',
           useSimulatedFeed: !!data.useSimulatedFeed,
-          serverAnalysis: !!data.serverAnalysis, aiAnalysis: data.aiAnalysis !== false, lastAnalysisError: data.lastAnalysisError || undefined,
+          serverAnalysis: !!data.serverAnalysis, aiAnalysis: data.aiAnalysis !== false, analyzers: data.analyzers && typeof data.analyzers === 'object' ? data.analyzers : undefined, lastAnalysisError: data.lastAnalysisError || undefined,
           lastAnalysisTime: data.lastAnalysisTime?.toDate ? data.lastAnalysisTime.toDate() : data.lastAnalysisTime,
           location: data.location, department: data.department, departmentId: typeof data.departmentId === 'string' ? data.departmentId : undefined, ownership: data.ownership,
           adapter: typeof data.adapter === 'string' ? data.adapter : undefined, sourceId: typeof data.sourceId === 'string' ? data.sourceId : undefined,
@@ -974,7 +974,7 @@ export default function App() {
       // Permanent plate sightings (the source for vehicle search / route reconstruction).
       if (user && user.uid !== 'demo-guest' && detectedPlates.length > 0) {
         recordSightings(user.uid, buildSightings(
-          { id: camera.id, name: camera.name, department: camera.department, location: camera.location },
+          { id: camera.id, name: camera.name, department: camera.department, departmentId: camera.departmentId, location: camera.location },
           newEntry.timestamp, detectedPlates, data.plate_reads || [], data.plate_source || 'gemini',
         )).catch(err => console.warn('Could not record plate sightings:', err));
       }
@@ -1392,7 +1392,7 @@ export default function App() {
                 </div>
                 <AnimatePresence mode="wait">
                   {activeTab === 'analytics' && (
-                    <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} userId={user && user.uid !== 'demo-guest' ? user.uid : null} decidedBy={user?.email || user?.uid || 'unknown'} localSightings={guestSightings} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
+                    <AnalyticsTab logs={logs} onChangeTab={setActiveTab} onExport={exportData} onShowRoute={handleShowRoute} activeRoutePlate={routePlate} userId={user && user.uid !== 'demo-guest' ? user.uid : null} departmentIds={memberDepartments} decidedBy={user?.email || user?.uid || 'unknown'} localSightings={guestSightings} highlightLogId={highlightLogId} onHighlightHandled={() => setHighlightLogId(null)} />
                   )}
                   {activeTab === 'events' && <EventsTab cameras={cameras} />}
                   {activeTab === 'map' && (
