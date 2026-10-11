@@ -1,0 +1,85 @@
+{
+  "machine": {
+    "cpu": "Intel(R) Celeron(R) N4020 CPU @ 1.10GHz",
+    "cores": 2,
+    "memGB": 8,
+    "node": "v24.15.0"
+  },
+  "sizes": {
+    "events": 5000,
+    "search": 20000,
+    "reads": 5000,
+    "anomaly": 20000,
+    "quota": 20000,
+    "mb": 20
+  },
+  "quick": true,
+  "eventPipeline": {
+    "events": 5000,
+    "rules": 20,
+    "ms": 3785,
+    "eventsPerSecond": 1321,
+    "note": "bus (memory) -> alert engine (20 rules, memory store) -> alerts; no database"
+  },
+  "search": {
+    "storedEvents": 20000,
+    "store": "memory (linear scan)",
+    "queries": [
+      {
+        "label": "newest 100, everyone",
+        "ms": 27.1,
+        "rows": 100
+      },
+      {
+        "label": "one department, 100",
+        "ms": 13.1,
+        "rows": 100
+      },
+      {
+        "label": "plate reads of one plate",
+        "ms": 14.7,
+        "rows": 3
+      },
+      {
+        "label": "free text",
+        "ms": 59,
+        "rows": 100
+      },
+      {
+        "label": "last hour, one camera",
+        "ms": 6.9,
+        "rows": 2
+      }
+    ]
+  },
+  "trailAndReport": {
+    "plateReadsRead": 3999,
+    "readMs": 155,
+    "trailBuildMs": 120.2,
+    "plateListMs": 4.6,
+    "reportEvents": 5000,
+    "reportMs": 388,
+    "note": "reading pages of 500 from the memory store, then aggregating in JS; the Postgres store adds its own query time"
+  },
+  "anomaly": {
+    "events": 20000,
+    "eventsPerSecond": 122253,
+    "anomaliesRaised": 0,
+    "buckets": 10000
+  },
+  "federation": {
+    "quotaChecksPerSecond": 96041,
+    "sessionTakeAndReleasePerSecond": 87880,
+    "note": "in-memory store; the Redis store adds one round trip per call (not measured)"
+  },
+  "crypto": {
+    "fileMB": 20,
+    "encryptMBps": 76,
+    "decryptMBps": 120,
+    "sha256MBps": 270,
+    "encryptedBytesOverhead": 489,
+    "manifestSignsPerSecond": 1198,
+    "manifestVerifiesPerSecond": 1007,
+    "note": "a clip of 150 MB (10 minutes at 2 Mbit/s) takes this long to hash and to encrypt on this machine"
+  }
+}

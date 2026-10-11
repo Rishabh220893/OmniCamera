@@ -40,6 +40,8 @@ import { createDiskWatch, readDisk, signingKeyFromEnv } from './server/recording
 import { masterKeyFromEnv } from './server/recording/exportCrypto';
 import { registerCspReport, securityMiddleware } from './server/security/headers';
 import { registerOps } from './server/security/ops';
+import { createPathAccess, createStreamTokens, registerMediaAuth } from './server/media/streamAuth';
+import { mediaPathId } from './src/lib/gridCamId';
 import { auditCsv, buildAuditExport } from './server/security/auditExport';
 import { registerRecordingRoutes } from './server/recording/routes';
 import { createAuthz, createBatchedLog, createRingLog, type AccessLogEntry } from './server/authz/authz';
@@ -1865,9 +1867,29 @@ Analyze this context to answer user queries:
   // have to pass through this server. This tells a signed-in browser where it is and how to log in. The
   // viewer password is only handed to a verified Firebase user (MEDIA_ALLOW_GUESTS=true skips that check,
   // for local demos only), so it is not simply public.
+  // MEDIA_AUTH_MODE=token: each person gets a short-lived signed token instead of the shared password, and the media server asks this server whether that
+  // person may read that path (server/media/streamAuth.ts). Needs MEDIA_TOKEN_SECRET (signs tokens), MEDIA_AUTH_SECRET (guards the callback), Firebase Admin,
+  // and MediaMTX configured with authMethod http (media-server/entrypoint.sh: MEDIA_AUTH_URL). Not used in guest/demo mode (MEDIA_ALLOW_GUESTS).
+  const mediaTokenMode = process.env.MEDIA_AUTH_MODE === 'token' && !!process.env.MEDIA_TOKEN_SECRET && !!process.env.MEDIA_AUTH_SECRET && !!registryDb && process.env.MEDIA_ALLOW_GUESTS !== 'true';
+  if (process.env.MEDIA_AUTH_MODE === 'token' && !mediaTokenMode) console.warn('[MEDIA] MEDIA_AUTH_MODE=token needs MEDIA_TOKEN_SECRET, MEDIA_AUTH_SECRET and Firebase Admin, and is off in guest mode: using the shared viewer password instead.');
+  const streamTokens = mediaTokenMode ? createStreamTokens({ secret: process.env.MEDIA_TOKEN_SECRET!, ttlMs: (Number(process.env.MEDIA_TOKEN_TTL_MIN) || 10) * 60_000 }) : null;
+  if (streamTokens) {
+    const db = registryDb!;
+    const pathAccess = createPathAccess({ load: async () => (await db.collection('cameras').select('userId', 'departmentId', 'department', 'remoteStreamUrl').get()).docs.map((d) => ({ path: mediaPathId(String(d.get('remoteStreamUrl') ?? '')) ?? '', ownerUid: String(d.get('userId') ?? ''), department: typeof d.get('departmentId') === 'string' ? d.get('departmentId') : typeof d.get('department') === 'string' ? d.get('department') : null })) });
+    registerMediaAuth(app, { tokens: streamTokens, access: pathAccess, secret: process.env.MEDIA_AUTH_SECRET!, internalIps: process.env.MEDIA_INTERNAL_IPS ? ((ip: string) => process.env.MEDIA_INTERNAL_IPS!.split(',').map((x) => x.trim()).includes(ip) || /^(::1|127\.|::ffff:127\.)/.test(ip)) : undefined });
+    void pathAccess.refresh();
+    console.log('[MEDIA] Per-user video access is on: tokens, and a callback for the media server at /api/media/auth.');
+  }
   app.get('/api/media/config', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     const base = (process.env.MEDIA_SERVER_URL || '').trim().replace(/\/+$/, '');
+    if (streamTokens && base) {
+      const p = await authz.authenticate(req, res);
+      if (!p) return;
+      const t = streamTokens.issue(p);
+      res.json({ enabled: true, hlsUrl: base, user: 'viewer', password: t.token, tokenExpiresAt: t.expiresAt, maxLiveTiles: Math.max(1, Number(process.env.MEDIA_MAX_LIVE_TILES) || 12) });
+      return;
+    }
     const viewerPassword = process.env.MEDIA_VIEWER_PASSWORD || '';
     if (!base || !viewerPassword) { res.json({ enabled: false }); return; }
     if (process.env.MEDIA_ALLOW_GUESTS !== 'true') {

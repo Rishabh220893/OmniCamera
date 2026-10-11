@@ -53,8 +53,9 @@ const unwrap = (master: Buffer, wrapped: Buffer): Buffer => {
 const chunkNonce = (index: number, last: boolean): Buffer => { const n = Buffer.alloc(NONCE); n.writeUInt32BE(index >>> 0, 4); n.writeUInt32BE(Math.floor(index / 2 ** 32), 0); if (last) n[NONCE - 1] ^= 0x01; return n; };
 
 class Encryptor extends Transform {
-  private buf: Buffer = Buffer.alloc(0); private index = 0;
-  constructor(private key: Buffer, private header: Buffer) { super(); this.push(header); }
+  // Incoming pieces are kept in a list and joined once per chunk (joining on every piece copied the same bytes many times over).
+  private parts: Buffer[] = []; private held = 0; private index = 0;
+  constructor(private key: Buffer, header: Buffer) { super(); this.push(header); }
   private seal(chunk: Buffer, last: boolean) {
     const c = createCipheriv('aes-256-gcm', this.key, chunkNonce(this.index, last), { authTagLength: TAG });
     c.setAAD(Buffer.from([last ? 1 : 0]));
@@ -64,12 +65,16 @@ class Encryptor extends Transform {
     this.push(Buffer.concat([head, ct, c.getAuthTag()]));
   }
   _transform(data: Buffer, _e: BufferEncoding, cb: TransformCallback) {
-    this.buf = this.buf.length ? Buffer.concat([this.buf, data]) : data;
+    this.parts.push(data); this.held += data.length;
     // Keep at least one byte back, so the final chunk can be marked as the last one.
-    while (this.buf.length > CHUNK) { this.seal(this.buf.subarray(0, CHUNK), false); this.buf = this.buf.subarray(CHUNK); }
+    if (this.held > CHUNK) {
+      let buf = this.parts.length === 1 ? this.parts[0] : Buffer.concat(this.parts, this.held);
+      while (buf.length > CHUNK) { this.seal(buf.subarray(0, CHUNK), false); buf = buf.subarray(CHUNK); }
+      this.parts = buf.length ? [buf] : []; this.held = buf.length;
+    }
     cb();
   }
-  _flush(cb: TransformCallback) { this.seal(this.buf, true); cb(); }
+  _flush(cb: TransformCallback) { this.seal(this.parts.length ? Buffer.concat(this.parts, this.held) : Buffer.alloc(0), true); cb(); }
 }
 
 /** Encrypts `src` into `dst` (replacing it). Returns the plain size in bytes. */

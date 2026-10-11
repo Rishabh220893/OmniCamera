@@ -8,6 +8,8 @@ export interface MediaConfig {
   hlsUrl?: string;
   user?: string;
   password?: string;
+  /** With per-user video access the "password" is a short-lived token; when it ends (epoch ms). The config is fetched again before then. */
+  tokenExpiresAt?: number;
   /** Live tiles in the grid that play from the media server; the rest stay refreshed stills. */
   maxLiveTiles?: number;
 }
@@ -63,11 +65,27 @@ async function fetchMediaConfig(): Promise<MediaConfig> {
 
 let shared: Promise<MediaConfig> | null = null;
 let sharedForUid: string | null | undefined;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * With a token instead of a password, ask for a fresh one before the old one ends, and put it into the SAME config object: players read the password at
+ * every request, so a running stream carries on with the new token.
+ */
+function scheduleTokenRefresh(cfg: MediaConfig): void {
+  if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = null; }
+  if (!cfg.enabled || !cfg.tokenExpiresAt) return;
+  const wait = Math.max(15_000, (cfg.tokenExpiresAt - Date.now()) * 0.7);
+  refreshTimer = setTimeout(async () => {
+    const fresh = await fetchMediaConfig();
+    if (fresh.enabled && fresh.password) { Object.assign(cfg, fresh); scheduleTokenRefresh(cfg); }
+    else { cfg.tokenExpiresAt = Date.now() + 30_000; scheduleTokenRefresh(cfg); } // could not get one now: try again soon
+  }, wait);
+}
 
 /** One config per signed-in user, fetched once and shared by every tile. */
 export function loadMediaConfig(): Promise<MediaConfig> {
   const uid = auth.currentUser?.uid ?? null;
-  if (!shared || sharedForUid !== uid) { sharedForUid = uid; shared = fetchMediaConfig(); }
+  if (!shared || sharedForUid !== uid) { sharedForUid = uid; shared = fetchMediaConfig().then((c) => { scheduleTokenRefresh(c); return c; }); }
   return shared;
 }
 

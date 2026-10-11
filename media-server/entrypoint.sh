@@ -11,7 +11,12 @@ set -f
 
 : "${GRID_EMAIL:?Set GRID_EMAIL (the camera grid account email)}"
 : "${GRID_PASSWORD:?Set GRID_PASSWORD (the camera grid account password)}"
-: "${MEDIA_VIEWER_PASSWORD:?Set MEDIA_VIEWER_PASSWORD (what browsers must send to watch; make it long and random)}"
+# Per-user video access (docs/security-architecture.md): with MEDIA_AUTH_URL set (the app's /api/media/auth?s=<MEDIA_AUTH_SECRET>), MediaMTX asks the app about
+# every request, and viewers carry a short-lived token instead of one shared password. Without it, the shared password below is used.
+if [ -z "${MEDIA_AUTH_URL:-}" ]; then
+  : "${MEDIA_VIEWER_PASSWORD:?Set MEDIA_VIEWER_PASSWORD (what browsers must send to watch; make it long and random), or MEDIA_AUTH_URL for per-user access}"
+fi
+MEDIA_VIEWER_PASSWORD="${MEDIA_VIEWER_PASSWORD:-unused-in-token-mode}"
 
 GRID_RTSP_HOST="${GRID_RTSP_HOST:-103.250.160.189}"
 GRID_RTSP_PORT="${GRID_RTSP_PORT:-8554}"
@@ -162,11 +167,13 @@ rtspTransports: [tcp]"
   PUBLISH_PERM="      - action: publish"
 fi
 
-{
-  cat <<YAML
-logLevel: info
-# The grid is the only source: nobody may publish here, only read (watch).
-authMethod: internal
+if [ -n "${MEDIA_AUTH_URL:-}" ]; then
+  # The app decides: a good token for that path may read; the machine itself may publish and use the API (never read without a token).
+  AUTH_YAML="authMethod: http
+authHTTPAddress: $(yq "$MEDIA_AUTH_URL")
+authHTTPExclude: []"
+else
+  AUTH_YAML="authMethod: internal
 authInternalUsers:
   - user: viewer
     pass: $(yq "$MEDIA_VIEWER_PASSWORD")
@@ -177,7 +184,14 @@ authInternalUsers:
     permissions:
       - action: api
       - action: metrics
-${PUBLISH_PERM}
+${PUBLISH_PERM}"
+fi
+
+{
+  cat <<YAML
+logLevel: info
+# The grid is the only source: nobody may publish here, only read (watch).
+${AUTH_YAML}
 # Local-only, used by the health check.
 api: yes
 apiAddress: 127.0.0.1:$MEDIA_API_PORT

@@ -16,6 +16,7 @@ data:
   REDIS_URL: redis://omnisee-redis:6379
   FEDERATION_STORE: redis        # quotas, session caps and wall sessions hold across pods
   MEDIA_SERVER_URL: http://omnisee-mediamtx:8888
+  MEDIA_AUTH_MODE: token         # per-user video access; needs MEDIA_TOKEN_SECRET and MEDIA_AUTH_SECRET in the Secret, and MEDIA_AUTH_URL on the media server
   ANALYSIS_CONCURRENCY: "4"
   GRID_GRABS_PER_MIN: "10"
   ANOMALY_DETECTION: "on"

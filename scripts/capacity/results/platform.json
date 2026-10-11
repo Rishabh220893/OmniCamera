@@ -1,0 +1,85 @@
+{
+  "machine": {
+    "cpu": "Intel(R) Celeron(R) N4020 CPU @ 1.10GHz",
+    "cores": 2,
+    "memGB": 8,
+    "node": "v24.15.0"
+  },
+  "sizes": {
+    "events": 50000,
+    "search": 200000,
+    "reads": 20000,
+    "anomaly": 200000,
+    "quota": 200000,
+    "mb": 200
+  },
+  "quick": false,
+  "eventPipeline": {
+    "events": 50000,
+    "rules": 20,
+    "ms": 40009,
+    "eventsPerSecond": 1250,
+    "note": "bus (memory) -> alert engine (20 rules, memory store) -> alerts; no database"
+  },
+  "search": {
+    "storedEvents": 200000,
+    "store": "memory (linear scan)",
+    "queries": [
+      {
+        "label": "newest 100, everyone",
+        "ms": 247.8,
+        "rows": 100
+      },
+      {
+        "label": "one department, 100",
+        "ms": 112.4,
+        "rows": 100
+      },
+      {
+        "label": "plate reads of one plate",
+        "ms": 119.6,
+        "rows": 23
+      },
+      {
+        "label": "free text",
+        "ms": 545.2,
+        "rows": 100
+      },
+      {
+        "label": "last hour, one camera",
+        "ms": 49.7,
+        "rows": 5
+      }
+    ]
+  },
+  "trailAndReport": {
+    "plateReadsRead": 20000,
+    "readMs": 4953,
+    "trailBuildMs": 128.6,
+    "plateListMs": 21.1,
+    "reportEvents": 20000,
+    "reportMs": 13987,
+    "note": "reading pages of 500 from the memory store, then aggregating in JS; the Postgres store adds its own query time"
+  },
+  "anomaly": {
+    "events": 200000,
+    "eventsPerSecond": 144055,
+    "anomaliesRaised": 0,
+    "buckets": 10000
+  },
+  "federation": {
+    "quotaChecksPerSecond": 128199,
+    "sessionTakeAndReleasePerSecond": 181004,
+    "note": "in-memory store; the Redis store adds one round trip per call (not measured)"
+  },
+  "crypto": {
+    "fileMB": 200,
+    "encryptMBps": 32,
+    "decryptMBps": 55,
+    "sha256MBps": 69,
+    "encryptedBytesOverhead": 4080,
+    "manifestSignsPerSecond": 399,
+    "manifestVerifiesPerSecond": 1017,
+    "note": "a clip of 150 MB (10 minutes at 2 Mbit/s) takes this long to hash and to encrypt on this machine"
+  }
+}

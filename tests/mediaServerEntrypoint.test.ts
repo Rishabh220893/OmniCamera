@@ -114,3 +114,19 @@ test('entrypoint: a transcoded camera can name its input codec (cam28:h264), H.2
   assert.match(r.yml, /cam28:\s+runOnDemand: 'ffmpeg .*-c:v h264_qsv -rtsp_transport/);
   assert.notEqual(run({ ...base, MEDIA_TRANSCODE_IDS: 'cam28:vp9' }).status, 0);
 });
+
+test('entrypoint: with MEDIA_AUTH_URL the app decides (authMethod http), no shared viewer password is needed or written, and the URL cannot break out of the YAML', { skip: !HAS_SH && 'sh not available' }, () => {
+  const noPassword = { GRID_EMAIL: 'me@example.com', GRID_PASSWORD: 'p@ss!w0rd', MEDIA_AUTH_URL: 'http://web:3000/api/media/auth?s=abc' };
+  const r = run(noPassword);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.yml, /^authMethod: http$/m);
+  assert.match(r.yml, /^authHTTPAddress: 'http:\/\/web:3000\/api\/media\/auth\?s=abc'$/m);
+  assert.match(r.yml, /^authHTTPExclude: \[\]$/m, 'nothing is exempt: the app is asked about everything');
+  assert.doesNotMatch(r.yml, /authInternalUsers|user: viewer|unused-in-token-mode/);
+  const evil = run({ ...noPassword, MEDIA_AUTH_URL: "http://x/'; evil: 1; '" });
+  assert.equal(evil.status, 0, evil.stderr);
+  assert.doesNotMatch(evil.yml, /^evil:/m);
+  // Without MEDIA_AUTH_URL nothing changes: the shared password is still required and used.
+  assert.notEqual(run({ GRID_EMAIL: 'me@example.com', GRID_PASSWORD: 'p@ss!w0rd' }).status, 0);
+  assert.match(run(base).yml, /^authMethod: internal$/m);
+});

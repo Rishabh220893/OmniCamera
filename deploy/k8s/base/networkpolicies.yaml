@@ -72,6 +72,17 @@ spec:
               - { key: app.kubernetes.io/component, operator: In, values: [web, scheduler, worker] }
       ports: [{ protocol: TCP, port: 6379 }]
 ---
+# The media server asks the web tier about every video request (per-user video access, /api/media/auth).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: web-from-media-auth, namespace: omnisee }
+spec:
+  podSelector: { matchLabels: { app.kubernetes.io/component: web } }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ podSelector: { matchLabels: { app.kubernetes.io/component: mediamtx } } }]
+      ports: [{ protocol: TCP, port: 3000 }]
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata: { name: mediamtx-traffic, namespace: omnisee }
@@ -88,6 +99,8 @@ spec:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
       ports: [{ protocol: TCP, port: 8888 }, { protocol: TCP, port: 8889 }]
   egress:
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/component: web } } }]
+      ports: [{ protocol: TCP, port: 3000 }]
     - to:
         - ipBlock: { cidr: 0.0.0.0/0, except: [169.254.169.254/32] }   # cameras and the grid: narrow this to their networks
       ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 554 }, { protocol: TCP, port: 8554 }]
