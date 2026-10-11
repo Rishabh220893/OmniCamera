@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig, RoutePoint, RegistryAuditEntry } from '../types';
-import { GapAnalysisReport } from '../lib/registryReport';
+import { GapAnalysisReport, gapReportToCsv } from '../lib/registryReport';
 import MapTab from './MapTab';
 import CameraProfilesPanel from './CameraProfilesPanel';
 import SourcesPanel from './SourcesPanel';
@@ -80,6 +80,12 @@ export default function RegistryTab({
     [filtered, clampedPage]
   );
   const resetToFirstPage = () => setPage(0);
+  const download = (name: string, text: string) => {
+    const url = URL.createObjectURL(new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url);
+  };
+  const cell = (v: string) => { const t = /^[=+\-@\t\r]/.test(v) ? "'" + v : v; return /[",\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
+  const exportAudit = () => download('registry-audit-trail.csv', ['Time,Action,Camera id,Camera,Source,By', ...auditTrail.map(e => [e.timestamp.toISOString(), e.action, e.cameraId, e.cameraName, e.source, e.performedBy].map(cell).join(','))].join('\r\n') + '\r\n');
   // Grid camera ids (cam01 ...) among the registry's cameras: the default list to probe.
   const gridIds = useMemo(() => Array.from(new Set(cameras.map((c) => gridCamId(c.remoteStreamUrl || '')).filter((x): x is string => !!x))), [cameras]);
 
@@ -169,6 +175,7 @@ export default function RegistryTab({
       <MapTab
         cameras={filtered} activeCameraId={activeCameraId} onSelectCamera={onSelectCamera}
         routePlate={routePlate} routePoints={routePoints} onClearRoute={onClearRoute}
+        uncoveredZones={gapReport.uncoveredZones} coverageRadiusMeters={gapReport.coverage.radiusMeters}
       />
 
       {/* Registry table */}
@@ -316,12 +323,25 @@ export default function RegistryTab({
 
         {showReport && (
           <div className="mt-6 space-y-6">
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-ink-muted">
+              <span>
+                {gapReport.coverage.cellsChecked > 0
+                  ? <>The area the cameras span is {gapReport.coverage.coveredPercent}% within {gapReport.coverage.radiusMeters} m of a camera ({gapReport.coverage.cellsChecked} squares of {gapReport.coverage.cellMeters} m checked). It shows where the registry has no camera, not what is worth watching. Switch on the Uncovered zones layer on the map to see them.</>
+                  : <>Coverage gaps need at least 3 cameras with coordinates.</>}
+              </span>
+              <span className="flex gap-2">
+                <button onClick={() => download('gap-analysis-report.csv', gapReportToCsv(gapReport))} className="btn-secondary !py-1.5 !px-3 text-xs whitespace-nowrap"><Download className="w-3.5 h-3.5" strokeWidth={1.75} /> Download report (CSV)</button>
+                <button onClick={() => window.print()} className="btn-secondary !py-1.5 !px-3 text-xs whitespace-nowrap">Print</button>
+              </span>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {[
                 { label: 'Unlocated cameras', icon: MapPin, count: gapReport.unlocated.length, items: gapReport.unlocated },
                 { label: 'Offline / degraded', icon: ShieldAlert, count: gapReport.offlineOrDegraded.length, items: gapReport.offlineOrDegraded },
                 { label: 'Ageing infrastructure', icon: Wrench, count: gapReport.ageing.length, items: gapReport.ageing },
                 { label: 'Stale (no recent analysis)', icon: Clock3, count: gapReport.stale.length, items: gapReport.stale },
+                { label: 'Incomplete metadata', icon: AlertTriangle, count: gapReport.incompleteMetadata.length, items: gapReport.incompleteMetadata.map(m => ({ id: m.cameraId, name: `${m.cameraName}: ${m.missing.join(', ')}` })) },
+                { label: `Uncovered zones (${gapReport.coverage.radiusMeters} m radius)`, icon: MapPin, count: gapReport.coverage.uncoveredTotal, items: gapReport.uncoveredZones.slice(0, 8).map((z, i) => ({ id: `z${i}`, name: `${z.lat}, ${z.lng} (nearest camera ${z.nearestMeters} m)` })) },
               ].map(card => (
                 <div key={card.label} className="panel p-4">
                   <div className="flex items-center gap-2 mb-2">
@@ -376,6 +396,7 @@ export default function RegistryTab({
 
           {showAudit && (
             <div className="mt-5 space-y-1.5 max-h-80 overflow-y-auto custom-scrollbar">
+              <div className="flex justify-end"><button onClick={exportAudit} className="btn-secondary !py-1.5 !px-3 text-xs"><Download className="w-3.5 h-3.5" strokeWidth={1.75} /> Export audit trail (CSV)</button></div>
               {auditTrail.length === 0 ? (
                 <p className="text-xs text-ink-muted text-center py-6">No registry changes recorded yet.</p>
               ) : (
