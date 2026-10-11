@@ -62,6 +62,14 @@ Bugs found by the tests along the way (all fixed): a regex that lost its backsla
 
 **Test status:** last full run **655 tests, 624 passed, 0 failed, 0 cancelled, 31 skipped** (Postgres, Redis, the emulator and `sh`-dependent tests need environment), 12.9 minutes. It started before the grid-guard edits; the 46 related tests were re-run on the finished code and all pass, but **the full suite was not run again after them**. `tsc --noEmit` shows only the old `MonitorTab.tsx` argument-count error (the `Clock` error is fixed).
 
+## Session 5 (2026-10-11): what was done
+
+Built, in order (commits on `main`, last code commit `5152b94`, docs `7f725de` and after): A7 federation service (clients, keys, quotas, session caps; memory or Redis counters; Settings screen); A10 video walls; A26 federated report; zone and line editor for the local detector; overlay AI button and captions in the full-screen camera; A18 vehicle trail and per-department plate sightings; sealed department logins with `SOURCE_SECRET_KEY` rotation; signed manifests, custody chain, encrypted exports; e-mail, SMS and recording-hold alert channels; incident notifications; indexed plate search; department picker and all-department view; Kafka bus; low-disk alerts; runner cameras linked to the Registry; onboarded cameras assignable to a gateway; A16 edge recording with clip fetch; A17 count anomalies and the remote detector contract; A21 headers, HTTPS, audit export, per-user stream tokens; A23 Kubernetes manifests; A24 benchmark; A22/A24/A25 documents; `docs/openapi.yaml` extended (and two old YAML syntax errors in it fixed).
+
+**How to test everything:** `docs/testing-guide.md`. **Final check this session:** 25 session-5 test files, 252 tests, 229 pass, 0 fail, 23 skipped (gated); `tsc` shows only the old `MonitorTab.tsx(681)` error. The full 80-file suite was not re-run at the end.
+
+**Never run against the real thing:** Redis store and Redis bus, a Kafka broker, Postgres for the new code (plate index), `kubectl apply`, the GPU/inference reference service (never executed), real cameras and recorders, a real MediaMTX at an edge site, signed-in admin screens (Federation, All departments, Report), per-user video tokens in a live browser, overlay AI captions on a real camera, SMTP and SMS gateways. **Not found:** the root cause of the wrong-camera tile. **Not built:** backup/restore tooling, standby gateway, multi-zone manifests, face-embedding enrolment, connection cap per department system.
+
 ## Completed and left to do (the short list)
 
 **Completed in session 4**

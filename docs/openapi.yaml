@@ -709,7 +709,7 @@ paths:
   /api/events/{id}/tags:
     put:
       summary: Replace the tags of an event
-      description: Operators and administrators, for an event the caller may see (their own, or in their department). Tags are trimmed, lower-cased and de-duplicated; at most 20, each lower case letters, digits, space and _ : . - up to 40 characters.
+      description: "Operators and administrators, for an event the caller may see (their own, or in their department). Tags are trimmed, lower-cased and de-duplicated; at most 20, each lower case letters, digits, space and _ : . - up to 40 characters."
       tags: [Events]
       security: [{ adminToken: [] }]
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
@@ -785,7 +785,7 @@ paths:
         '200': { description: Alerts, content: { application/json: { schema: { type: object, properties: { alerts: { type: array, items: { $ref: '#/components/schemas/Alert' } } } } } } }
   /api/incidents:
     get:
-      summary: Incidents: events that belong together across cameras, sources and departments
+      summary: "Incidents: events that belong together across cameras, sources and departments"
       description: Needs `alert.view`. Visibility as for events (organisation-wide admin all; a department's people the incidents touching it; others incidents on their own cameras). Also `GET /api/incidents/{id}` (the incident, the events in it the caller may see, and how many are hidden), `POST /api/incidents/{id}/close`, `/reopen`, `/notes` {text} (need `alert.handle`). See docs/incidents.md.
       tags: [Alerts]
       security: [{ adminToken: [] }]
@@ -817,6 +817,365 @@ paths:
         '200': { description: The alert, content: { application/json: { schema: { type: object, properties: { alert: { $ref: '#/components/schemas/Alert' } } } } } }
         '404': { $ref: '#/components/responses/Error' }
 
+  /api/federation/me:
+    get:
+      tags: [federation]
+      summary: "Who the calling federation client is (key auth)"
+      responses:
+        '200': { description: "Client, quota and usage" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/events:
+    post:
+      tags: [federation]
+      summary: "Push events from a client system (key auth, quota-limited)"
+      responses:
+        '200': { description: "Accepted and rejected counts" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/sessions:
+    post:
+      tags: [federation]
+      summary: "Open a session (counts against the department cap)"
+      responses:
+        '200': { description: "Session" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/sessions/{id}/renew:
+    post:
+      tags: [federation]
+      summary: "Renew a session lease"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Session" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/sessions/{id}:
+    delete:
+      tags: [federation]
+      summary: "Close a session"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Closed" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/clients:
+    get:
+      tags: [federation]
+      summary: "List clients (admin)"
+      responses:
+        '200': { description: "Clients" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    post:
+      tags: [federation]
+      summary: "Create a client; the key is shown once (admin)"
+      responses:
+        '200': { description: "Client and key" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/clients/{id}:
+    patch:
+      tags: [federation]
+      summary: "Change quota, caps or enabled (admin)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Client" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    delete:
+      tags: [federation]
+      summary: "Remove a client (admin)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Removed" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/federation/clients/{id}/rotate:
+    post:
+      tags: [federation]
+      summary: "Issue a new key (admin)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "New key, shown once" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/wall-layouts:
+    get:
+      tags: [walls]
+      summary: "List wall layouts"
+      responses:
+        '200': { description: "Layouts" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    post:
+      tags: [walls]
+      summary: "Create a layout"
+      responses:
+        '200': { description: "Layout" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/wall-layouts/{id}:
+    put:
+      tags: [walls]
+      summary: "Replace a layout"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Layout" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    delete:
+      tags: [walls]
+      summary: "Delete a layout"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Deleted" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls:
+    get:
+      tags: [walls]
+      summary: "List walls"
+      responses:
+        '200': { description: "Walls" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    post:
+      tags: [walls]
+      summary: "Create a wall"
+      responses:
+        '200': { description: "Wall" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls/{id}:
+    get:
+      tags: [walls]
+      summary: "One wall"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Wall" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    patch:
+      tags: [walls]
+      summary: "Edit a wall"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Wall" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+    delete:
+      tags: [walls]
+      summary: "Delete a wall"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Deleted" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls/{id}/audit:
+    get:
+      tags: [walls]
+      summary: "Control log of a wall"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Entries" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls/{id}/sessions:
+    post:
+      tags: [walls]
+      summary: "Take control of a wall (409 when another operator holds it)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Session" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls/{id}/sessions/{sid}/heartbeat:
+    post:
+      tags: [walls]
+      summary: "Keep control"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Session" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls/{id}/sessions/{sid}:
+    delete:
+      tags: [walls]
+      summary: "Release control"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Released" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/walls/{id}/layout:
+    put:
+      tags: [walls]
+      summary: "Change what the wall shows (needs control)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Wall" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/reports/federated:
+    get:
+      tags: [reports]
+      summary: "Federated analytics report: json, csv or printable html; department-scoped"
+      responses:
+        '200': { description: "Report" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/trail/plates:
+    get:
+      tags: [trail]
+      summary: "Plates with sightings across departments"
+      responses:
+        '200': { description: "Plates" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/trail/{plate}:
+    get:
+      tags: [trail]
+      summary: "Route reconstruction for a plate: legs, flags, CSV"
+      parameters:
+        - { name: plate, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Trail" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/event-channels:
+    get:
+      tags: [events]
+      summary: "Alert channel types available (webhook, e-mail, SMS, recording hold)"
+      responses:
+        '200': { description: "Channels" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateways/{id}/clips:
+    post:
+      tags: [gateways]
+      summary: "Ask a gateway for a clip from its edge recording"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Clip request (pending)" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateway-clips:
+    get:
+      tags: [gateways]
+      summary: "List clip requests"
+      responses:
+        '200': { description: "Requests" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateway-clips/{id}:
+    get:
+      tags: [gateways]
+      summary: "One clip request and its export"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Request" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateway/clip-requests:
+    get:
+      tags: [gateways]
+      summary: "Gateway asks for pending requests (signed)"
+      responses:
+        '200': { description: "Requests" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateway/clip-requests/{id}/meta:
+    post:
+      tags: [gateways]
+      summary: "Gateway declares hash, size, segments, gaps (signed)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Accepted" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateway/clip-requests/{id}/file:
+    put:
+      tags: [gateways]
+      summary: "Gateway uploads the clip; the centre re-hashes it (signed)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Filed as an export" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/gateway/clip-requests/{id}/failed:
+    post:
+      tags: [gateways]
+      summary: "Gateway reports it cannot serve the request, with a reason (signed)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Recorded" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/evidence/public-key:
+    get:
+      tags: [evidence]
+      summary: "Public key for verifying export manifests"
+      responses:
+        '200': { description: "Key or unsigned notice" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/recording-exports/{id}/verify:
+    post:
+      tags: [evidence]
+      summary: "Re-check file hash, signature and custody chain"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Verification result" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/recording-exports/{id}/file:
+    get:
+      tags: [evidence]
+      summary: "Download an export (decrypted on the fly if encrypted at rest)"
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: "Video file" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/access-log/export:
+    get:
+      tags: [audit]
+      summary: "Sealed (hash-chained, signed) export of the access log"
+      responses:
+        '200': { description: "Export" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
+  /api/media/auth:
+    post:
+      tags: [media]
+      summary: "MediaMTX HTTP auth callback (internal; per-user stream tokens)"
+      responses:
+        '200': { description: "Allowed" }
+        '401': { description: Not signed in or key not accepted }
+        '403': { description: Not allowed for this role or department }
 components:
   securitySchemes:
     registryKey: { type: apiKey, in: header, name: X-Registry-Api-Key }
