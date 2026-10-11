@@ -12,13 +12,18 @@ const THROTTLE_BY = [
 ] as const;
 
 interface Draft {
-  id?: string; name: string; types: string; minSeverity: '' | Severity; tags: string; department: string; windowMin: number;
+  id?: string; name: string; types: string; minSeverity: '' | Severity; tags: string; plates: string; department: string; windowMin: number;
   by: typeof THROTTLE_BY[number]['value']; hook: boolean; url: string; secret: string; email: string; sms: string; hold: boolean; holdBefore: number; holdAfter: number; enabled: boolean;
 }
 
 /** The ways an alert can be delivered, in the order they are offered. The alert list itself is always kept. */
 const CHANNEL_NOTE: Record<string, string> = { email: 'E-mail is not set up on this server (an administrator sets SMTP_URL).', sms: 'SMS is not set up on this server (an administrator sets SMS_GATEWAY_URL).', 'recording-hold': 'Recording is not on for this server.' };
-const blank = (): Draft => ({ name: '', types: 'plate.watchlist_match', minSeverity: '', tags: '', department: '', windowMin: 10, by: 'event', hook: false, url: '', secret: '', email: '', sms: '', hold: false, holdBefore: 5, holdAfter: 10, enabled: true });
+/** Plates are stored upper case without spaces or dashes; a rule's plate list is compared the same way. */
+const normPlate = (p: string) => p.toUpperCase().replace(/[^A-Z0-9]/g, '');
+const PLATE_FIELD = 'data.plate';
+const plateCond = (r?: RuleRow) => (r?.match.where ?? []).find((c) => c.field === PLATE_FIELD);
+
+const blank = (): Draft => ({ name: '', types: 'plate.watchlist_match', minSeverity: '', tags: '', plates: '', department: '', windowMin: 10, by: 'event', hook: false, url: '', secret: '', email: '', sms: '', hold: false, holdBefore: 5, holdAfter: 10, enabled: true });
 
 function toDraft(r: RuleRow): Draft {
   const hook = r.channels.find((c): c is Extract<typeof c, { type: 'webhook' }> => c.type === 'webhook');
@@ -26,7 +31,7 @@ function toDraft(r: RuleRow): Draft {
   const text = r.channels.find((c): c is Extract<typeof c, { type: 'sms' }> => c.type === 'sms');
   const hold = r.channels.find((c): c is Extract<typeof c, { type: 'recording-hold' }> => c.type === 'recording-hold');
   return {
-    id: r.id, name: r.name, types: (r.match.types ?? []).join(', '), minSeverity: r.match.minSeverity ?? '', tags: (r.match.tags ?? []).join(', '), department: r.department ?? '',
+    id: r.id, name: r.name, types: (r.match.types ?? []).join(', '), minSeverity: r.match.minSeverity ?? '', tags: (r.match.tags ?? []).join(', '), plates: (() => { const c = plateCond(r); return c ? [c.value].flat().map(String).join(', ') : ''; })(), department: r.department ?? '',
     windowMin: Math.round(r.throttle.windowMs / 60_000), by: r.throttle.by[0] ?? 'event', hook: !!hook, url: hook?.url ?? '', secret: hook?.secret ?? '', email: (mail?.to ?? []).join(', '), sms: (text?.to ?? []).join(', '),
     hold: !!hold, holdBefore: hold?.beforeMinutes ?? 5, holdAfter: hold?.afterMinutes ?? 10, enabled: r.enabled,
   };
@@ -37,6 +42,11 @@ function toInput(d: Draft, existing?: RuleRow): RuleInput {
   const match = { ...(existing?.match ?? {}), types: csv(d.types), tags: csv(d.tags) } as RuleInput['match'];
   if (d.minSeverity) match.minSeverity = d.minSeverity; else delete match.minSeverity;
   if (!match.tags?.length) delete match.tags;
+  // Other conditions on an existing rule are kept; the plate condition is the one this screen owns.
+  const where = (match.where ?? []).filter((c) => c.field !== PLATE_FIELD);
+  const plates = [...new Set(csv(d.plates).map(normPlate).filter(Boolean))];
+  if (plates.length) where.push({ field: PLATE_FIELD, op: 'in', value: plates });
+  if (where.length) match.where = where; else delete match.where;
   const channels: RuleInput['channels'] = [{ type: 'log' }]; // the alert list is always kept
   if (d.hook) channels.push({ type: 'webhook', url: d.url.trim(), ...(d.secret ? { secret: d.secret } : {}) });
   if (csv(d.email).length) channels.push({ type: 'email', to: csv(d.email) });
@@ -132,6 +142,8 @@ export default function RulesView() {
           <label className="space-y-1"><span className="text-ink-muted">Minimum severity</span>
             <select className="input w-full" value={draft.minSeverity} onChange={(e) => setDraft({ ...draft, minSeverity: e.target.value as Severity | '' })} aria-label="Minimum severity">
               <option value="">Any</option>{SEVERITIES.map((s) => <option key={s} value={s}>{s}</option>)}</select></label>
+          <label className="space-y-1"><span className="text-ink-muted">Only for these plates (optional, comma separated; blank = any plate)</span>
+            <input className="input w-full" value={draft.plates} onChange={(e) => setDraft({ ...draft, plates: e.target.value })} aria-label="Plates" placeholder="GJ05AB1234, GJ01XY9999" /></label>
           <label className="space-y-1"><span className="text-ink-muted">Only events with these tags (optional)</span>
             <input className="input w-full" value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} aria-label="Tags" /></label>
           <label className="space-y-1"><span className="text-ink-muted">Department (blank = just your own cameras)</span>
@@ -185,7 +197,7 @@ export default function RulesView() {
             <div className="flex-1 min-w-[14rem]">
               <p className="text-sm font-semibold text-ink">{r.name}{r.department && <span className="badge badge-accent !text-[10px] ml-2">{r.department}</span>}</p>
               <p className="text-[11px] text-ink-muted">
-                {(r.match.types?.length ? r.match.types.join(', ') : 'any event')}{r.match.minSeverity ? ` · ${r.match.minSeverity}+` : ''}{r.match.tags?.length ? ` · tagged ${r.match.tags.join(', ')}` : ''}
+                {(r.match.types?.length ? r.match.types.join(', ') : 'any event')}{r.match.minSeverity ? ` · ${r.match.minSeverity}+` : ''}{r.match.tags?.length ? ` · tagged ${r.match.tags.join(', ')}` : ''}{plateCond(r) ? ` · plate ${[plateCond(r)!.value].flat().join(', ')}` : ''}
                 {' '}&middot; {r.throttle.windowMs ? `repeats folded for ${Math.round(r.throttle.windowMs / 60_000)} min` : 'alerts every time'} &middot; to {r.channels.map((c) => ({ webhook: 'webhook', email: 'e-mail', sms: 'SMS', 'recording-hold': 'keeps the recording', log: 'alert list' } as Record<string, string>)[c.type] ?? c.type).join(', ')}
               </p>
             </div>

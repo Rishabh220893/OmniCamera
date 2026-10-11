@@ -480,3 +480,10 @@ test('postgres store: builds the queries it should (the SQL itself needs a real 
   assert.ok(!/DROP/.test(log.at(-1)!.text));
   assert.equal(await store.deleteRule('u1', 'r'), true);
 });
+
+test('rules: a plate list from the Rules screen (data.plate in [...]) matches only those plates', () => {
+  const r = validateRule({ name: 'watch', match: { types: ['plate.read'], where: [{ field: 'data.plate', op: 'in', value: ['GJ05AB1234'] }] }, throttle: { windowMs: 0, by: ['event'] }, channels: [{ type: 'log' }] }, { userId: 'u1', id: 'r1', now: new Date() });
+  const mk = (plate: string) => makeEvent({ type: 'plate.read', summary: `Plate ${plate}`, data: { plate } }, { source: 's', camera: { id: 'c', name: 'c', userId: 'u1' }, ts: new Date() });
+  assert.equal(ruleMatches(r, mk('GJ05AB1234')), true);
+  assert.equal(ruleMatches(r, mk('GJ01XY9999')), false);
+});

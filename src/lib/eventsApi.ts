@@ -15,7 +15,7 @@ export interface AlertRow {
 export type ChannelCfg = { type: 'webhook'; url: string; secret?: string } | { type: 'email'; to: string[] } | { type: 'sms'; to: string[] } | { type: 'recording-hold'; beforeMinutes: number; afterMinutes: number } | { type: 'log' };
 export interface RuleRow {
   id: string; name: string; enabled: boolean; department?: string;
-  match: { types?: string[]; minSeverity?: Severity; tags?: string[]; cameraIds?: string[]; departments?: string[]; sources?: string[] };
+  match: { types?: string[]; minSeverity?: Severity; tags?: string[]; cameraIds?: string[]; departments?: string[]; sources?: string[]; where?: Array<{ field: string; op: string; value?: unknown }> };
   throttle: { windowMs: number; by: Array<'camera' | 'type' | 'event' | 'rule'> };
   channels: ChannelCfg[];
   schedule?: unknown;
