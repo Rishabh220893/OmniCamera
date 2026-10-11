@@ -22,6 +22,9 @@ import { createWebhookService, type WebhookService } from './server/connectors/w
 import { registerWebhookAdminRoutes, registerWebhookIngest } from './server/connectors/webhook/routes';
 import { registerVmsRoutes } from './server/connectors/vms/routes';
 import { createFederationService, type FederationService } from './server/federation/service';
+import { createWallService } from './server/wall/service';
+import { registerWallRoutes } from './server/wall/routes';
+import { createRedisUsageStore, type UsageStore } from './server/federation/usageStore';
 import { registerFederationAdminRoutes, registerFederationClientRoutes } from './server/federation/routes';
 import { recordingEnv } from './server/recording/env';
 import { createRecordingStore } from './server/recording/store';
@@ -1423,16 +1426,30 @@ Analyze this context to answer user queries:
   }
 
   // ---- Federation service: department/connector identities, quotas, session caps (server/federation, docs/federation-service.md) ----
+  // FEDERATION_STORE=redis (with REDIS_URL) shares quotas, session caps and wall sessions between server processes; otherwise they are per process.
+  let usageStore: UsageStore | undefined;
+  if (process.env.FEDERATION_STORE === 'redis' && process.env.REDIS_URL) {
+    const { default: IORedis } = await import('ioredis');
+    usageStore = createRedisUsageStore(new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: 2 }));
+  }
   if (process.env.FEDERATION_ENABLED !== 'false') {
     const sessionCap = Number(process.env.FEDERATION_DEPARTMENT_SESSION_CAP);
     const federation = createFederationService({
       file: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'federation-clients.json'), emit: publishEvents,
-      departmentSessionCap: Number.isInteger(sessionCap) && sessionCap > 0 ? sessionCap : undefined,
+      departmentSessionCap: Number.isInteger(sessionCap) && sessionCap > 0 ? sessionCap : undefined, store: usageStore,
     });
     await federation.load();
     federationRef.service = federation;
     registerFederationAdminRoutes(app, { service: federation, allow: async (req, res, permission) => { const p = await authz.require(req, res, permission); return p ? { uid: p.uid } : null; } });
-    console.log(`[FEDERATION] Client API on at /api/federation/*; ${federation.list().length} client(s).`);
+    console.log(`[FEDERATION] Client API on at /api/federation/*; ${federation.count()} client(s), counters in ${federation.storeKind}.`);
+  }
+
+  // ---- Video walls: saved layouts, wall displays and who controls them (server/wall, docs/video-wall.md) ----
+  if (process.env.WALL_ENABLED !== 'false') {
+    const wallService = createWallService({ file: path.join(process.env.VMS_DATA_DIR || path.join(process.cwd(), '.data'), 'walls.json'), store: usageStore });
+    await wallService.load();
+    registerWallRoutes(app, { service: wallService, allow: async (req, res, permission) => authz.require(req, res, permission) });
+    console.log('[WALL] Video wall API on at /api/walls and /api/wall-layouts.');
   }
 
   // ---- Department systems (server/connectors/vms, docs/connectors-vms.md) ----
