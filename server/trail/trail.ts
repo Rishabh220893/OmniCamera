@@ -136,7 +136,7 @@ export async function trailFor(deps: TrailDeps, scope: TrailScope, plateRaw: str
     const probe = [t.plate, ...t.confirmed];
     const counted = await Promise.all(others.map(async (d) => {
       let n = 0;
-      for (const p of probe) n += await deps.events.countEvents({ userId: scope.userId, all: true, types: ['plate.read'], department: d.name, text: p, from: o.from, to: o.to });
+      for (const p of probe) n += await deps.events.countEvents({ userId: scope.userId, all: true, types: ['plate.read'], department: d.name, plate: p, from: o.from, to: o.to });
       return { department: d.name, reads: n };
     }));
     t.elsewhere = counted.filter((c) => c.reads > 0).sort((a, b) => b.reads - a.reads);

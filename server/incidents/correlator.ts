@@ -103,7 +103,7 @@ export function createCorrelator(o: CorrelatorOptions): Correlator {
 
   async function sightings(plate: string, at: string): Promise<PlatformEvent[]> {
     const from = new Date(new Date(at).getTime() - trailMs);
-    const rows = await o.events.queryEvents({ userId: '', all: true, types: PLATE_TYPES.map((t) => t), text: plate, from, limit: 200 });
+    const rows = await o.events.queryEvents({ userId: '', all: true, types: PLATE_TYPES.map((t) => t), plate, from, limit: 200 });
     return rows.filter((e) => plateOf(e) === plate && e.ts >= from.toISOString());
   }
 

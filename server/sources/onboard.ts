@@ -32,6 +32,8 @@ export interface NewRegistryCamera {
   streamUrl: string;
   device: DeviceInfo | null;
   location?: { lat: number; lng: number };
+  /** Reached by this regional gateway, not by the centre. */
+  gatewayId?: string;
 }
 
 export interface RegistryWriter {
@@ -49,6 +51,8 @@ export interface OnboardDeps {
   encoder: EncoderKind;
   /** The media server's public HLS base (MEDIA_SERVER_URL), '' when unknown. */
   mediaBase: () => string;
+  /** Whether a gateway exists (checked before a camera is assigned to one). */
+  gateways?: { exists(id: string): Promise<boolean> };
   newId?: () => string;
   now?: () => Date;
   log?: Pick<Console, 'warn' | 'info'>;
@@ -63,9 +67,11 @@ export interface OnboardInput {
   /** Onboard although the probe failed or found no video (the camera is registered, with no playable path until it is probed again). */
   force?: boolean;
   location?: { lat: number; lng: number };
+  /** The camera is on a network only this regional gateway reaches. The centre then does not probe it or pull it; only a plain RTSP address can be added this way. */
+  gatewayId?: string;
 }
 
-export type OnboardCode = 'bad_ref' | 'unsupported' | 'unreachable' | 'bad_credentials' | 'no_video' | 'no_key' | 'device' | 'store';
+export type OnboardCode = 'bad_ref' | 'unsupported' | 'unreachable' | 'bad_credentials' | 'no_video' | 'no_key' | 'device' | 'store' | 'no_gateway';
 
 export type OnboardResult =
   | {
@@ -134,6 +140,9 @@ export function createOnboarding(deps: OnboardDeps) {
     const needsKey = hasLogin(endpoint.url);
     if (needsKey && !deps.box) return { ok: false, code: 'no_key', error: 'This camera needs a login, and logins are only stored when SOURCE_SECRET_KEY is set on the server. Set it (64 hex characters) and try again.' };
 
+    // A camera behind a gateway is not reachable from here: no probe, no profile, no media path. The gateway is given its address.
+    if (input.gatewayId) return onboardViaGateway(input, ref, adapter.kind, endpoint, needsKey);
+
     // 2. probe
     const id = newId();
     let report: ProbeReport;
@@ -191,10 +200,41 @@ export function createOnboarding(deps: OnboardDeps) {
     };
   }
 
+  async function onboardViaGateway(input: OnboardInput, ref: CameraRef, adapterKind: string, endpoint: StreamEndpoint, needsKey: boolean): Promise<OnboardResult> {
+    if (adapterKind !== 'rtsp') return { ok: false, code: 'unsupported', error: 'A camera behind a gateway can be added by its RTSP address only: this server cannot talk to the device to read its streams.' };
+    if (!deps.gateways || !(await deps.gateways.exists(input.gatewayId!))) return { ok: false, code: 'no_gateway', error: `There is no gateway named '${input.gatewayId}'.` };
+    const id = newId();
+    const name = (input.name?.trim() || ref.name?.trim() || id).slice(0, 120);
+    const at = now().toISOString();
+    const rec: SourceRecord = {
+      site: SOURCES_SITE, cameraId: id, adapter: adapterKind, name,
+      ref: { host: ref.host, port: ref.port, url: ref.url ? redactUrl(ref.url) : undefined },
+      sealed: deps.box ? deps.box.seal(JSON.stringify({ rtspUrl: endpoint.url })) : JSON.stringify({ rtspUrl: endpoint.url }),
+      registryId: null, ownerUid: input.ownerUid, departmentId: input.departmentId ?? null, gatewayId: input.gatewayId, createdAt: at, updatedAt: at,
+    };
+    void needsKey; // already checked: a login needs the key
+    let sourceSaved = false, registryId: string | null = null;
+    try {
+      await deps.sources.put(rec); sourceSaved = true;
+      registryId = await deps.registry.create({ name, ownerUid: input.ownerUid, departmentId: input.departmentId ?? null, adapter: adapterKind, sourceId: id, streamUrl: '', device: null, location: input.location, gatewayId: input.gatewayId });
+      await deps.sources.put({ ...rec, registryId });
+    } catch (e) {
+      log.warn(`[SOURCES] onboarding ${id} behind gateway failed, undoing: ${e instanceof Error ? e.message : e}`);
+      if (registryId) await deps.registry.remove(registryId).catch(() => undefined);
+      if (sourceSaved) await deps.sources.remove(SOURCES_SITE, id).catch(() => undefined);
+      return { ok: false, code: 'store', error: `The camera could not be saved: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    return {
+      ok: true, cameraId: id, registryId, adapter: adapterKind, name, recipe: '-', reason: `Reached by gateway ${input.gatewayId}`, pathKind: 'none', device: null, flags: [],
+      warnings: [`Not probed: this server cannot reach the camera. Gateway ${input.gatewayId} will fetch it; tick Analyze for it to start. It has no live tile at the centre.`],
+    };
+  }
+
   /** Probes a camera again from its stored address and refreshes its profile (and so its recipe). */
   async function reprobe(cameraId: string, sampleSec?: number): Promise<{ ok: true; recipe: string; failure: string | null } | { ok: false; error: string }> {
     const rec = await deps.sources.get(SOURCES_SITE, cameraId);
     if (!rec) return { ok: false, error: 'No such source.' };
+    if (rec.gatewayId) return { ok: false, error: `This camera is reached by gateway ${rec.gatewayId}; this server cannot probe it.` };
     const rtsp = deps.adapters.get('rtsp');
     if (!rtsp) return { ok: false, error: 'The rtsp adapter is not available.' };
     const url = openSourceAddress(rec, deps.box).rtspUrl;

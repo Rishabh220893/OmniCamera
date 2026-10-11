@@ -476,3 +476,51 @@ test('tiles: a camera on the media server is played from it; only the grid\'s ca
   assert.deepEqual(plannedRecipes({ ...grid, media: { enabled: true } }), ['media', 'whep', 'proxy', 'stills'], 'the grid is as before');
   assert.deepEqual(plannedRecipes({ ...grid, mediaId: 'cam07', media: { enabled: true } }), ['media', 'whep', 'proxy', 'stills']);
 });
+
+// ---- cameras behind a regional gateway ---------------------------------------------------------------------------------------------
+
+function gatewaySetup(o: { gateways?: string[]; registryFails?: boolean } = {}) {
+  const profiles = memoryProfileStore();
+  const sources = createMemorySourceStore();
+  const created: NewRegistryCamera[] = [];
+  const probes: string[] = [];
+  const registry: RegistryWriter = { create: async (c) => { if (o.registryFails) throw new Error('Firestore is down'); created.push(c); return `reg-${created.length}`; }, remove: async () => undefined };
+  const adapters = createAdapterRegistry([fakeAdapter('hikvision', { probes }), fakeAdapter('rtsp', { probes, url: 'rtsp://cam:pw@192.168.9.9:554/stream1' })]);
+  const known = new Set(o.gateways ?? ['rajkot']);
+  const onboarding = createOnboarding({ adapters, profiles: profiles.store, sources, registry, box, encoder: 'qsv', mediaBase: () => 'https://media.example.org', gateways: { exists: async (id) => known.has(id) }, newId: () => 'fed-0000000000aa', log: { warn() {}, info() {} } });
+  return { onboarding, profiles, sources, created, probes };
+}
+const rtspInput = { camera: { id: 'c', adapter: 'rtsp', url: 'rtsp://cam:pw@192.168.9.9:554/stream1' } as CameraRef, ownerUid: 'admin-1', gatewayId: 'rajkot' };
+
+test('behind a gateway: an RTSP camera is saved without a probe, a profile or a media path; the gateway is named on the source and the Registry camera, and the login stays sealed', async () => {
+  const t = gatewaySetup();
+  const r = await t.onboarding.onboardOne({ ...rtspInput, name: 'Rajkot junction', departmentId: 'Traffic' });
+  assert.ok(r.ok);
+  if (!r.ok) return;
+  assert.deepEqual([t.probes.length, r.pathKind, (await t.profiles.store.listProfiles(SOURCES_SITE)).length], [0, 'none', 0], 'nothing was asked of the camera, and no profile exists');
+  assert.match(r.warnings.join(' '), /gateway rajkot will fetch it/i);
+  const rec = (await t.sources.get(SOURCES_SITE, r.cameraId))!;
+  assert.equal(rec.gatewayId, 'rajkot');
+  assert.equal(JSON.stringify(rec).includes('pw@'), false, 'no login in the stored record');
+  assert.equal(openSourceAddress(rec, box).rtspUrl, 'rtsp://cam:pw@192.168.9.9:554/stream1', 'but the gateway can be given the address');
+  const doc = registryDocument(t.created[0], 'NOW');
+  assert.deepEqual([doc.gatewayId, doc.useRemoteFeed, doc.remoteStreamUrl, doc.sourceId], ['rajkot', false, '', r.cameraId]);
+  assert.equal(JSON.stringify(doc).includes('pw@'), false);
+  const plan = await sourcesMediaPlan({ profiles: t.profiles.store, sources: t.sources, box, encoder: 'qsv', build: gridOpts() });
+  assert.deepEqual(Object.keys(plan.paths), [], 'the media server pulls nothing for it');
+  const again = await t.onboarding.reprobe(r.cameraId);
+  assert.equal(again.ok === false && /gateway rajkot/.test(again.error), true, 'the centre cannot probe it');
+});
+
+test('behind a gateway: only an RTSP address, only a gateway that exists, and a failed save leaves nothing', async () => {
+  const t = gatewaySetup();
+  const viaDevice = await t.onboarding.onboardOne({ camera: { id: 'd', adapter: 'hikvision', host: '10.1.1.5' } as CameraRef, ownerUid: 'a', gatewayId: 'rajkot' });
+  assert.equal(viaDevice.ok === false && viaDevice.code, 'unsupported');
+  const nobody = await t.onboarding.onboardOne({ ...rtspInput, gatewayId: 'nowhere' });
+  assert.equal(nobody.ok === false && nobody.code, 'no_gateway');
+  assert.equal((await t.sources.list(SOURCES_SITE)).length, 0);
+  const broken = gatewaySetup({ registryFails: true });
+  const r = await broken.onboarding.onboardOne(rtspInput);
+  assert.equal(r.ok === false && r.code, 'store');
+  assert.equal((await broken.sources.list(SOURCES_SITE)).length, 0, 'the source was removed again');
+});

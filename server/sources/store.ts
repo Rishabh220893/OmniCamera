@@ -24,6 +24,8 @@ export interface SourceRecord {
   registryId: string | null;
   ownerUid: string;
   departmentId: string | null;
+  /** The regional gateway that reaches this camera (it is on a network the centre cannot reach). The centre never pulls it; the gateway is given its address. */
+  gatewayId?: string;
   createdAt: string;
   updatedAt: string;
 }

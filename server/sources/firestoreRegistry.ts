@@ -23,7 +23,9 @@ export interface FirestoreRegistryDeps {
 export function registryDocument(cam: NewRegistryCamera, stamp: unknown): Record<string, unknown> {
   return {
     name: cam.name, userId: cam.ownerUid, ...(cam.departmentId ? { departmentId: cam.departmentId } : {}),
-    useRemoteFeed: true, remoteStreamUrl: cam.streamUrl, facingMode: 'user', useSimulatedFeed: false,
+    // A camera behind a gateway has no stream at the centre: its tile stays empty, and the gateway analyses it (flag it with Analyze).
+    useRemoteFeed: !cam.gatewayId, remoteStreamUrl: cam.gatewayId ? '' : cam.streamUrl, facingMode: 'user', useSimulatedFeed: false,
+    ...(cam.gatewayId ? { gatewayId: cam.gatewayId } : {}),
     interval: 60, sensitivity: 5, peopleThreshold: 5, vehicleThreshold: 2, webhookUrl: '', suspiciousRules: '',
     serverAnalysis: false, connectivityStatus: 'unknown', maintenanceStatus: 'operational',
     ...(cam.location ? { location: cam.location } : {}),

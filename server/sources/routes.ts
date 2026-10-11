@@ -3,7 +3,7 @@
  * and put cameras into the Registry.
  *
  *   GET    /api/sources                          the onboarded cameras, with their recipe and whether a login can be stored
- *   POST   /api/sources/onboard                  { camera, name?, departmentId?, sampleSec?, force?, location? }   one camera
+ *   POST   /api/sources/onboard                  { camera, name?, departmentId?, sampleSec?, force?, location?, gatewayId? }   one camera (gatewayId: reached by that regional gateway, RTSP address only; not probed)
  *   POST   /api/sources/onboard-channels         { camera, channels?, namePrefix?, departmentId?, sampleSec?, force? }   a whole recorder (a job)
  *   GET    /api/sources/jobs/:id                 progress and results of a recorder job
  *   POST   /api/sources/:id/reprobe              { sampleSec? }  measure it again from its stored address
@@ -108,7 +108,7 @@ export function registerSourceRoutes(app: Express, ctx: SourceRoutesContext): vo
         const v = byId.get(r.cameraId);
         return {
           cameraId: r.cameraId, name: r.name, adapter: r.adapter, host: r.ref.host ?? null, port: r.ref.port ?? null, departmentId: r.departmentId,
-          registryId: r.registryId, ownerUid: r.ownerUid, createdAt: r.createdAt,
+          registryId: r.registryId, ownerUid: r.ownerUid, createdAt: r.createdAt, gatewayId: r.gatewayId ?? null,
           recipe: v?.recipe ?? null, pathKind: v?.pathKind ?? null, failure: v?.failure ?? null, probedAt: v?.probedAt ?? null,
         };
       });
@@ -125,8 +125,10 @@ export function registerSourceRoutes(app: Express, ctx: SourceRoutesContext): vo
     if (probing >= limit) { res.status(429).json({ error: `${limit} probes are already running. Try again when one finishes.` }); return; }
     probing++;
     try {
-      const result = await ctx.onboarding.onboardOne({ camera: c.camera, name: clean(body.name, 120), departmentId: c.departmentId, ownerUid: uid, sampleSec: c.sampleSec, force: c.force, location: point(body.location) });
-      res.status(result.ok === true ? 201 : result.code === 'bad_ref' ? 400 : result.code === 'unsupported' ? 501 : result.code === 'no_key' ? 409 : result.code === 'store' ? 500 : 422).json(result);
+      const gw = clean(body.gatewayId, 40);
+      if (gw && !/^[A-Za-z0-9_-]{1,40}$/.test(gw)) { res.status(400).json({ error: "'gatewayId' must be a gateway name." }); return; }
+      const result = await ctx.onboarding.onboardOne({ camera: c.camera, name: clean(body.name, 120), departmentId: c.departmentId, ownerUid: uid, sampleSec: c.sampleSec, force: c.force, location: point(body.location), gatewayId: gw });
+      res.status(result.ok === true ? 201 : result.code === 'bad_ref' || result.code === 'no_gateway' ? 400 : result.code === 'unsupported' ? 501 : result.code === 'no_key' ? 409 : result.code === 'store' ? 500 : 422).json(result);
     } catch (e) { fail(res, e); }
     finally { probing--; }
   });

@@ -141,3 +141,13 @@ test('http: sign-in needed; the plate list and a trail; csv evidence; bad input 
     assert.equal(withAlso.json.reads, 5);
   });
 });
+
+test('plate filter: the store finds a plate however it was typed, by its letters and digits (the indexed lookup incidents and the other-department counts use)', async () => {
+  const store = createMemoryAlertStore();
+  await store.saveEvents([read(AMD(), 'GJ05AB1234', 5), read(GNR(), 'gj 05-ab 1234', 4), read(AMD(), 'GJ05AB1235', 3), makeEvent({ type: 'person.seen', summary: 'x', data: { count: 2 }, dedupeKey: 'p' }, { source: 's', camera: AMD(), ts: min(2) })]);
+  const found = await store.queryEvents({ userId: '', all: true, plate: ' GJ05 ab1234 ', limit: 50 });
+  assert.equal(found.length, 2);
+  assert.equal(await store.countEvents({ userId: '', all: true, plate: 'GJ05AB1235' }), 1);
+  assert.equal(await store.countEvents({ userId: '', all: true, plate: 'ZZ99ZZ9999' }), 0);
+  assert.equal((await store.queryEvents({ userId: '', all: true, plate: '', limit: 50 })).length, 4, 'an empty plate is no filter');
+});

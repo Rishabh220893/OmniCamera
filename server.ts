@@ -16,6 +16,7 @@ import { createMemoryBus } from './server/bus/memoryBus';
 import { createRedisBus } from './server/bus/redisBus';
 import type { EventBus } from './server/bus/types';
 import { createVmsConnectorTypes } from './server/connectors/vms/index';
+import { createRegistrySync } from './server/connectors/vms/registrySync';
 import { createVmsService, createFileCursorStore } from './server/connectors/vms/service';
 import { createEventPipeline } from './server/events/pipeline';
 import { createWebhookService, type WebhookService } from './server/connectors/webhook/service';
@@ -1495,6 +1496,8 @@ Analyze this context to answer user queries:
     const vms = createVmsService({
       types: createVmsConnectorTypes(), bus, systemsFile: process.env.VMS_SYSTEMS_FILE || path.join(dataDir, 'vms-systems.json'),
       cursors: createFileCursorStore(path.join(dataDir, 'vms-cursors.json')), allowPrivate: process.env.VMS_ALLOW_PRIVATE === 'true',
+      // VMS_REGISTRY_SYNC=true: the cameras a department system reports become Registry cameras (event-only, no stream) under the id their events carry.
+      onCameras: process.env.VMS_REGISTRY_SYNC === 'true' && registryDb ? (system, cameras) => createRegistrySync({ db: registryDb as never, timestamp: () => FieldValue.serverTimestamp() }).sync(system, cameras).then((r) => { if (r.created || r.updated || r.markedMissing) console.log(`[VMS] Registry: ${system.id}: ${r.created} added, ${r.updated} updated, ${r.markedMissing} no longer listed.`); }).catch((e) => console.warn(`[VMS] Registry sync for ${system.id} failed:`, e instanceof Error ? e.message : e)) : undefined,
       // Logins of department systems are sealed in the systems file when SOURCE_SECRET_KEY is set (a clear-text file is sealed on the next start).
       box: (() => { try { return secretBoxFromEnv(process.env); } catch (e) { console.warn('[VMS]', e instanceof Error ? e.message : e); return null; } })(),
     });
@@ -1696,10 +1699,18 @@ Analyze this context to answer user queries:
       cameras: async (gatewayId) => {
         const snap = await db.collection('cameras').where('gatewayId', '==', gatewayId).get();
         const out: AssignedCamera[] = [];
+        // A camera added through an adapter keeps its address, login included, sealed in the source store; the gateway is given it here, over its signed channel.
+        const sealedUrls = new Map<string, string>();
+        for (const d of snap.docs) {
+          const sid = d.data().sourceId;
+          if (typeof sid !== 'string' || !sid) continue;
+          try { const store = await sourceStore(); const rec = store ? await store.get(SOURCES_SITE, sid) : null; if (rec) sealedUrls.set(sid, openSourceAddress(rec, sourceBox).rtspUrl); }
+          catch (e) { console.warn(`[GATEWAY] cannot open the stored address of ${sid}:`, e instanceof Error ? e.message : e); }
+        }
         snap.forEach((d) => {
           const c = d.data();
-          const url = typeof c.remoteStreamUrl === 'string' ? c.remoteStreamUrl : '';
-          if (c.serverAnalysis !== true || !c.useRemoteFeed || !url || !c.userId) return;
+          const url = typeof c.sourceId === 'string' && sealedUrls.has(c.sourceId) ? sealedUrls.get(c.sourceId)! : typeof c.remoteStreamUrl === 'string' ? c.remoteStreamUrl : '';
+          if (c.serverAnalysis !== true || !(c.useRemoteFeed || sealedUrls.has(c.sourceId)) || !url || !c.userId) return;
           out.push({
             id: d.id, userId: c.userId, name: c.name || 'Unnamed Camera', remoteStreamUrl: url, interval: c.interval ?? 60, sensitivity: c.sensitivity ?? 5,
             peopleThreshold: c.peopleThreshold ?? 5, vehicleThreshold: c.vehicleThreshold ?? 2, suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
@@ -2059,6 +2070,7 @@ Analyze this context to answer user queries:
       audit: async (e) => { if (registryDb) await writeRegistryAudit(registryDb, { ...e, source: 'api' }); },
     }),
     box: sourceBox, encoder: profileEncoder, mediaBase: sourcesMediaBase,
+    gateways: { exists: async (id) => !!registryDb && !!(await createFirestoreGatewayDocs(registryDb).get(id)) },
   });
   registerSourceRoutes(app, {
     onboarding: sourcesOnboarding,

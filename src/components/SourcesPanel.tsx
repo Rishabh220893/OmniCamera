@@ -40,6 +40,8 @@ export default function SourcesPanel({ isAdmin }: { isAdmin: boolean }) {
   const [pass, setPass] = useState('');
   const [name, setName] = useState('');
   const [dept, setDept] = useState('');
+  const [gateway, setGateway] = useState('');
+  const [gateways, setGateways] = useState<Array<{ id: string; name: string; region: string; state: string }>>([]);
   const [force, setForce] = useState(false);
   const [found, setFound] = useState<DiscoveredDevice[] | null>(null);
   const [channels, setChannels] = useState<ChannelRow[] | null>(null);
@@ -59,7 +61,7 @@ export default function SourcesPanel({ isAdmin }: { isAdmin: boolean }) {
       setLoadError(null);
     } catch (e) { setLoadError(errText(e)); }
   }, []);
-  useEffect(() => { if (isAdmin && open) { void reload(); adminApi.departments().then((d) => setDepartments(Array.isArray(d) ? d : [])).catch(() => setDepartments([])); } }, [isAdmin, open, reload]);
+  useEffect(() => { if (isAdmin && open) { void reload(); adminApi.departments().then((d) => setDepartments(Array.isArray(d) ? d : [])).catch(() => setDepartments([])); sourcesApi.gateways().then((g) => setGateways(Array.isArray(g) ? g : [])).catch(() => setGateways([])); } }, [isAdmin, open, reload]);
   useEffect(() => () => { if (poll.current) clearInterval(poll.current); }, []);
 
   const camera = useMemo((): SourceCamera => ({
@@ -79,7 +81,7 @@ export default function SourcesPanel({ isAdmin }: { isAdmin: boolean }) {
     setChannels(c); setPicked(new Set(c.filter((x) => x.online !== false).map((x) => x.channel)));
   });
   const addOne = () => run('add', async () => {
-    const r = await sourcesApi.onboard({ camera, name: name.trim() || undefined, departmentId: dept || null, force });
+    const r = await sourcesApi.onboard({ camera, name: name.trim() || undefined, departmentId: dept || null, force, ...(adapter === 'rtsp' && gateway ? { gatewayId: gateway } : {}) });
     setNotice(resultLine(r));
     if (r.ok === true) { setPass(''); await reload(); }
   });
@@ -145,7 +147,15 @@ export default function SourcesPanel({ isAdmin }: { isAdmin: boolean }) {
                 <option value="">None (mine only)</option>
                 {departments.map((d) => <option key={d.id} value={d.name}>{d.name}</option>)}
               </select></label>
+            {adapter === 'rtsp' && gateways.length > 0 && (
+              <label className="text-xs space-y-1"><span className="text-ink-muted font-semibold">Reached by a gateway</span>
+                <select value={gateway} onChange={(e) => setGateway(e.target.value)} className="input !py-2 text-sm" aria-label="Reached by a gateway">
+                  <option value="">No: this server reaches it</option>
+                  {gateways.map((g) => <option key={g.id} value={g.id}>{g.name} ({g.region}, {g.state})</option>)}
+                </select></label>
+            )}
           </div>
+          {adapter === 'rtsp' && gateway && <p className="text-[11px] text-ink-muted">This server will not contact the camera: it is saved, and the gateway is given its address. It has no live tile here; tick Analyze for the gateway to start analysing it.</p>}
           {info && <p className="text-[11px] text-ink-muted">{info.description}</p>}
 
           <div className="flex flex-wrap items-center gap-2">

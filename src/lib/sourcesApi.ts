@@ -3,7 +3,7 @@ import { auth } from './firebase';
 /** What the Registry shows about a camera onboarded through an adapter (server/sources/routes.ts). */
 export interface SourceRow {
   cameraId: string; name: string; adapter: string; host: string | null; port: number | null; departmentId: string | null;
-  registryId: string | null; ownerUid: string; createdAt: string;
+  registryId: string | null; ownerUid: string; createdAt: string; gatewayId?: string | null;
   recipe: string | null; pathKind: string | null; failure: string | null; probedAt: string | null;
 }
 export interface AdapterInfo { kind: string; label: string; description: string; canDiscover: boolean; canReadDevice: boolean; canListChannels: boolean }
@@ -45,7 +45,8 @@ export const sourcesApi = {
   adapters: () => call<{ adapters?: AdapterInfo[] }>('/api/adapters').then((r) => r.adapters ?? []),
   discover: (adapter: string) => call<{ devices?: DiscoveredDevice[] }>('/api/adapters/discover', { method: 'POST', body: { adapter, timeoutMs: 4000 } }).then((r) => r.devices ?? []),
   channels: (camera: SourceCamera) => call<{ channels?: ChannelRow[] }>('/api/adapters/channels', { method: 'POST', body: { camera } }).then((r) => r.channels ?? []),
-  onboard: (b: { camera: SourceCamera; name?: string; departmentId?: string | null; force?: boolean }) => call<OnboardResponse>('/api/sources/onboard', { method: 'POST', body: b, allowBody: true }),
+  gateways: () => call<{ gateways: Array<{ id: string; name: string; region: string; state: string }> }>('/api/gateways').then((r) => r.gateways),
+  onboard: (b: { camera: SourceCamera; name?: string; departmentId?: string | null; force?: boolean; gatewayId?: string }) => call<OnboardResponse>('/api/sources/onboard', { method: 'POST', body: b, allowBody: true }),
   onboardChannels: (b: { camera: SourceCamera; channels: number[]; namePrefix?: string; departmentId?: string | null; force?: boolean }) =>
     call<{ jobId: string; total: number }>('/api/sources/onboard-channels', { method: 'POST', body: b }),
   job: (id: string) => call<{ job: JobStatus }>(`/api/sources/jobs/${encodeURIComponent(id)}`).then((r) => r.job),
