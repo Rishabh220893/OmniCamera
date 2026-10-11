@@ -66,7 +66,7 @@ export default function RegistryTab({
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return cameras.filter(c => {
-      if (q && !`${c.name} ${c.department || ''} ${c.ownership || ''}`.toLowerCase().includes(q)) return false;
+      if (q && !`${c.name} ${c.department || ''} ${c.ownership || ''} ${c.cameraType || ''} ${c.storageDetails || ''} ${c.connectivityStatus || ''} ${c.maintenanceStatus || ''}`.toLowerCase().includes(q)) return false;
       if (departmentFilter !== 'all' && (c.department || '') !== departmentFilter) return false;
       if (statusFilter !== 'all' && (c.connectivityStatus || 'unknown') !== statusFilter) return false;
       if (typeFilter !== 'all' && (c.cameraType || '') !== typeFilter) return false;
@@ -77,7 +77,7 @@ export default function RegistryTab({
   // A table rendering every row of an 80,000-camera registry is its own
   // kind of hiccup, independent of anything video-related — search/filter
   // narrows the set, this bounds how much of it hits the DOM at once.
-  const PAGE_SIZE = 50;
+  const PAGE_SIZE = 15;
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages - 1);
   const pagedFiltered = useMemo(
@@ -149,10 +149,6 @@ export default function RegistryTab({
 
       {/* Filter bar */}
       <div className="card p-4 flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
-          <input value={search} onChange={e => { setSearch(e.target.value); resetToFirstPage(); }} placeholder="Search name, department, ownership..." className="input !pl-10 !pr-4 !py-2.5 text-sm" />
-        </div>
         <select value={departmentFilter} onChange={e => { setDepartmentFilter(e.target.value); resetToFirstPage(); }} className="input !py-2.5 !px-4 !w-auto text-sm cursor-pointer">
           <option value="all">All departments</option>
           {departments.map(d => <option key={d} value={d}>{d}</option>)}
@@ -188,8 +184,12 @@ export default function RegistryTab({
 
       {/* Registry table */}
       <div className="card overflow-hidden">
-        <div className="p-6 border-b border-border flex items-center justify-between">
+        <div className="p-6 border-b border-border flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-sm font-bold font-display text-ink">Camera list</h3>
+          <div className="relative flex-1 min-w-[200px] max-w-md order-last sm:order-none">
+            <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
+            <input value={search} onChange={e => { setSearch(e.target.value); resetToFirstPage(); }} placeholder="Search the list: name, department, owner, type, storage..." aria-label="Search the camera list" data-testid="camera-list-search" className="input !pl-10 !pr-4 !py-2 text-sm" />
+          </div>
           <span className="text-xs text-ink-muted">{filtered.length} of {cameras.length} camera{cameras.length !== 1 ? 's' : ''}</span>
         </div>
         {/* A wide multi-column table has nowhere good to go on a phone —

@@ -140,6 +140,8 @@ export const OFFLINE_AFTER_FAILURES = 3;
 const MIN_INTERVAL_S = 5;
 /** A camera is never re-run sooner than this after a run finishes, even if its run took longer than its interval. */
 const MIN_GAP_AFTER_RUN_MS = 2_000;
+/** A camera watched by the local detector (AI analysis off) that sees nothing move still leaves one log row this often, so it does not look dead. */
+const LOCAL_HEARTBEAT_MS = 10 * 60_000;
 
 export function backoffDelayMs(intervalMs: number, failures: number, maxMs: number): number {
   if (failures <= 0) return intervalMs;
@@ -161,6 +163,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
   // Cameras this process is actually executing right now.
   const executing = new Set<string>();
 
+  const lastLocalLogAt = new Map<string, number>();
   const intervalMsOf = (c: WorkerCamera) => Math.max(MIN_INTERVAL_S, c.interval || 60) * 1000;
 
   function applyCameras(cameras: WorkerCamera[]) {
@@ -251,12 +254,19 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
       const [frame, ctx] = await Promise.all([deps.grabFrame(camera), getUserContext(camera.userId, camera.departmentId)]);
 
       // Cheap pre-filter: an unchanged scene is not worth a model call (or a log row).
-      const decision = deps.gate ? await deps.gate.check(camera.id, frame, deps.now()) : null;
+      // The gate asks for a share of the WHOLE picture to change (2%), which hides a car crossing a small drawn zone from the local detector. A camera with
+      // AI analysis off has no model call to save: the local detector is its own cheap check, so it sees every frame.
+      const localOnly = camera.aiAnalysis === false;
+      const decision = deps.gate && !localOnly ? await deps.gate.check(camera.id, frame, deps.now()) : null;
       let doc: ReturnType<typeof buildLogDocument> | null = null;
       if (decision && !decision.analyze) {
         skipped = 'unchanged';
       } else {
         const data = await deps.analyze({ imageBase64: frame.toString('base64'), camera, ...ctx });
+        if (localOnly && !(data.events && data.events.length) && deps.now() - (lastLocalLogAt.get(camera.id) ?? 0) < LOCAL_HEARTBEAT_MS) {
+          skipped = 'unchanged'; // watching and nothing moved: no log row for every check
+        } else {
+        if (localOnly) lastLocalLogAt.set(camera.id, deps.now());
         doc = buildLogDocument({ id: camera.id, name: camera.name, sensitivity: camera.sensitivity, userId: camera.userId, departmentId: camera.departmentId }, data, new Date(deps.now()));
         await deps.writeLog(doc);
         // Only now does this frame become the gate's baseline — a failed analysis must not.
@@ -278,6 +288,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
             catch (err) { if (err instanceof EventError) deps.log.warn(`[ANALYSIS] Dropped an event from ${d.source ?? 'an analyzer'} for ${camera.name}: ${err.message}`); else throw err; }
           }
           if (events.length) deps.emitEvents(events).catch((err) => deps.log.warn(`[ANALYSIS] Could not record events for ${camera.name}:`, err));
+        }
         }
       }
 

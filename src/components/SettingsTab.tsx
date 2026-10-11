@@ -10,6 +10,7 @@ import AdminUsersPanel from './AdminUsersPanel';
 import FederationPanel from './FederationPanel';
 import AllDepartmentsPanel from './AllDepartmentsPanel';
 import ZoneLineEditor from './ZoneLineEditor';
+import { localWatchProblems } from '../lib/localWatch';
 import { CameraConfig, KnownFace, NotificationPrefs, WatchlistEntry } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
 
@@ -67,8 +68,9 @@ export default function SettingsTab(props: SettingsTabProps) {
   const [showStreamPassword, setShowStreamPassword] = useState(false);
   // The toggle only means something if the server's analysis worker is running.
   const [serverAnalysisAvailable, setServerAnalysisAvailable] = useState(false);
+  const [analysisKnown, setAnalysisKnown] = useState(false); // so the zone editor does not say "not running" before the server has answered
   useEffect(() => {
-    fetch('/api/analysis/config').then(r => r.json()).then(d => setServerAnalysisAvailable(!!d.enabled)).catch(() => setServerAnalysisAvailable(false));
+    fetch('/api/analysis/config').then(r => r.json()).then(d => setServerAnalysisAvailable(!!d.enabled)).catch(() => setServerAnalysisAvailable(false)).finally(() => setAnalysisKnown(true));
   }, []);
 
   const handleAddWatchlist = (e: React.FormEvent<HTMLFormElement>) => {
@@ -434,6 +436,22 @@ export default function SettingsTab(props: SettingsTabProps) {
           <label className="flex items-center gap-2 text-xs font-bold text-ink"><input type="checkbox" checked={activeCamera.aiAnalysis !== false} onChange={(e) => onUpdateActiveCamera({ aiAnalysis: e.target.checked })} aria-label="Analyze with AI" /> Analyze with AI</label>
           <p className="text-[11px] text-ink-muted">{activeCamera.aiAnalysis !== false ? 'The AI model describes the scene, counts people and vehicles and reads faces. Plates are read by the local plate reader either way.' : 'No AI model is used. The server watches this camera locally for movement, movement in a zone and movement across a line, plate reads and offline/online changes. People, faces and scene judgements need AI.'}</p>
           {activeCamera.aiAnalysis === false && <ZoneLineEditor key={activeCamera.id} camera={activeCamera} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} onChange={(analyzers) => onUpdateActiveCamera({ analyzers })} />}
+          {activeCamera.aiAnalysis === false && analysisKnown && (() => {
+            const problems = localWatchProblems(activeCamera, serverAnalysisAvailable);
+            return (
+              <div className="rounded-xl border border-border p-3 space-y-2 text-xs" data-testid="local-watch-status">
+                {problems.length === 0
+                  ? <p className="text-success font-semibold">The server is watching this camera: a picture every {activeCamera.interval} s, compared with the one before.</p>
+                  : problems.map((p) => (
+                    <div key={p.id} className="flex flex-wrap items-start justify-between gap-2 text-warning" role="alert">
+                      <p className="min-w-0 flex-1 font-medium">{p.text}</p>
+                      {p.fix && <button type="button" onClick={() => onUpdateActiveCamera(p.fix!.patch)} className="btn-secondary !py-1 !px-3 text-xs whitespace-nowrap">{p.fix.label}</button>}
+                    </div>
+                  ))}
+                <p className="text-ink-muted">Press <b>Save settings</b> to keep the drawing. What the detector sees appears under <b>Events</b> as Movement, Intrusion (in the zone) and Line crossing. To be alerted, add a rule for those types: Events &gt; Rules.</p>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="space-y-4">

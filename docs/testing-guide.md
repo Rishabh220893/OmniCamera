@@ -53,6 +53,8 @@ Auto: `tests/detectorZones.test.ts`. Settings > a camera with **AI analysis off*
 3. Drag a point mid-draw, then start another shape: no stale shape appears.
 4. With AI analysis **on**, the editor must not appear.
 
+5. **Make it actually watch** (a drawn zone alone does nothing): under the editor, the green or amber status block says what is missing. Turn on **server analysis** for the camera, set the check interval to **5 seconds** (one click), press **Save settings**. Then move something in the zone: within a few checks Events shows **Movement** and **Intrusion** (for a line: **Line crossing**). For an alert, add a rule in Events > Rules for those types. If nothing appears, check the server log for `[ANALYSIS]` lines and that the camera is not offline.
+
 ## 6. Full-screen camera: AI button and captions
 
 (Type-checked and designed; **not tried on a real camera**.) Monitor > Full Panel > open a camera full screen.
