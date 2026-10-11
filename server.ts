@@ -23,6 +23,7 @@ import { registerWebhookAdminRoutes, registerWebhookIngest } from './server/conn
 import { registerVmsRoutes } from './server/connectors/vms/routes';
 import { createFederationService, type FederationService } from './server/federation/service';
 import { registerReportRoutes } from './server/reports/routes';
+import { registerTrailRoutes } from './server/trail/routes';
 import { createWallService } from './server/wall/service';
 import { registerWallRoutes } from './server/wall/routes';
 import { createRedisUsageStore, type UsageStore } from './server/federation/usageStore';
@@ -1494,6 +1495,13 @@ Analyze this context to answer user queries:
     events: alertStore, incidents: incidentStore,
     allow: async (req, res) => authz.require(req, res, 'event.view'),
     departments: registryDb ? async () => (await createFirebaseDirectory(getAuth(), registryDb).listDepartments()).map((d) => ({ name: d.name, retentionDays: d.retentionDays, storage: d.storage })) : undefined,
+  });
+
+  // ---- Statewide vehicle trail: one plate across every camera and department the viewer may see (server/trail, docs/vehicle-trail.md) ----
+  registerTrailRoutes(app, {
+    events: alertStore,
+    allow: async (req, res) => authz.require(req, res, 'event.view'),
+    departments: registryDb ? async () => (await createFirebaseDirectory(getAuth(), registryDb).listDepartments()).map((d) => ({ name: d.name })) : undefined,
   });
 
   // ---- Server-side analysis (replaces the browser-tab capture loop) ----
