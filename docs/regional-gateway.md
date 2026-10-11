@@ -51,6 +51,31 @@ A camera belongs to a gateway when its record has `gatewayId`. The centre's own 
 4. **Watch it from the centre**: `GET /api/gateways` lists every gateway with `online / degraded / offline / never_seen / disabled`, the reasons, and its last heartbeat.
    Add an alert rule on `gateway.*` events (`docs/analytics.md`) to be told when one goes quiet.
 
+## Recorded video at the edge, and clip fetch (gap A16)
+
+A region's cameras can be **recorded by the gateway's own media server**, next to the cameras, and the centre asks for a **clip** only when someone needs one. Nothing is streamed to the centre. The
+bandwidth arithmetic is in `docs/load-test-report.md` (a 10-minute clip at 2 Mbit/s is 150 MB; one over a 20 Mbit/s link takes about 90 s).
+
+```
+ person at the centre  ──POST /api/gateways/:id/clips {cameraId, from, to, reason}──▶  request (pending)
+                                                                                          │ the gateway asks (signed GET /api/gateway/clip-requests)
+ gateway: places a HOLD at the edge ◀──────────────────────────────────────────────────────┘
+          cuts the clip from its own segments (copied, not re-encoded)
+          POST .../meta  {sha256, bytes, segments, gaps, holdId}   then   PUT .../file  (signature covers the declared hash)
+ centre:  re-hashes the bytes, files an ordinary evidence EXPORT (manifest, signature, encrypted at rest if a key is set, chain of custody),
+          the request becomes "ready"; download it at /api/recording-exports/:id/file like any export
+```
+
+**Set up an edge site:** (1) `npm run edge-recording-config -- cameras.json /var/recordings > paths.yml` and paste the output under `paths:` of the region's MediaMTX (path name = the camera id at the centre);
+(2) run the gateway with `GATEWAY_RECORDINGS_DIR=/var/recordings` (and `GATEWAY_RECORDINGS_KEEP_DAYS`, default 7); (3) from the centre, ask for a clip. The gateway's retention deletes old segments hourly **except** what is held.
+
+Why it is built as a pull: a gateway sits behind a firewall and cannot be called. A request waits until the gateway asks, goes back to waiting if the gateway took it and never answered (5 minutes), and a gateway that is
+offline simply leaves it pending; a request the gateway cannot serve (no footage, range too long) comes back as **failed with the reason**. The hold is placed even when the clip fails, so the footage is not lost while it is sorted out.
+
+Checked with real ffmpeg video over real HTTP on one machine (`tests/gatewayClips.test.ts`, 7 tests: the whole flow, a signed manifest, failure, validation and limits, lease expiry and tenancy, upload integrity, a wrong clock).
+**Not checked:** a real MediaMTX writing the edge recordings and a real gateway process reading them, a slow or broken link, large files (the test clips are a few kilobytes), many gateways at once.
+
+
 ## What happens when things go wrong
 
 | Situation | What the gateway does | What the centre does |

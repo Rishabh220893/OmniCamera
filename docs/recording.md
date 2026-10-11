@@ -77,6 +77,16 @@ only way to play their recorded video; otherwise the centre records over the WAN
 **5. Evidence handling.** Built: hashes, a reason, a hold, an access-log entry. Not built: signing the manifest, chain-of-custody
 transfers, and tamper-evident storage. Whether the courts or the department require more than hashes is a question for them, not for the code.
 
+## Evidence, holds from alerts, and the disk watch (session 5)
+
+- **Signed manifests.** With `EVIDENCE_SIGNING_KEY` (an Ed25519 key: `npm run evidence-key`) every export's manifest is signed; `GET /api/evidence/public-key` gives the public key; `npm run evidence-key -- --verify manifest.json manifest.sig.json` checks a manifest offline with nothing from the server. Without a key the manifest says it is unsigned.
+- **Chain of custody.** Every export has `custody.jsonl`: who exported it, fetched it from a gateway, downloaded it, verified it, each line carrying the hash of the line before. `POST /api/recording-exports/:id/verify` re-checks the file against the manifest's SHA-256, the signature and the chain, and records that it did. The chain proves order and edits, not completeness.
+- **Encrypted at rest.** With `EVIDENCE_ENCRYPTION_KEY` the export file is stored as `<camera>.mp4.enc` (per-file data key, chunked AES-256-GCM) and streamed decrypted to an authorised download; the manifest hash stays that of the plain video. A server that lost the key answers 409 with the reason rather than sending noise. Key rotation re-wraps headers only (`server/recording/exportCrypto.ts`). Details and limits: `docs/security-architecture.md`.
+- **Holds from alerts.** An alert rule can have a **"keep the recording around the event"** channel (`recording-hold`: minutes before and after): the alert places a hold on the camera's footage so retention cannot delete it, and an `recording.hold_placed` event says so. A rule's Test button does not place a real hold. A long incident holds around its first event (repeats are folded into the alert, not re-delivered).
+- **Disk watch.** The server reads the recording disk's free space every minute and raises `recording.disk_low` (under 15% free), `recording.disk_critical` (under 5%) and `recording.disk_ok` once per change, so a rule can tell someone before recording fails (`RECORDING_DISK_LOW_PERCENT`, `RECORDING_DISK_CRITICAL_PERCENT`, `RECORDING_DISK_CHECK_MS`).
+- Tests: `tests/evidence.test.ts` (no video), `tests/recordingRoutes.test.ts` (real ffmpeg: signed, unsigned, encrypted, tampered, lost key), `tests/alertChannels.test.ts`, `tests/security.test.ts`.
+
+
 ## Not done / not verified
 
 - **Never run against a real camera or the real grid.** Tested with synthetic H.264 through a real MediaMTX (settings accepted, segments

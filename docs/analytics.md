@@ -142,6 +142,13 @@ Limits: it cannot tell a person from a vehicle or a branch, cannot follow an obj
 "line crossing" means movement touching the line from both sides. People, faces, scene and unusual-activity events need AI. `vms.alarm`
 comes only from a recorder. Verified with synthetic fingerprints and a fake model (`tests/localDetector.test.ts`); never run on real footage.
 
+## Counting, anomalies and the inference service (gap A17, session 5)
+
+- **Count anomalies** (`server/analytics/baseline.ts`, `anomaly.ts`): from the `person.seen` and `vehicle.seen` events the platform learns what is usual for each camera at each hour of the week (an exponentially weighted mean and variance in 168 buckets per camera and metric: no model, no GPU) and raises `count.anomaly` when a count is far from it (default 3 standard deviations and at least 4 more or fewer; a low count only for cameras whose usual is at least 5; one event per camera and metric per 15 minutes). An unusual value is **not learned** while it lasts (otherwise a crowd would become normal in a few frames), but a camera that stays at a new level for 60 values in a row is accepted as having a new usual. It needs a few days of data before it says anything. State is saved to `anomaly-baseline.json` in `VMS_DATA_DIR`. `ANOMALY_DETECTION=off` switches it off; `ANOMALY_SIGMA` changes the threshold. It flags statistics, not meaning: a market day or a closed road is flagged.
+- **The inference service** (`server/analytics/remoteInference.ts`, `docs/inference-service.md`): with `INFERENCE_SERVICE_URL` set, an extra analyzer `remote-detector` sends each frame to a separate service (a detector such as YOLO on a GPU) and turns its answer into counts and `person.seen` / `vehicle.seen` events, the same ones the language model makes, so rules and the anomaly detector work with either. It also matches face embeddings against an index of enrolled faces (`faceIndex.ts`: cosine similarity, strict default threshold) **when the service returns embeddings and a face index is supplied for the camera's user; no enrolment path for embeddings exists yet**, so face matching by embedding is a tested module, not a working feature.
+- Tested: `tests/inferenceAnalyzers.test.ts` (12 tests, including a mock inference service over real HTTP). **Never run against a real detector or a GPU**; the reference service in `inference-service/` has not been run at all (no Python on the machine it was written on).
+
+
 ## Grid guard and analysis status
 
 **The problem it solves.** The camera grid caps how long one account may watch. Past the cap it refuses the account (HLS "watch time limit
