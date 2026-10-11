@@ -215,7 +215,7 @@ test('upload integrity: an unsigned or wrongly signed upload, a hash that does n
     const goodHash = (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex');
     await requests.setMeta(id, gatewayId, { sha256: goodHash, bytes: bytes.length, actualFrom: at(0).toISOString(), durationSec: 8, segments: [], gaps: [] });
     const put = (headers: Record<string, string>, body: Buffer, p = `/api/gateway/clip-requests/${id}/file`) =>
-      fetch(base + p, { method: 'PUT', headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(body.length), ...headers }, body }).then(async (x) => ({ status: x.status, json: await x.json().catch(() => null) }));
+      fetch(base + p, { method: 'PUT', headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(body.length), ...headers }, body: body as unknown as BodyInit }).then(async (x) => ({ status: x.status, json: await x.json().catch(() => null) }));
     const sign = (hash: string, id2 = gatewayId, sec = secret) => ({ 'X-Clip-SHA256': hash, ...signRequest({ gatewayId: id2, secret: sec, method: 'PUT', path: `/api/gateway/clip-requests/${id}/file`, body: hash }) });
 
     assert.equal((await put({ 'X-Clip-SHA256': goodHash }, bytes)).status, 401, 'unsigned');
