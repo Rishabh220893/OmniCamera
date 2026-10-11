@@ -122,6 +122,9 @@ const REGISTRY_CSV_COLUMNS = ['id', 'name', 'department', 'ownership', 'cameraTy
 export default function App() {
   const [cameras, setCameras] = useState<CameraConfig[]>([createDefaultCamera('cam-1', 'Main Entrance')]);
   const [activeCameraId, setActiveCameraId] = useState<string>('cam-1');
+  // The camera-list listeners below are set up once; they must read the current selection, not the one from when they were set up.
+  const activeCameraIdRef = useRef(activeCameraId);
+  activeCameraIdRef.current = activeCameraId;
   const [isCapturing, setIsCapturing] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [knownFaces, setKnownFaces] = useState<KnownFace[]>([]);
@@ -502,7 +505,7 @@ export default function App() {
       if (cams.length > 0) {
         const deduped = dedupeCamerasByStreamUrl(cams);
         setCameras(deduped);
-        if (!deduped.find(c => c.id === activeCameraId)) setActiveCameraId(deduped[0].id);
+        if (!deduped.find(c => c.id === activeCameraIdRef.current)) setActiveCameraId(deduped[0].id);
       } else if (!hasSeededCameraRef.current && !managed) {
         // Covers both brand-new accounts and any existing account whose users/{uid} doc predates the registry migration and therefore
         // never got a camera document created for it. Accounts an administrator created do not get one: they are given cameras.
@@ -1051,19 +1054,21 @@ export default function App() {
   };
 
   // ---------- Registry: add / remove / bulk import / export ----------
-  const addCamera = async () => {
+  const addCamera = () => { void createCamera(); };
+  // `fields` are what the Add camera form collected; with none, a blank camera named "New Camera N".
+  const createCamera = async (fields: Partial<CameraConfig> = {}) => {
     if (!user) return;
-    const name = `New Camera ${cameras.length + 1}`;
+    const name = fields.name || `New Camera ${cameras.length + 1}`;
     if (user.uid === 'demo-guest') {
       const newId = `cam-${Math.random().toString(36).substr(2, 9)}`;
-      setCameras(prev => [...prev, { id: newId, ...defaultCameraFields(name), facingMode: 'environment', suspiciousRules: '' }]);
+      setCameras(prev => [...prev, { id: newId, ...defaultCameraFields(name), facingMode: 'environment', suspiciousRules: '', ...fields }]);
       setActiveCameraId(newId);
       setAuditTrail(prev => [{ id: `local-${newId}`, cameraId: newId, cameraName: name, action: 'create', source: 'manual', performedBy: 'guest', timestamp: new Date() }, ...prev]);
       return;
     }
     try {
       const ref = await addDoc(collection(db, 'cameras'), {
-        ...defaultCameraFields(name), facingMode: 'environment', suspiciousRules: '',
+        ...defaultCameraFields(name), facingMode: 'environment', suspiciousRules: '', ...fields,
         userId: user.uid, createdAt: serverTimestamp(), updatedAt: serverTimestamp()
       });
       setActiveCameraId(ref.id);
@@ -1427,7 +1432,7 @@ export default function App() {
                       streamAccessPassword={streamAccessPassword} onChangeStreamAccessPassword={setStreamAccessPassword}
                       streamAccessEmail={streamAccessEmail} onChangeStreamAccessEmail={setStreamAccessEmail}
                       cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
-                      onAddCamera={addCamera} onRemoveCamera={removeCamera} onUpdateActiveCamera={updateActiveCamera}
+                      onAddCamera={addCamera} onCreateCamera={createCamera} onRemoveCamera={removeCamera} onUpdateActiveCamera={updateActiveCamera}
                       onOpenSetupGuides={() => setShowDVRGuide(true)} webhookStatus={webhookStatus} onTestWebhook={testWebhook}
                       knownFaces={knownFaces} onFaceUpload={handleFaceUpload} onRemoveFace={removeKnownFace}
                       watchlist={watchlist} onAddWatchlistEntry={addWatchlistEntry} onRemoveWatchlistEntry={removeWatchlistEntry} faceDepartment={faceDepartment} watchDepartment={watchDepartment}

@@ -39,6 +39,8 @@ export interface WorkerCamera {
   aiAnalysis?: boolean;
   /** Per-camera settings for analyzers (zones and lines of the local detector). */
   analyzers?: Record<string, unknown>;
+  /** The error saved on the camera by an earlier run (possibly before a restart); a success clears it even though this process never saw the failure. */
+  storedError?: string;
 }
 
 export interface UserContext {
@@ -292,7 +294,7 @@ export function createAnalysisWorker(deps: WorkerDeps, overrides: Partial<Worker
         }
       }
 
-      const recovered = lastError !== null;
+      const recovered = lastError !== null || !!camera.storedError;
       if (job.failures >= OFFLINE_AFTER_FAILURES) reportReachability(camera, 'online', `${camera.name} is back online`, job.failures);
       failures = 0;
       lastError = null;

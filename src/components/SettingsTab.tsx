@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   Settings2, Eye, AlertTriangle, Activity, Clock, FolderHeart, ExternalLink, BarChart2,
@@ -10,6 +10,7 @@ import AdminUsersPanel from './AdminUsersPanel';
 import FederationPanel from './FederationPanel';
 import AllDepartmentsPanel from './AllDepartmentsPanel';
 import ZoneLineEditor from './ZoneLineEditor';
+import AddCameraDialog from './AddCameraDialog';
 import { localWatchProblems } from '../lib/localWatch';
 import { CameraConfig, KnownFace, NotificationPrefs, WatchlistEntry } from '../types';
 import { User as FirebaseUser } from 'firebase/auth';
@@ -33,6 +34,8 @@ interface SettingsTabProps {
   activeCameraId: string;
   onSelectCamera: (id: string) => void;
   onAddCamera: () => void;
+  /** Creates a camera with the fields the Add camera form collected. */
+  onCreateCamera: (fields: Partial<CameraConfig>) => void;
   onRemoveCamera: (id: string) => void;
   onUpdateActiveCamera: (updates: Partial<CameraConfig>) => void;
   onOpenSetupGuides: () => void;
@@ -58,7 +61,7 @@ export default function SettingsTab(props: SettingsTabProps) {
     theme, onToggleTheme, notificationPrefs, onUpdateNotifyPrefs, user, onSaveSettings,
     isSaveLoading, saveSuccess, googleSheetsId, onChangeGoogleSheetsId,
     streamAccessPassword, onChangeStreamAccessPassword, streamAccessEmail, onChangeStreamAccessEmail, cameras, activeCameraId,
-    onSelectCamera, onAddCamera, onRemoveCamera, onUpdateActiveCamera, onOpenSetupGuides,
+    onSelectCamera, onCreateCamera, onRemoveCamera, onUpdateActiveCamera, onOpenSetupGuides,
     webhookStatus, onTestWebhook, knownFaces, onFaceUpload, onRemoveFace,
     watchlist, onAddWatchlistEntry, onRemoveWatchlistEntry, faceDepartment, watchDepartment,
     userDepartment, userRole, onUpdateUserProfile, isAdmin
@@ -82,6 +85,22 @@ export default function SettingsTab(props: SettingsTabProps) {
     if (openCameraId === id && activeCameraId === id) { setOpenCameraId(null); return; }
     onSelectCamera(id); setOpenCameraId(id);
   };
+  // "Add camera" creates the camera at the end of the fleet, usually on another page and collapsed, so nothing seemed to happen: once it appears, clear the search, go to its page and open it.
+  const idsBeforeAdd = useRef<Set<string> | null>(null);
+  const [showAddCamera, setShowAddCamera] = useState(false);
+  const rememberCameras = () => { idsBeforeAdd.current = new Set(cameras.map((c) => c.id)); };
+  useEffect(() => {
+    const before = idsBeforeAdd.current;
+    if (!before) return;
+    const added = cameras.find((c) => !before.has(c.id));
+    if (!added) return;
+    idsBeforeAdd.current = null;
+    setCamSearch('');
+    setCamPage(Math.floor(cameras.findIndex((c) => c.id === added.id) / CAMERA_PAGE_SIZE));
+    onSelectCamera(added.id);
+    setOpenCameraId(added.id);
+    setTimeout(() => document.getElementById(`camera-config-${added.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' }), 100);
+  }, [cameras]);
   // The toggle only means something if the server's analysis worker is running.
   const [serverAnalysisAvailable, setServerAnalysisAvailable] = useState(false);
   const [analysisKnown, setAnalysisKnown] = useState(false); // so the zone editor does not say "not running" before the server has answered
@@ -318,6 +337,8 @@ export default function SettingsTab(props: SettingsTabProps) {
         </div>
       </div>
 
+      {showAddCamera && <AddCameraDialog isAdmin={isAdmin} onClose={() => setShowAddCamera(false)} onCreate={(f) => { rememberCameras(); onCreateCamera(f); }} onOnboarded={rememberCameras} />}
+
       {/* Cameras */}
       <div className="card p-8">
         <div className="flex items-center justify-between mb-7 flex-wrap gap-3">
@@ -332,7 +353,7 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
           <div className="flex items-center gap-2">
             <button onClick={onOpenSetupGuides} className="btn-secondary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"><HelpCircle className="w-3.5 h-3.5" strokeWidth={1.75} /> Setup guides</button>
-            <button onClick={onAddCamera} className="btn-primary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
+            <button onClick={() => setShowAddCamera(true)} data-testid="settings-add-camera" className="btn-primary !py-2 !px-4 text-xs whitespace-nowrap active:scale-95"><Plus className="w-3.5 h-3.5" strokeWidth={1.75} /> Add camera</button>
           </div>
         </div>
 

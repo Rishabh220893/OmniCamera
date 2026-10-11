@@ -1853,7 +1853,7 @@ Analyze this context to answer user queries:
                 suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
                 department: c.departmentId || c.department || undefined,
                 departmentId: typeof c.departmentId === 'string' && c.departmentId ? c.departmentId : undefined,
-                aiAnalysis: c.aiAnalysis === false ? false : undefined, analyzers: c.analyzers && typeof c.analyzers === 'object' ? c.analyzers : undefined,
+                aiAnalysis: c.aiAnalysis === false ? false : undefined, analyzers: c.analyzers && typeof c.analyzers === 'object' ? c.analyzers : undefined, storedError: typeof c.lastAnalysisError === 'string' && c.lastAnalysisError ? c.lastAnalysisError : undefined,
                 sourceId,
                 location: c.location && typeof c.location.lat === 'number' && typeof c.location.lng === 'number' ? { lat: c.location.lat, lng: c.location.lng } : undefined,
               });
@@ -1937,7 +1937,7 @@ Analyze this context to answer user queries:
             peopleThreshold: c.peopleThreshold ?? 5, vehicleThreshold: c.vehicleThreshold ?? 2, suspiciousRules: c.suspiciousRules || '', webhookUrl: c.webhookUrl || '',
             department: c.departmentId || c.department || undefined,
                 departmentId: typeof c.departmentId === 'string' && c.departmentId ? c.departmentId : undefined,
-            aiAnalysis: c.aiAnalysis === false ? false : undefined, analyzers: c.analyzers && typeof c.analyzers === 'object' ? c.analyzers : undefined,
+            aiAnalysis: c.aiAnalysis === false ? false : undefined, analyzers: c.analyzers && typeof c.analyzers === 'object' ? c.analyzers : undefined, storedError: typeof c.lastAnalysisError === 'string' && c.lastAnalysisError ? c.lastAnalysisError : undefined,
             location: c.location && typeof c.location.lat === 'number' && typeof c.location.lng === 'number' ? { lat: c.location.lat, lng: c.location.lng } : undefined,
           });
         });
