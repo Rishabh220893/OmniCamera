@@ -158,3 +158,36 @@ test('rule test: sends through the real channels but never places a real hold; t
   assert.deepEqual(d.map((x) => [x.channel, x.ok]), [['email', true], ['recording-hold', true]]);
   assert.match(d[1].error ?? '', /not tested/);
 });
+
+// ---- the real transports, against local fakes: nodemailer over a real socket, fetch over real HTTP --------------------------------------
+
+test('real transports: e-mail goes out through nodemailer to an SMTP server and arrives with the right sender, recipients, subject and text; SMS reaches the gateway with the bearer token, one message per number', async () => {
+  const { startFakeSmtp, startFakeSmsGateway } = await import('./lab/fakeMessaging.ts');
+  const { createSmtpSender } = await import('../server/events/channels.ts');
+  const smtp = await startFakeSmtp();
+  const sms = await startFakeSmsGateway('SECRET');
+  try {
+    const mail = createEmailChannel({ send: createSmtpSender(`smtp://127.0.0.1:${smtp.port}`), from: 'OmniSee <alerts@omnisee.test>' });
+    await mail.deliver({ type: 'email', to: ['chief@police.test', 'duty@police.test'] }, ctx);
+    assert.equal(smtp.mails.length, 1);
+    const m = smtp.mails[0];
+    assert.equal(m.from, 'alerts@omnisee.test');
+    assert.deepEqual(m.to, ['chief@police.test', 'duty@police.test']);
+    assert.equal(m.subject, '[CRITICAL] Watchlist plate GJ05AB1234 seen');
+    assert.match(m.text, /Camera: Gate 7 \(Traffic\)/);
+    assert.match(m.text, /What: Watchlist plate GJ05AB1234 seen/);
+    assert.equal(m.text, alertText(ctx).body, 'the message body arrives exactly as written, with no corruption from the transport');
+
+    const text = createSmsChannel({ gatewayUrl: sms.url, token: 'SECRET', from: 'OMNISEE' });
+    assert.equal(text.check!({ type: 'sms', to: [] }), null, 'a gateway on this machine may be plain http');
+    await text.deliver({ type: 'sms', to: ['+919876543210', '+919812345678'] }, ctx);
+    assert.deepEqual(sms.messages.map((x) => x.to), ['+919876543210', '+919812345678']);
+    assert.equal(sms.messages[0].from, 'OMNISEE');
+    assert.ok(sms.messages[0].message.length <= 300 && sms.messages[0].message.includes('Gate 7'));
+
+    const wrong = createSmsChannel({ gatewayUrl: sms.url, token: 'WRONG' });
+    await assert.rejects(wrong.deliver({ type: 'sms', to: ['+919876543210'] }, ctx), /HTTP 401/);
+    assert.equal(sms.refused, 1);
+    assert.match(createSmsChannel({ gatewayUrl: 'http://sms.example.com/send', token: 't' }).check!({ type: 'sms', to: [] })!, /https/, 'a remote gateway still has to be https');
+  } finally { await smtp.close(); await sms.close(); }
+});

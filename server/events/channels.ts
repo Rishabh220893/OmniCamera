@@ -185,7 +185,8 @@ export function createSmsChannel(o: SmsOptions): Channel<Extract<ChannelConfig, 
   const take = hourlyLimiter(o.maxPerHour ?? 30, o.now);
   return {
     type: 'sms',
-    check: () => (/^https:\/\//i.test(o.gatewayUrl) ? null : 'The SMS gateway address must be https://.'),
+    // https:// only, except a gateway on this machine (the local sandbox, `npm run alert-sandbox`), where no secret leaves the computer.
+    check: () => (/^https:\/\//i.test(o.gatewayUrl) || /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(o.gatewayUrl) ? null : 'The SMS gateway address must be https://.'),
     async deliver(cfg, ctx) {
       if (!take()) throw new Error('SMS limit for this hour reached; this alert was not sent.');
       const { body } = alertText(ctx, true);
