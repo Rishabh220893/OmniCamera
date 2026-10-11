@@ -467,13 +467,17 @@ export default function MonitorTab({
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [gridFilter, setGridFilter] = useState('');
+  // People who work for several departments can pick one: the departments of the cameras they have, when there is more than one.
+  const [gridDept, setGridDept] = useState('');
+  const deptOptions = useMemo(() => [...new Set(cameras.map((c) => c.departmentId || c.department || '').filter(Boolean))].sort(), [cameras]);
+  const activeDept = deptOptions.includes(gridDept) ? gridDept : '';
   const filteredCameras = useMemo(() => {
     const q = gridFilter.trim().toLowerCase();
     // Most reliable demo-grid cameras first, so page 1 is the one that actually plays.
-    const ordered = sortByGridHealth(cameras);
+    const ordered = sortByGridHealth(activeDept ? cameras.filter((c) => (c.departmentId || c.department) === activeDept) : cameras);
     if (!q) return ordered;
     return ordered.filter(c => c.name.toLowerCase().includes(q) || c.location?.toString().toLowerCase().includes(q) || c.department?.toLowerCase().includes(q));
-  }, [cameras, gridFilter]);
+  }, [cameras, gridFilter, activeDept]);
   const latestLogByCamera = useMemo(() => {
     const map = new Map<string, LogEntry>();
     for (const log of logs) if (!map.has(log.cameraId)) map.set(log.cameraId, log);
@@ -610,6 +614,12 @@ export default function MonitorTab({
             ))}
             <button onClick={onAddCamera} className="btn-ghost !p-2 border border-dashed border-border !rounded-xl" title="Camera settings"><Settings2 className="w-4 h-4" strokeWidth={1.75} /></button>
           </div>
+          {viewMode === 'grid' && deptOptions.length > 1 && (
+            <select value={activeDept} onChange={(e) => { setGridDept(e.target.value); setGridPage(0); }} className="input !py-2 !px-3 text-xs w-auto" aria-label="Department" data-testid="grid-department">
+              <option value="">All my departments</option>
+              {deptOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+          )}
           {viewMode === 'grid' && (
             <div className="relative w-full sm:w-64 order-last sm:order-none">
               <Search className="w-3.5 h-3.5 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />

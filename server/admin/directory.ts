@@ -53,6 +53,24 @@ export class DirectoryError extends Error {
 export interface NewUser { username: string; password: string; role: Role; departmentId: string | null }
 export interface UserPatch { password?: string; role?: Role; departmentId?: string | null; disabled?: boolean }
 
+/**
+ * What an administrator can look at across every department (the app only loads a person's own and their departments' faces, plates and logs).
+ * Metadata only: a face's picture is never sent, a log is cut short.
+ */
+export const RECORD_KINDS = ['faces', 'watchlist', 'logs'] as const;
+export type RecordKind = (typeof RECORD_KINDS)[number];
+export interface RecordRow {
+  id: string;
+  ownerUserId: string;
+  departmentId: string | null;
+  /** The face's name, the plate, or the log's summary (up to 200 characters). */
+  title: string;
+  /** Logs: the camera and when. */
+  cameraName?: string;
+  at?: string;
+  unusual?: boolean;
+}
+
 export interface AdminDirectory {
   listDepartments(): Promise<DepartmentView[]>;
   createDepartment(name: string, by: string): Promise<Department>;
@@ -67,6 +85,8 @@ export interface AdminDirectory {
   listCameras(): Promise<CameraRow[]>;
   /** Gives the cameras to a department (null takes them back). Unknown camera ids are returned, not an error. */
   allotCameras(cameraIds: string[], departmentId: string | null): Promise<{ updated: number; missing: string[] }>;
+  /** Faces, watchlist plates or logs of every department (or one), newest first for logs, at most `limit` (up to 500). */
+  listRecords(kind: RecordKind, o: { departmentId?: string; limit?: number }): Promise<RecordRow[]>;
 }
 
 export function checkDepartmentName(raw: unknown): string {
@@ -122,6 +142,8 @@ export function checkUserPatch(raw: unknown): UserPatch {
 export interface MemoryDirectory extends AdminDirectory {
   /** Test access: cameras can be added the way the app would add them. */
   addCamera(c: CameraRow): void;
+  /** Test access: records of the three kinds. */
+  addRecord(kind: RecordKind, r: RecordRow): void;
   /** The password last set for a username, so tests can check sign-in without a real identity service. */
   passwordOf(username: string): string | undefined;
   claimsOf(uid: string): { role: Role; departments: string[] } | undefined;
@@ -132,11 +154,18 @@ export function createMemoryDirectory(o: { now?: () => Date } = {}): MemoryDirec
   const departments = new Map<string, Department>();
   const users = new Map<string, ManagedUser & { password: string }>();
   const cameras = new Map<string, CameraRow>();
+  const records: Record<RecordKind, RecordRow[]> = { faces: [], watchlist: [], logs: [] };
   let seq = 0;
   const strip = ({ password: _p, ...u }: ManagedUser & { password: string }): ManagedUser => u;
   const needDept = (id: string | null) => { if (id !== null && !departments.has(id)) throw new DirectoryError(`There is no department '${id}'.`, 'invalid'); };
 
   return {
+    addRecord(kind, r) { records[kind].push(r); },
+    async listRecords(kind, q) {
+      const limit = Math.min(500, Math.max(1, Math.floor(q.limit ?? 200) || 200));
+      const rows = records[kind].filter((r) => !q.departmentId || r.departmentId === q.departmentId);
+      return (kind === 'logs' ? [...rows].sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))) : [...rows].sort((a, b) => a.title.localeCompare(b.title))).slice(0, limit);
+    },
     async listDepartments() {
       return [...departments.values()].sort((a, b) => a.name.localeCompare(b.name)).map((d) => ({
         ...d, users: [...users.values()].filter((u) => u.departmentId === d.id).length, cameras: [...cameras.values()].filter((c) => c.departmentId === d.id).length,

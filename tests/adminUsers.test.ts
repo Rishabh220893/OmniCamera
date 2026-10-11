@@ -266,3 +266,25 @@ test('admin routes: PATCH sets a department\'s retention and storage, refuses ba
     assert.equal((await call('GET', '/api/admin/departments')).json.departments[0].retentionDays, 15, 'a refused change changes nothing');
   });
 });
+
+test('admin records: faces, watchlist plates and logs of every department (or one), metadata only, newest logs first, capped; others cannot read them', async () => {
+  await withAdminRoutes(async ({ call, dir }) => {
+    dir.addRecord('faces', { id: 'f1', ownerUserId: 'u1', departmentId: 'Traffic', title: 'Anil' });
+    dir.addRecord('faces', { id: 'f2', ownerUserId: 'u2', departmentId: 'Police', title: 'Bina' });
+    dir.addRecord('faces', { id: 'f3', ownerUserId: 'u3', departmentId: null, title: 'Personal' });
+    dir.addRecord('watchlist', { id: 'w1', ownerUserId: 'u1', departmentId: 'Traffic', title: 'GJ01AA0001' });
+    for (let i = 0; i < 5; i++) dir.addRecord('logs', { id: `l${i}`, ownerUserId: 'u1', departmentId: i % 2 ? 'Police' : 'Traffic', title: `log ${i}`, cameraName: 'Gate', at: `2026-10-11T0${i}:00:00Z`, unusual: i === 4 });
+    const all = await call('GET', '/api/admin/records/faces');
+    assert.deepEqual(all.json.records.map((r: any) => r.title), ['Anil', 'Bina', 'Personal']);
+    assert.deepEqual((await call('GET', '/api/admin/records/faces?department=Police')).json.records.map((r: any) => r.title), ['Bina']);
+    assert.deepEqual((await call('GET', '/api/admin/records/watchlist')).json.records.map((r: any) => r.title), ['GJ01AA0001']);
+    const logs = await call('GET', '/api/admin/records/logs?limit=3');
+    assert.deepEqual(logs.json.records.map((r: any) => r.id), ['l4', 'l3', 'l2'], 'newest first, at most the limit');
+    assert.equal(logs.json.records[0].unusual, true);
+    assert.equal(JSON.stringify(all.json).includes('imageData'), false, 'no picture is ever in the answer');
+    assert.equal((await call('GET', '/api/admin/records/passwords')).status, 400);
+    assert.equal((await call('GET', '/api/admin/records/faces?department=%3Cscript%3E')).status, 400);
+    assert.equal((await call('GET', '/api/admin/records/faces', undefined, 'viewer')).status, 403);
+    assert.equal((await call('GET', '/api/admin/records/faces', undefined, 'none')).status, 401);
+  });
+});

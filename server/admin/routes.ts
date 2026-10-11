@@ -9,10 +9,11 @@
  *   PATCH  /api/admin/users/:uid                  { password?, role?, departmentId?, disabled? }
  *   DELETE /api/admin/users/:uid
  *   GET    /api/admin/cameras                     every camera with its owner and department
+ *   GET    /api/admin/records/faces|watchlist|logs?department=&limit=   faces, watchlist plates or logs of every department (metadata only)
  *   POST   /api/admin/cameras/allot               { cameraIds: [...], departmentId | null }
  */
 import type { Express, Request, Response } from 'express';
-import { DirectoryError, checkDepartmentName, checkDepartmentPatch, checkNewUser, checkUserPatch, type AdminDirectory } from './directory';
+import { DirectoryError, RECORD_KINDS, type RecordKind, checkDepartmentName, checkDepartmentPatch, checkNewUser, checkUserPatch, type AdminDirectory } from './directory';
 
 export interface AdminRoutesContext {
   directory: AdminDirectory;
@@ -73,6 +74,14 @@ export function registerAdminRoutes(app: Express, ctx: AdminRoutesContext): void
     if (uid === who.uid) throw new DirectoryError('You cannot delete your own account.', 'forbidden');
     await ctx.directory.deleteUser(uid);
     res.json({ status: 'ok' });
+  }));
+
+  /** Faces, watchlist plates or logs across departments (metadata only), for an administrator who has to see the whole picture. */
+  app.get('/api/admin/records/:kind', guard(async (req, res) => {
+    const kind = String(req.params.kind) as RecordKind;
+    if (!RECORD_KINDS.includes(kind)) throw new DirectoryError(`'kind' must be one of ${RECORD_KINDS.join(', ')}.`, 'invalid');
+    const dept = typeof req.query.department === 'string' && req.query.department ? checkDepartmentName(req.query.department) : undefined;
+    res.json({ kind, records: await ctx.directory.listRecords(kind, { departmentId: dept, limit: Number(req.query.limit) || 200 }) });
   }));
 
   app.get('/api/admin/cameras', guard(async (_req, res) => { res.json({ cameras: await ctx.directory.listCameras() }); }));

@@ -13,7 +13,7 @@ import { usernameToEmail } from '../../src/lib/username';
 import { claimsFor, type Role } from '../authz/policy';
 import {
   DirectoryError, STORAGE_KINDS, checkDepartmentName, withoutLogin,
-  type StorageKind, type AdminDirectory, type CameraRow, type Department, type DepartmentView, type ManagedUser, type NewUser, type UserPatch,
+  type StorageKind, type AdminDirectory, type CameraRow, type RecordRow, type Department, type DepartmentView, type ManagedUser, type NewUser, type UserPatch,
 } from './directory';
 
 const MAX_CAMERAS = 20_000;
@@ -181,6 +181,27 @@ export function createFirebaseDirectory(auth: Auth, db: Firestore, o: { now?: ()
         const snap = await db.collection('cameras').select('name', 'userId', 'departmentId', 'remoteStreamUrl').limit(MAX_CAMERAS).get();
         return snap.docs.map((d) => ({ id: d.id, name: String(d.get('name') ?? d.id), ownerUserId: String(d.get('userId') ?? ''), departmentId: typeof d.get('departmentId') === 'string' ? d.get('departmentId') : null, streamUrl: withoutLogin(d.get('remoteStreamUrl')) }))
           .sort((a, b) => a.name.localeCompare(b.name));
+      } catch (e) { return wrap(e); }
+    },
+
+    async listRecords(kind, q) {
+      try {
+        const limit = Math.min(500, Math.max(1, Math.floor(q.limit ?? 200) || 200));
+        let query: FirebaseFirestore.Query = db.collection(kind);
+        if (q.departmentId) query = query.where('departmentId', '==', q.departmentId);
+        if (kind === 'logs') query = q.departmentId ? query.limit(limit * 4) : query.orderBy('timestamp', 'desc').limit(limit);
+        else query = query.limit(limit);
+        const snap = await query.get();
+        const iso = (v: unknown): string | undefined => { const d = (v as { toDate?: () => Date } | undefined)?.toDate?.() ?? (v instanceof Date ? v : undefined); return d ? d.toISOString() : undefined; };
+        const rows = snap.docs.map((d): RecordRow => {
+          const x = d.data();
+          const base = { id: d.id, ownerUserId: String(x.userId ?? ''), departmentId: typeof x.departmentId === 'string' ? x.departmentId : null };
+          if (kind === 'faces') return { ...base, title: String(x.name ?? '') };
+          if (kind === 'watchlist') return { ...base, title: String(x.plate ?? '') };
+          return { ...base, title: String(x.summary ?? '').slice(0, 200), cameraName: String(x.cameraName ?? ''), at: iso(x.timestamp), unusual: x.isUnusual === true };
+        });
+        // A department's logs are read without an order (that needs an index); put the newest first here.
+        return (kind === 'logs' ? rows.sort((a, b) => String(b.at ?? '').localeCompare(String(a.at ?? ''))) : rows.sort((a, b) => a.title.localeCompare(b.title))).slice(0, limit);
       } catch (e) { return wrap(e); }
     },
 

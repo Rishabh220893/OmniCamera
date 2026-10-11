@@ -3,6 +3,8 @@ import { auth } from './firebase';
 export type StorageKind = 'cloud' | 'local' | 'mixed';
 export interface DepartmentRow { id: string; name: string; users: number; cameras: number; createdAt: string; retentionDays?: number; storage?: StorageKind }
 export interface UserRow { uid: string; username: string; role: 'viewer' | 'operator' | 'admin'; departmentId: string | null; disabled: boolean; lastSignInAt: string | null; createdAt: string }
+export interface RecordRow { id: string; ownerUserId: string; departmentId: string | null; title: string; cameraName?: string; at?: string; unusual?: boolean }
+export type RecordKind = 'faces' | 'watchlist' | 'logs';
 export interface CameraRow { id: string; name: string; ownerUserId: string; departmentId: string | null; streamUrl?: string }
 
 /** Calls the administrator endpoints as the signed-in user. Throws an Error whose message is safe to show. */
@@ -29,5 +31,6 @@ export const adminApi = {
     call<{ user: UserRow }>(`/api/admin/users/${encodeURIComponent(uid)}`, { method: 'PATCH', body: patch }),
   deleteUser: (uid: string) => call<{ status: string }>(`/api/admin/users/${encodeURIComponent(uid)}`, { method: 'DELETE' }),
   cameras: () => call<{ cameras: CameraRow[] }>('/api/admin/cameras').then((r) => r.cameras),
+  records: (kind: RecordKind, department = '', limit = 200) => call<{ records: RecordRow[] }>(`/api/admin/records/${kind}?limit=${limit}${department ? `&department=${encodeURIComponent(department)}` : ''}`).then((r) => r.records),
   allot: (cameraIds: string[], departmentId: string | null) => call<{ updated: number; missing: string[] }>('/api/admin/cameras/allot', { method: 'POST', body: { cameraIds, departmentId } }),
 };
