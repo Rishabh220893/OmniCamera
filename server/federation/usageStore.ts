@@ -206,12 +206,13 @@ export function createRedisUsageStore(redis: Redis, o: RedisUsageOptions = {}): 
       return { id: leaseId, clientId, what, expiresAt: new Date(exp).toISOString() };
     },
     async release(clientId, leaseId) {
+      // Only the client that holds the lease may end it: a refusal must leave the lease (and the department's count) untouched.
+      if ((await redis.zrem(kClient(clientId), leaseId)) === 0) return false;
       const dept = await deptOfLease(leaseId);
-      const removed = await redis.zrem(kClient(clientId), leaseId);
       if (dept) await redis.zrem(kDept(dept), leaseId);
       await redis.zrem(kAll, `${clientId}|${leaseId}`);
       await redis.del(kLease(leaseId));
-      return removed > 0;
+      return true;
     },
     async activeSessions(clientId, now) { await redis.zremrangebyscore(kClient(clientId), '-inf', now); return redis.zcard(kClient(clientId)); },
     async leases(now) {
