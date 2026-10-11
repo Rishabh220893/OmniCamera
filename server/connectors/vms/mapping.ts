@@ -18,7 +18,7 @@ export function draftFromVmsEvent(system: VmsSystemConfig, ev: VmsEvent): EventD
   const t = TYPE[ev.kind];
   const data: Record<string, unknown> = { ...ev.data, vendorCode: ev.vendorCode, vendorEventId: ev.id, system: system.id };
   const tags = ['vms', system.id];
-  const draft: EventDraft = { type: t.type, severity: t.severity, summary: t.summary(ev), data, tags, dedupeKey: `${system.id}:${ev.id}`, source: vmsSource(system) };
+  const draft: EventDraft = { type: t.type, severity: t.severity, summary: t.summary(ev), data, tags, dedupeKey: `${system.id}:${ev.id}`, keyIsIdentity: true, source: vmsSource(system) };
   if (ev.kind === 'plate') {
     // Same shape the platform's own plate events have, so plate search, watchlists and the connector checks apply unchanged.
     const plate = String(ev.data.plate ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');

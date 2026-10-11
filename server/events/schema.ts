@@ -55,6 +55,8 @@ export interface EventDraft {
   source?: string;
   /** Distinguishes two events of the same type in the same frame (e.g. two different plates). Defaults to the summary. */
   dedupeKey?: string;
+  /** The dedupeKey alone identifies the event (a sender's own event id): the time is left out of the id, so a retry that arrives later is the same event. */
+  keyIsIdentity?: boolean;
 }
 
 /** The events the platform itself defines. Analyzers may add their own types as long as they follow EVENT_TYPE_RE. */
@@ -102,7 +104,7 @@ export function makeEvent(draft: EventDraft, ctx: { source: string; camera: Even
   if (!isSeverity(severity)) throw new EventError(`Unknown severity '${String(severity)}'.`);
   const c = ctx.camera;
   const ts = ctx.ts.toISOString();
-  const id = createHash('sha1').update([c.userId, c.id, draft.type, ts, draft.dedupeKey ?? draft.summary].join('\u0000')).digest('hex').slice(0, 32);
+  const id = createHash('sha1').update([c.userId, c.id, draft.type, draft.keyIsIdentity && draft.dedupeKey ? '' : ts, draft.dedupeKey ?? draft.summary].join('\u0000')).digest('hex').slice(0, 32);
   const ev: PlatformEvent = {
     id, type: draft.type, source: draft.source ?? ctx.source, severity, userId: c.userId, cameraId: c.id, cameraName: c.name, ts,
     summary: draft.summary.slice(0, 500), data: toJson(draft.data ?? {}), tags: [...new Set((draft.tags ?? []).map(String))].slice(0, 20),

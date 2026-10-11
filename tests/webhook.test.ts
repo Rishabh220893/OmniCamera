@@ -253,3 +253,17 @@ test('a pushed plate read becomes a stored event and an alert for the department
     assert.equal((await store.queryEvents({ userId: 'x', departments: ['Traffic'] })).length, 1, 'one stored event');
   } finally { await pipeline.stop(); await bus.close(); }
 });
+
+test('an event with its own id is the same stored event however late the retry arrives (the arrival time is not part of its identity)', async () => {
+  const { platformEventFromVms } = await import('../server/connectors/vms/mapping.ts');
+  const system = { id: 'fed-x', kind: 'webhook', baseUrl: '', credentials: {}, ownerUserId: 'u1', department: 'Traffic' } as never;
+  const body = JSON.stringify({ id: 't1', camera: 'gate-1', type: 'intrusion', text: 'Person at the gate' });
+  const first = parseWebhookBody('generic-json', body, { now: new Date('2026-10-11T08:00:00Z') } as never).events[0];
+  const retry = parseWebhookBody('generic-json', body, { now: new Date('2026-10-11T08:07:00Z') } as never).events[0];
+  const a = platformEventFromVms(system, undefined, first);
+  const b = platformEventFromVms(system, undefined, retry);
+  assert.notEqual(a.ts, b.ts, 'the arrival times differ');
+  assert.equal(a.id, b.id, 'same sender id, same event');
+  const other = platformEventFromVms(system, undefined, parseWebhookBody('generic-json', body.replace('t1', 't2'), { now: new Date('2026-10-11T08:00:00Z') } as never).events[0]);
+  assert.notEqual(other.id, a.id, 'a different sender id is a different event');
+});
