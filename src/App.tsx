@@ -1377,7 +1377,7 @@ export default function App() {
                     cameras={cameras} activeCameraId={activeCameraId} onSelectCamera={setActiveCameraId}
                     onAddCamera={addCamera} isCapturing={isCapturing}
                     cameraError={cameraError} analysisError={analysisError} logs={logs}
-                    viewMode={viewMode} onChangeViewMode={setViewMode} containerRef={containerRef} isAdmin={isAdmin}
+                    viewMode={viewMode} onChangeViewMode={setViewMode} containerRef={containerRef} isAdmin={isAdmin} isGuest={user?.uid === 'demo-guest'}
                     isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}
                     onToggleCameraFacing={toggleCameraFacing} mediaRefs={mediaRefs}
                     onCameraError={setCameraError} onFallbackToSimulated={handleFallbackToSimulated}

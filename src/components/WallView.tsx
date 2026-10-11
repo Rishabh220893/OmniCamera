@@ -24,13 +24,14 @@ interface Props {
   streamAccessEmail: string;
   streamAccessPassword: string;
   isAdmin: boolean;
+  isGuest?: boolean;
 }
 
 /**
  * Feed > Control Wall (gap A10): a named wall display with a layout (1x1 to 4x4, 1+5, 1+7, 2+8, custom, or a tour through many cameras),
  * any number of viewers and one controller at a time. Everyone attached sees what the controller sets. See docs/video-wall.md.
  */
-export default function WallView({ cameras, streamAccessEmail, streamAccessPassword, isAdmin }: Props) {
+export default function WallView({ cameras, streamAccessEmail, streamAccessPassword, isAdmin, isGuest = false }: Props) {
   const media = useMediaConfig();
   const [walls, setWalls] = useState<WallStateRow[]>([]);
   const [layouts, setLayouts] = useState<WallLayoutRow[]>([]);
@@ -125,6 +126,7 @@ export default function WallView({ cameras, streamAccessEmail, streamAccessPassw
     setNewWall({ id: '', name: '' }); await reload(); setWallId(s.wall.id);
   });
 
+  if (isGuest) return <p className="text-xs text-ink-muted">Video walls need a signed-in account; the offline demo has none.</p>;
   let liveSeen = 0;
   return (
     <div className="space-y-4" data-testid="wall-view">

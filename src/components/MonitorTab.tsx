@@ -436,7 +436,7 @@ interface MonitorTabProps {
   onToggleCameraFacing: () => void;
   mediaRefs: MutableRefObject<Map<string, CameraMediaRefs>>;
   onCameraError: (msg: string | null) => void;
-  onFallbackToSimulated: () => void;
+  onFallbackToSimulated: (cameraId?: string) => void;
   onChangeTab: (tab: TabId) => void;
   streamAccessPassword: string;
   streamAccessEmail: string;
@@ -455,6 +455,8 @@ interface MonitorTabProps {
   onPanelCloseCamera: () => void;
   /** Administrators may create video walls. */
   isAdmin?: boolean;
+  /** The offline demo user has no server session, so server-backed screens (walls) are not offered. */
+  isGuest?: boolean;
 }
 
 export default function MonitorTab({
@@ -463,7 +465,7 @@ export default function MonitorTab({
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
   onFallbackToSimulated, onChangeTab, streamAccessPassword, streamAccessEmail,
   analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange,
-  tracking, panelOpenCameraId, panelAlert, onPanelOpenCamera, onPanelCloseCamera, isAdmin = false
+  tracking, panelOpenCameraId, panelAlert, onPanelOpenCamera, onPanelCloseCamera, isAdmin = false, isGuest = false
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [gridFilter, setGridFilter] = useState('');
@@ -595,7 +597,7 @@ export default function MonitorTab({
       {viewMode === 'wall' && (
         <div className="space-y-4">
           <div className="flex justify-end">{viewSwitcher}</div>
-          <WallView cameras={cameras} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} isAdmin={isAdmin} />
+          <WallView cameras={cameras} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} isAdmin={isAdmin} isGuest={isGuest} />
         </div>
       )}
 
