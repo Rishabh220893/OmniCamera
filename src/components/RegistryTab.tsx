@@ -183,7 +183,7 @@ export default function RegistryTab({
       <MapTab
         cameras={filtered} activeCameraId={activeCameraId} onSelectCamera={onSelectCamera}
         routePlate={routePlate} routePoints={routePoints} onClearRoute={onClearRoute}
-        uncoveredZones={gapReport.uncoveredZones} coverageRadiusMeters={gapReport.coverage.radiusMeters} zoneCellMeters={gapReport.coverage.cellMeters}
+        uncoveredZones={gapReport.uncoveredZones} coveredZones={gapReport.coveredZones} coverageRadiusMeters={gapReport.coverage.radiusMeters} zoneCellMeters={gapReport.coverage.cellMeters}
       />
 
       {/* Registry table */}

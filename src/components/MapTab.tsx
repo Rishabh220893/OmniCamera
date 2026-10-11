@@ -18,6 +18,8 @@ interface MapPanelProps {
   height?: string;
   /** Squares of the map no camera reaches (gap analysis); drawn as a toggleable layer. */
   uncoveredZones?: UncoveredZone[];
+  /** Squares the cameras do cover; painted green in the Coverage layer. */
+  coveredZones?: UncoveredZone[];
   /** How far a camera is taken to cover, in metres (the coverage layer's circles). */
   coverageRadiusMeters?: number;
   /** Side of each uncovered square in metres (from the gap analysis); the squares are drawn at that size. */
@@ -78,7 +80,7 @@ function StatusLayerWatcher({ onChange }: { onChange: (status: string, on: boole
   return null;
 }
 
-export default function MapTab({ cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute, showCoverage = true, height = '65vh', uncoveredZones = [], coverageRadiusMeters = 250, zoneCellMeters = 0 }: MapPanelProps) {
+export default function MapTab({ cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute, showCoverage = true, height = '65vh', uncoveredZones = [], coveredZones = [], coverageRadiusMeters = 250, zoneCellMeters = 0 }: MapPanelProps) {
   // Department and camera-type layers: each can be switched off to see the rest. Status and coverage layers are in the map's own layer control.
   const [hiddenDepartments, setHiddenDepartments] = useState<Set<string>>(new Set());
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
@@ -182,7 +184,13 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
             ))}
             <LayersControl.Overlay checked={showCoverage} name={`Coverage (${coverageRadiusMeters} m)`}>
               <LayerGroup>
-                {located.filter(c => !hiddenStatuses.has(c.connectivityStatus || 'unknown')).map(cam => (
+                {coveredZones.map((z, i) => {
+                  // The squares the cameras cover, painted so that the layer shows something at State scale, where a 300 m circle is a dot.
+                  const half = Math.max(zoneCellMeters, coverageRadiusMeters) / 2;
+                  const dLat = half / 111_320, dLng = half / (111_320 * Math.max(0.1, Math.cos((z.lat * Math.PI) / 180)));
+                  return <Rectangle key={`ok-${i}`} bounds={[[z.lat - dLat, z.lng - dLng], [z.lat + dLat, z.lng + dLng]]} pathOptions={{ color: '#1f8a5f', fillColor: '#1f8a5f', fillOpacity: 0.3, weight: 1, opacity: 0.7 }} />;
+                })}
+                {located.map(cam => (
                   <Fragment key={`cov-${cam.id}`}>
                     <Circle
                       center={[cam.location!.lat, cam.location!.lng]}

@@ -15,6 +15,8 @@ export interface GapAnalysisReport {
   incompleteMetadata: MetadataGap[];
   /** Squares inside the area the registry's cameras span that none of them covers. Empty with fewer than 3 located cameras. */
   uncoveredZones: UncoveredZone[];
+  /** The squares that are covered (the other half of the grid), so the map can paint them too. */
+  coveredZones: UncoveredZone[];
   coverage: { radiusMeters: number; cellMeters: number; cellsChecked: number; coveredPercent: number; /** All uncovered squares; `uncoveredZones` lists only the emptiest ones. */ uncoveredTotal: number };
   generatedAt: Date;
 }
@@ -38,9 +40,9 @@ export function distanceMeters(aLat: number, aLng: number, bLat: number, bLng: n
  * cameras plus one radius of margin, cut into squares (half a radius wide, or larger for a wide area so that at most 2,500 are checked).
  * It says where the registry has no camera; it cannot know about buildings, roads or what is worth watching.
  */
-export function findUncoveredZones(cameras: CameraConfig[], radiusMeters = DEFAULT_COVERAGE_RADIUS_M): { zones: UncoveredZone[]; cellMeters: number; cellsChecked: number; coveredPercent: number; uncoveredTotal: number } {
+export function findUncoveredZones(cameras: CameraConfig[], radiusMeters = DEFAULT_COVERAGE_RADIUS_M): { zones: UncoveredZone[]; covered: UncoveredZone[]; cellMeters: number; cellsChecked: number; coveredPercent: number; uncoveredTotal: number } {
   const pts = cameras.filter((c) => c.location && Number.isFinite(c.location.lat) && Number.isFinite(c.location.lng)).map((c) => c.location!);
-  if (pts.length < 3) return { zones: [], cellMeters: 0, cellsChecked: 0, coveredPercent: 100, uncoveredTotal: 0 };
+  if (pts.length < 3) return { zones: [], covered: [], cellMeters: 0, cellsChecked: 0, coveredPercent: 100, uncoveredTotal: 0 };
   const midLat = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
   const mPerDegLat = 111_320, mPerDegLng = 111_320 * Math.cos(rad(midLat));
   const pad = radiusMeters;
@@ -50,6 +52,7 @@ export function findUncoveredZones(cameras: CameraConfig[], radiusMeters = DEFAU
   const cellMeters = Math.max(Math.round(radiusMeters / 2), Math.ceil(Math.sqrt((heightM * widthM) / MAX_CELLS)));
   const rows = Math.max(1, Math.ceil(heightM / cellMeters)), cols = Math.max(1, Math.ceil(widthM / cellMeters));
   const zones: UncoveredZone[] = [];
+  const coveredZones: UncoveredZone[] = [];
   let covered = 0;
   // Cameras are put in the grid's own squares, and the nearest one to a square is looked for ring by ring outwards, stopping as soon as no
   // camera in a farther ring can be nearer. The result is the same as comparing with every camera (tested), without N comparisons per square.
@@ -85,13 +88,13 @@ export function findUncoveredZones(cameras: CameraConfig[], radiusMeters = DEFAU
       const lat = minLat + ((r + 0.5) * cellMeters) / mPerDegLat, lng = minLng + ((c + 0.5) * cellMeters) / mPerDegLng;
       const nearest = nearestTo(lat, lng, r, c);
       // Covered = any part of the square is within the radius of a camera (centre distance minus the half diagonal), so a camera inside a large square covers it.
-      if (nearest - cellMeters * 0.7071 <= radiusMeters) covered++;
+      if (nearest - cellMeters * 0.7071 <= radiusMeters) { covered++; coveredZones.push({ lat: +lat.toFixed(5), lng: +lng.toFixed(5), nearestMeters: Math.round(nearest) }); }
       else zones.push({ lat: +lat.toFixed(5), lng: +lng.toFixed(5), nearestMeters: Math.round(nearest) });
     }
   }
   zones.sort((a, b) => b.nearestMeters - a.nearestMeters); // the emptiest first
   const checked = rows * cols;
-  return { zones, uncoveredTotal: zones.length, cellMeters, cellsChecked: checked, coveredPercent: Math.round((covered / checked) * 1000) / 10 };
+  return { zones, covered: coveredZones, uncoveredTotal: zones.length, cellMeters, cellsChecked: checked, coveredPercent: Math.round((covered / checked) * 1000) / 10 };
 }
 
 export function computeGapAnalysis(
@@ -139,7 +142,7 @@ export function computeGapAnalysis(
   const cov = findUncoveredZones(cameras, radius);
   return {
     unlocated, offlineOrDegraded, ageing, stale, departmentCoverage, incompleteMetadata,
-    uncoveredZones: cov.zones, coverage: { radiusMeters: radius, cellMeters: cov.cellMeters, cellsChecked: cov.cellsChecked, coveredPercent: cov.coveredPercent, uncoveredTotal: cov.uncoveredTotal },
+    uncoveredZones: cov.zones, coveredZones: cov.covered, coverage: { radiusMeters: radius, cellMeters: cov.cellMeters, cellsChecked: cov.cellsChecked, coveredPercent: cov.coveredPercent, uncoveredTotal: cov.uncoveredTotal },
     generatedAt: new Date(),
   };
 }

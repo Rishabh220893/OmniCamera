@@ -78,3 +78,11 @@ test('performance: 20,000 cameras are analysed in well under a second', () => {
   const t = Date.now(); findUncoveredZones(cams, 300);
   assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
 });
+
+test('covered squares are returned too, so the map can paint them: covered + uncovered is every square checked', () => {
+  const state = [cam('a', { location: { lat: 23.0225, lng: 72.5714 } }), cam('b', { location: { lat: 21.1702, lng: 72.8311 } }), cam('c', { location: { lat: 22.3039, lng: 70.8022 } }), cam('d', { location: { lat: 22.3072, lng: 73.1812 } })];
+  const r = computeGapAnalysis(state);
+  assert.ok(r.coveredZones.length >= 4, 'at least the square holding each camera');
+  assert.equal(r.coveredZones.length + r.uncoveredZones.length, r.coverage.cellsChecked);
+  assert.equal(computeGapAnalysis([cam('a')]).coveredZones.length, 0, 'fewer than 3 located cameras: no grid');
+});
