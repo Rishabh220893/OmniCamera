@@ -152,6 +152,16 @@ Auto: `tests/snippets.test.ts` (real ffmpeg; the PostgreSQL case with `TEST_DATA
 7. **PostgreSQL store check:** `TEST_DATABASE_URL=... TEST_DATABASE_SSL=true node --import tsx --test tests/snippets.test.ts` (scratch schema, dropped afterwards).
 **For a demo:** record 2 or 3 snippets of your best cameras beforehand (30 s is enough), check each one plays, and keep them as the fallback if the live grid is slow.
 
+## 16d. Last frame on the Full Panel tile
+
+Auto: `tests/lastFrame.test.ts`. Feed > Full Panel.
+1. Before opening anything: every tile is the text placeholder ("hover · click to open").
+2. Click a tile: the camera opens full screen. **While it is open** the tile behind it is unchanged. Wait until the picture shows (a few seconds), then close with the X.
+3. **Expected:** that tile now shows the last frame, darkened, with "last frame HH:MM · click to open". Every other tile is still a placeholder.
+4. Open and close a second camera with Escape: same. Open a camera and close it at once (before any picture): its tile stays a placeholder.
+5. Reopen the first camera and leave it open: its tile still shows the OLD frame until you close the window; then it changes to the newer one.
+6. Reload the page: the frames are still there (they are cleared when the browser tab is closed).
+
 ## 17. Known gaps to check by eye (not covered by anything)
 
 The wrong-camera tile in the pinned grid (root cause not found); admin screens (Federation, All departments, Report) opened signed-in against live Firebase; Postgres plate column (`platform_events_plate`) creation on Neon: run the Pg tests with `TEST_DATABASE_URL`.

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { AlertTriangle, Car, CheckCircle2, ImagePlus, Loader2, Play, ScanFace, Search, ShieldAlert, Square, X } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { CameraConfig } from '../types';
@@ -6,6 +6,7 @@ import { geminiCallsPerMinute, tileSubtitle, tileTitle } from '../lib/panelTiles
 import { ageLabel } from '../lib/cameraProfileView';
 import type { TrackAlert, TrackMode, TrackingController } from '../lib/tracking';
 import CameraOverlay from './CameraOverlay';
+import { getLastFrame, lastFramesVersion, subscribeLastFrames } from '../lib/lastFrame';
 
 const PAGE_SIZE = 60;
 
@@ -57,6 +58,8 @@ export default function FullPanel({ cameras, activeCamera, tracking, streamAcces
   const [filter, setFilter] = useState('');
   const [page, setPage] = useState(0);
   const [, setTick] = useState(0);
+  // Re-render when a camera's full-screen window closes and its last frame is stored (nothing changes before that).
+  useSyncExternalStore(subscribeLastFrames, lastFramesVersion);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 5000); return () => clearInterval(t); }, []);
@@ -225,6 +228,7 @@ export default function FullPanel({ cameras, activeCamera, tracking, streamAcces
         {visible.map((c) => {
           const st = byId.get(c.id);
           const hot = alerting.has(c.id);
+          const frame = getLastFrame(c.id);
           return (
             <li key={c.id}>
               <button
@@ -234,13 +238,19 @@ export default function FullPanel({ cameras, activeCamera, tracking, streamAcces
                 className={cn('group relative w-full min-h-[132px] rounded-xl border bg-surface p-3 text-center flex flex-col items-center justify-center gap-1.5 transition-all hover:border-accent/60 hover:-translate-y-0.5 active:scale-[0.98]',
                   hot ? 'border-critical ring-2 ring-critical/50 incident-pulse' : 'border-border')}
               >
+                {frame && (
+                  <>
+                    <img src={frame.dataUrl} alt={`Last frame of ${tileTitle(c)}`} className="absolute inset-0 w-full h-full object-cover" data-testid={`tile-frame-${c.id}`} />
+                    <span className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/30 to-black/55" aria-hidden />
+                  </>
+                )}
                 <span className="absolute top-2.5 left-3 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-success">
                   <span className={cn('w-1.5 h-1.5 rounded-full', st?.state === 'error' ? 'bg-warning' : 'bg-success')} />{st?.state === 'error' ? 'NO SIGNAL' : 'LIVE'}
                 </span>
                 {hot && <span className="absolute top-2 right-2.5 badge badge-critical !py-0.5 animate-pulse">ALERT</span>}
-                <span className="text-base font-bold text-ink font-display">{tileTitle(c)}</span>
-                <span className="text-xs text-accent/90 truncate max-w-full">{tileSubtitle(c)}</span>
-                <span className="mt-1 px-2.5 py-0.5 rounded-full border border-border text-[10px] text-ink-muted group-hover:text-ink group-hover:border-accent/50">hover · click to open</span>
+                <span className={cn('relative text-base font-bold font-display', frame ? 'text-white drop-shadow' : 'text-ink')}>{tileTitle(c)}</span>
+                <span className={cn('relative text-xs truncate max-w-full', frame ? 'text-white/90 drop-shadow' : 'text-accent/90')}>{tileSubtitle(c)}</span>
+                <span className={cn('relative mt-1 px-2.5 py-0.5 rounded-full border text-[10px] group-hover:border-accent/50', frame ? 'border-white/40 text-white/90 bg-black/30' : 'border-border text-ink-muted group-hover:text-ink')}>{frame ? `last frame ${new Date(frame.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · click to open` : 'hover · click to open'}</span>
                 {running && (
                   <span className={cn('absolute bottom-1.5 inset-x-2 text-[9px] truncate', st?.state === 'error' ? 'text-warning' : 'text-ink-muted')} title={st?.lastError || st?.lastNote || ''}>
                     {!st || st.state === 'waiting' ? 'waiting for the first check' : st.state === 'error' ? `can't capture: ${st.lastError}` : <><CheckCircle2 className="inline w-2.5 h-2.5 mr-0.5 -mt-0.5 text-success" />{ageLabel(st.lastCheckedAt)} · {st.lastNote}</>}

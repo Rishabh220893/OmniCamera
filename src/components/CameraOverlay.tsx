@@ -7,6 +7,7 @@ import { gridCamId, mediaPathId, mediaAuthHeader, mediaPlaylistUrl, useMediaConf
 import { startWhep } from '../lib/whepClient';
 import { plannedRecipes, RECIPE_LABEL, type RecipeId } from '../lib/panelTiles';
 import type { TrackAlert } from '../lib/tracking';
+import { captureFrame, setLastFrame } from '../lib/lastFrame';
 
 const STILL_REFRESH_MS = 4_000;
 const RECIPE_TIMEOUT_MS: Record<RecipeId, number> = { media: 45_000, whep: 25_000, proxy: 60_000, stills: 30_000 };
@@ -155,11 +156,6 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
     return () => { document.removeEventListener('fullscreenchange', onChange); if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); };
   }, [goFullscreen]);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  useEffect(() => {
     const t = setInterval(() => setElapsed((s) => s + 1), 1000);
     return () => clearInterval(t);
   }, [round, camera.id]);
@@ -208,6 +204,30 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
   // and what it says is shown at the bottom. Off when the camera closes or the button is pressed again; nothing is stored from here.
   const playingRef = useRef(playing);
   playingRef.current = playing;
+
+  // The last frame, for the camera's tile. While a picture shows, a small copy of it is kept every 2 s; when the window closes (the button, Escape,
+  // or the parent removing it) the newest frame is stored for this camera, and only then does its tile in Feed > Full Panel change.
+  const lastShotRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!playing) return;
+    const snap = () => { const url = captureFrame(playing === 'stills' ? stillRef.current : videoRef.current); if (url) lastShotRef.current = url; };
+    snap();
+    const t = setInterval(snap, 2000);
+    return () => clearInterval(t);
+  }, [playing]);
+  const keepLast = useCallback(() => {
+    const live = playingRef.current === 'stills' ? stillRef.current : videoRef.current;
+    const url = captureFrame(live) ?? lastShotRef.current;
+    lastShotRef.current = null; // written once
+    if (url) setLastFrame(camera.id, url);
+  }, [camera.id]);
+  const close = useCallback(() => { keepLast(); onClose(); }, [keepLast, onClose]);
+  useEffect(() => () => { keepLast(); }, [keepLast]); // closed from outside (for example an alert opened another camera)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [close]);
   useEffect(() => {
     setCaption(null); setAiError(null);
     if (!aiOn) return;
@@ -258,7 +278,7 @@ export default function CameraOverlay({ camera, streamAccessEmail, streamAccessP
           <button onClick={() => (full ? document.exitFullscreen?.() : goFullscreen())} className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center" aria-label={full ? 'Leave full screen' : 'Full screen'}>
             {full ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-          <button onClick={onClose} className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center" aria-label="Close camera"><X className="w-4 h-4" /></button>
+          <button onClick={close} className="w-9 h-9 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center" aria-label="Close camera"><X className="w-4 h-4" /></button>
         </div>
       </div>
 
