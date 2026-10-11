@@ -63,8 +63,9 @@ Also: at most 3 recordings at once per user. A recording cut off by a server res
 
 **Verified** (`tests/snippets.test.ts`): the file store (filters, updates, restart, 40 simultaneous writes); the recorder with **real ffmpeg** against a camera simulated by a generated video served over HTTP (H.264 copied, about the requested length, a dead address fails without echoing the password and leaves no file); the routes with real recordings (start, poll, file, thumbnail, Range, download, SHA-256 equals the file's, list, delete removes both files); access rules (401, 403, another user gets 404, an administrator sees all, an id is never a path); input errors; limits (429 at once, 507 disk); restart recovery. The screen was driven in a browser against a mocked server that serves a real video: record, progress, ready with thumbnail and hash, play (the browser decoded 320x180, 3 s), the error sentence, delete.
 
+**Also verified on 2026-10-11 against the project's Neon database:** the PostgreSQL store passes the same expectations as the file store (insert, filters, update, interrupted recordings, delete, totals), run in a scratch schema that was dropped afterwards.
+
 **Not verified:**
-- The PostgreSQL store on a real database: the same expectations are in the test file and run when `TEST_DATABASE_URL` is set (in a scratch schema that is dropped); not run yet.
 - Recording from a **real camera or the real grid** (RTSP login, HLS through the proxy, the grid's viewing-time limits). Recording from the grid holds a connection for the length of the snippet and counts against the account's watch time.
 - A snippet plays in a browser only if the camera sends H.264 (H.265 is copied faithfully but many browsers will not play it; download it instead).
 - The signed-in screen end to end with real Firebase accounts (the panel was checked with a mocked server).
