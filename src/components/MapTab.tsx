@@ -1,5 +1,5 @@
-import { Fragment, useMemo, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, CircleMarker, Rectangle, LayersControl, LayerGroup } from 'react-leaflet';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, Circle, CircleMarker, Rectangle, LayersControl, LayerGroup, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MapPin, Navigation, X } from 'lucide-react';
@@ -55,10 +55,35 @@ function routeDotIcon(index: number) {
   });
 }
 
+/** MapContainer takes its centre and zoom once; this fits the map to the cameras whenever the set of cameras changes, and hands the map to the parent for the "Zoom to cameras" button. */
+function FitToCameras({ points, onMap }: { points: Array<[number, number]>; onMap: (m: L.Map) => void }) {
+  const map = useMap();
+  const key = points.length + ':' + points.reduce((a, p) => a + p[0] * 31 + p[1] * 17, 0).toFixed(4);
+  useEffect(() => { onMap(map); }, [map, onMap]);
+  useEffect(() => {
+    if (points.length === 0) return;
+    if (points.length === 1) { map.setView(points[0], 13); return; }
+    map.fitBounds(L.latLngBounds(points), { padding: [30, 30], maxZoom: 14 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, map]);
+  return null;
+}
+
+/** Tells the parent which status layers are switched off in the layer control, so the coverage rings follow them. */
+function StatusLayerWatcher({ onChange }: { onChange: (status: string, on: boolean) => void }) {
+  useMapEvents({
+    overlayadd: (e) => { const m = /^Status: ([a-z]+)/.exec(e.name); if (m) onChange(m[1], true); },
+    overlayremove: (e) => { const m = /^Status: ([a-z]+)/.exec(e.name); if (m) onChange(m[1], false); },
+  });
+  return null;
+}
+
 export default function MapTab({ cameras, activeCameraId, onSelectCamera, routePlate, routePoints, onClearRoute, showCoverage = true, height = '65vh', uncoveredZones = [], coverageRadiusMeters = 250, zoneCellMeters = 0 }: MapPanelProps) {
   // Department and camera-type layers: each can be switched off to see the rest. Status and coverage layers are in the map's own layer control.
   const [hiddenDepartments, setHiddenDepartments] = useState<Set<string>>(new Set());
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  const [hiddenStatuses, setHiddenStatuses] = useState<Set<string>>(new Set());
+  const [map, setMap] = useState<L.Map | null>(null);
   const deptOf = (c: CameraConfig) => c.department?.trim() || 'Unassigned';
   const typeOf = (c: CameraConfig) => c.cameraType || 'unspecified';
   const allLocated = cameras.filter(c => c.location);
@@ -111,7 +136,8 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
             <label key={t} className="inline-flex items-center gap-1 cursor-pointer text-ink-muted"><input type="checkbox" checked={!hiddenTypes.has(t)} onChange={() => toggle(hiddenTypes, setHiddenTypes, t)} />{t}</label>
           ))}
         </div>
-        <span className="text-ink-muted">{located.length} of {allLocated.length} located cameras shown</span>
+        <span className="text-ink-muted">{located.filter(c => !hiddenStatuses.has(c.connectivityStatus || 'unknown')).length} of {allLocated.length} located cameras shown</span>
+        <button type="button" onClick={() => { const pts = allLocated.map(c => [c.location!.lat, c.location!.lng] as [number, number]); if (map && pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [30, 30], maxZoom: 14 }); }} className="btn-secondary !py-1 !px-3 text-[11px]">Zoom to cameras</button>
       </div>
       {routePlate && (
         <div className="badge badge-accent !normal-case !text-xs gap-2 inline-flex">
@@ -121,7 +147,9 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
         </div>
       )}
       <div className="card overflow-hidden" style={{ height }}>
-        <MapContainer center={center} zoom={located.length || routePoints.length ? 12 : 4} scrollWheelZoom style={{ height: '100%', width: '100%' }}>
+        <MapContainer center={center} zoom={located.length || routePoints.length ? 12 : 4} scrollWheelZoom preferCanvas style={{ height: '100%', width: '100%' }}>
+          <FitToCameras points={routePoints.length ? [] : allLocated.map(c => [c.location!.lat, c.location!.lng] as [number, number])} onMap={setMap} />
+          <StatusLayerWatcher onChange={(st, on) => setHiddenStatuses(prev => { const n = new Set(prev); if (on) n.delete(st); else n.add(st); return n; })} />
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -154,7 +182,7 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
             ))}
             <LayersControl.Overlay checked={showCoverage} name={`Coverage (${coverageRadiusMeters} m)`}>
               <LayerGroup>
-                {located.map(cam => (
+                {located.filter(c => !hiddenStatuses.has(c.connectivityStatus || 'unknown')).map(cam => (
                   <Fragment key={`cov-${cam.id}`}>
                     <Circle
                       center={[cam.location!.lat, cam.location!.lng]}
@@ -162,7 +190,7 @@ export default function MapTab({ cameras, activeCameraId, onSelectCamera, routeP
                       pathOptions={{ color: statusColor(cam), fillColor: statusColor(cam), fillOpacity: 0.08, weight: 1, opacity: 0.35 }}
                     />
                     {/* The real radius is a dot on a State-wide view; this ring keeps the coverage layer visible at any zoom. */}
-                    <CircleMarker center={[cam.location!.lat, cam.location!.lng]} radius={9} pathOptions={{ color: '#1f8a5f', fillColor: '#1f8a5f', fillOpacity: 0.15, weight: 2, opacity: 0.9 }} />
+                    <CircleMarker center={[cam.location!.lat, cam.location!.lng]} radius={9} pathOptions={{ color: statusColor(cam), fillColor: statusColor(cam), fillOpacity: 0.15, weight: 2, opacity: 0.9 }} />
                   </Fragment>
                 ))}
               </LayerGroup>

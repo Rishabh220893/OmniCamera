@@ -51,11 +51,39 @@ export function findUncoveredZones(cameras: CameraConfig[], radiusMeters = DEFAU
   const rows = Math.max(1, Math.ceil(heightM / cellMeters)), cols = Math.max(1, Math.ceil(widthM / cellMeters));
   const zones: UncoveredZone[] = [];
   let covered = 0;
+  // Cameras are put in the grid's own squares, and the nearest one to a square is looked for ring by ring outwards, stopping as soon as no
+  // camera in a farther ring can be nearer. The result is the same as comparing with every camera (tested), without N comparisons per square.
+  const buckets = new Map<number, Array<{ lat: number; lng: number }>>();
+  for (const p of pts) {
+    const br = Math.min(rows - 1, Math.max(0, Math.floor(((p.lat - minLat) * mPerDegLat) / cellMeters)));
+    const bc = Math.min(cols - 1, Math.max(0, Math.floor(((p.lng - minLng) * mPerDegLng) / cellMeters)));
+    const key = br * cols + bc;
+    const list = buckets.get(key);
+    if (list) list.push(p); else buckets.set(key, [p]);
+  }
+  const maxRing = Math.max(rows, cols);
+  const nearestTo = (lat: number, lng: number, r: number, c: number): number => {
+    let best = Infinity;
+    const scan = (rr: number, cc: number) => {
+      if (rr < 0 || rr >= rows || cc < 0 || cc >= cols) return;
+      const list = buckets.get(rr * cols + cc);
+      if (!list) return;
+      for (const p of list) { const d = distanceMeters(lat, lng, p.lat, p.lng); if (d < best) best = d; }
+    };
+    for (let k = 0; k <= maxRing; k++) {
+      if (k === 0) scan(r, c);
+      else {
+        for (let cc = c - k; cc <= c + k; cc++) { scan(r - k, cc); scan(r + k, cc); } // the ring's top and bottom rows
+        for (let rr = r - k + 1; rr <= r + k - 1; rr++) { scan(rr, c - k); scan(rr, c + k); } // and its two sides
+      }
+      if (best <= k * cellMeters) break; // every camera in a farther ring is at least k squares away
+    }
+    return best;
+  };
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const lat = minLat + ((r + 0.5) * cellMeters) / mPerDegLat, lng = minLng + ((c + 0.5) * cellMeters) / mPerDegLng;
-      let nearest = Infinity;
-      for (const p of pts) { const d = distanceMeters(lat, lng, p.lat, p.lng); if (d < nearest) nearest = d; }
+      const nearest = nearestTo(lat, lng, r, c);
       // Covered = any part of the square is within the radius of a camera (centre distance minus the half diagonal), so a camera inside a large square covers it.
       if (nearest - cellMeters * 0.7071 <= radiusMeters) covered++;
       else zones.push({ lat: +lat.toFixed(5), lng: +lng.toFixed(5), nearestMeters: Math.round(nearest) });

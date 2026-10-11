@@ -1306,7 +1306,13 @@ export default function App() {
     }));
   }, [user, logs, cameras]);
 
-  const gapReport = useMemo(() => computeGapAnalysis(cameras), [cameras]);
+  // The gap report (with its coverage grid) is only needed on the Registry screen: it is not recomputed for every camera update on other tabs.
+  const gapReportRef = useRef<ReturnType<typeof computeGapAnalysis> | null>(null);
+  const gapReport = useMemo(() => {
+    if (activeTab !== 'map' && gapReportRef.current) return gapReportRef.current;
+    gapReportRef.current = computeGapAnalysis(cameras);
+    return gapReportRef.current;
+  }, [cameras, activeTab]);
 
   // Tailwind's @theme aliases (e.g. --color-surface: var(--surface)) are
   // resolved once at :root — overriding --surface on a descendant element

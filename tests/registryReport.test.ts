@@ -49,3 +49,32 @@ test('coverage rule: a square counts as covered when any part of it is within th
   assert.equal(z.zones.length, z.uncoveredTotal, 'every uncovered square is returned, so the map can draw all of them');
   assert.equal(z.cellsChecked - z.uncoveredTotal >= 4 && z.cellsChecked - z.uncoveredTotal <= 16, true, `about one covered square per camera (${z.cellsChecked - z.uncoveredTotal})`);
 });
+
+test('the ring search finds exactly the same nearest camera as comparing with every camera (fixed random data, several densities)', () => {
+  let seed = 12345; const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  for (const n of [3, 10, 60, 400, 3000]) {
+    const cams = Array.from({ length: n }, (_, i) => cam(String(i), { location: { lat: 21 + rnd() * 3, lng: 69 + rnd() * 4 } }));
+    const r = findUncoveredZones(cams, 300);
+    // Brute force over the same squares.
+    const pts = cams.map((c) => c.location!);
+    const midLat = pts.reduce((s, p) => s + p.lat, 0) / pts.length, mLat = 111_320, mLng = 111_320 * Math.cos((midLat * Math.PI) / 180);
+    const minLat = Math.min(...pts.map((p) => p.lat)) - 300 / mLat, maxLat = Math.max(...pts.map((p) => p.lat)) + 300 / mLat;
+    const minLng = Math.min(...pts.map((p) => p.lng)) - 300 / mLng, maxLng = Math.max(...pts.map((p) => p.lng)) + 300 / mLng;
+    const rows = Math.max(1, Math.ceil(((maxLat - minLat) * mLat) / r.cellMeters)), cols = Math.max(1, Math.ceil(((maxLng - minLng) * mLng) / r.cellMeters));
+    let uncovered = 0, emptiest = 0;
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) {
+      const lat = minLat + ((i + 0.5) * r.cellMeters) / mLat, lng = minLng + ((j + 0.5) * r.cellMeters) / mLng;
+      const nearest = Math.min(...pts.map((p) => distanceMeters(lat, lng, p.lat, p.lng)));
+      if (nearest - r.cellMeters * 0.7071 > 300) { uncovered++; emptiest = Math.max(emptiest, Math.round(nearest)); }
+    }
+    assert.equal(r.uncoveredTotal, uncovered, `${n} cameras: same number of uncovered squares`);
+    assert.equal(r.zones[0]?.nearestMeters ?? 0, emptiest, `${n} cameras: same emptiest distance`);
+  }
+});
+
+test('performance: 20,000 cameras are analysed in well under a second', () => {
+  let seed = 7; const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  const cams = Array.from({ length: 20000 }, (_, i) => cam(String(i), { location: { lat: 20 + rnd() * 4, lng: 68 + rnd() * 5 } }));
+  const t = Date.now(); findUncoveredZones(cams, 300);
+  assert.ok(Date.now() - t < 1500, `took ${Date.now() - t} ms`);
+});
