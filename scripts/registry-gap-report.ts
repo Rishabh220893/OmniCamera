@@ -25,7 +25,7 @@ const cams: CameraConfig[] = rows.map((r, i) => {
     id: `row-${i + 1}`, name: r.name || `Camera ${i + 1}`, department: r.department || undefined, ownership: r.ownership || undefined, cameraType: (r.cameraType || undefined) as never,
     connectivityStatus: (r.connectivityStatus || undefined) as never, maintenanceStatus: (r.maintenanceStatus || undefined) as never, installDate: r.installDate || undefined, storageDetails: r.storageDetails || undefined,
     location: Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : undefined,
-  } as CameraConfig;
+  } as unknown as CameraConfig;
 });
 const report = computeGapAnalysis(cams, { coverageRadiusMeters: opt('radius') ? Number(opt('radius')) : undefined, ageingYears: opt('ageing-years') ? Number(opt('ageing-years')) : undefined });
 
