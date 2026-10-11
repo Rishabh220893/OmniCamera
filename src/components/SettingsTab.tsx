@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import {
   Settings2, Eye, AlertTriangle, Activity, Clock, FolderHeart, ExternalLink, BarChart2,
   Camera, HelpCircle, Plus, Trash2, Settings, ShieldCheck, Users, Truck, RefreshCw, Check,
-  Save, MapPin, Building2, ScanLine, ShieldAlert, KeyRound, EyeOff
+  Save, MapPin, Building2, ScanLine, ShieldAlert, KeyRound, EyeOff, ChevronDown, ChevronRight, Search
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import AdminUsersPanel from './AdminUsersPanel';
@@ -66,6 +66,22 @@ export default function SettingsTab(props: SettingsTabProps) {
 
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [showStreamPassword, setShowStreamPassword] = useState(false);
+  // The camera list: a search, 15 to a page (as in the Registry), and each camera is a row that opens to its configuration.
+  const [camSearch, setCamSearch] = useState('');
+  const [camPage, setCamPage] = useState(0);
+  const [openCameraId, setOpenCameraId] = useState<string | null>(null);
+  const CAMERA_PAGE_SIZE = 15;
+  const filteredCams = (() => {
+    const q = camSearch.trim().toLowerCase();
+    return q ? cameras.filter((c) => `${c.name} ${c.department || ''} ${c.id}`.toLowerCase().includes(q)) : cameras;
+  })();
+  const camPages = Math.max(1, Math.ceil(filteredCams.length / CAMERA_PAGE_SIZE));
+  const camPageClamped = Math.min(camPage, camPages - 1);
+  const pageCams = filteredCams.slice(camPageClamped * CAMERA_PAGE_SIZE, (camPageClamped + 1) * CAMERA_PAGE_SIZE);
+  const toggleCamera = (id: string) => {
+    if (openCameraId === id && activeCameraId === id) { setOpenCameraId(null); return; }
+    onSelectCamera(id); setOpenCameraId(id);
+  };
   // The toggle only means something if the server's analysis worker is running.
   const [serverAnalysisAvailable, setServerAnalysisAvailable] = useState(false);
   const [analysisKnown, setAnalysisKnown] = useState(false); // so the zone editor does not say "not running" before the server has answered
@@ -320,39 +336,37 @@ export default function SettingsTab(props: SettingsTabProps) {
           </div>
         </div>
 
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {cameras.map(cam => (
-            <div
-              key={cam.id}
-              onClick={() => onSelectCamera(cam.id)}
-              className={cn('p-4 rounded-xl border cursor-pointer relative group transition-all active:scale-[0.99]', activeCameraId === cam.id ? 'bg-accent border-accent' : 'bg-surface-muted border-border hover:border-accent/30')}
-            >
-              <div className="flex flex-col gap-0.5">
-                <span className={cn('text-xs font-bold', activeCameraId === cam.id ? 'text-white' : 'text-ink')}>{cam.name}</span>
-                <span className={cn('text-[9px] font-medium', activeCameraId === cam.id ? 'text-white/70' : 'text-ink-muted')}>{cam.useRemoteFeed ? 'Remote feed' : 'Local feed'}</span>
-              </div>
-              {isAdmin && cameras.length > 1 && (
-                <button onClick={(e) => { e.stopPropagation(); onRemoveCamera(cam.id); }} className="absolute top-3 right-3 p-1.5 rounded-lg opacity-0 group-hover:opacity-100 bg-black/15 hover:bg-critical hover:text-white transition-all active:scale-95 min-w-[32px] min-h-[32px] flex items-center justify-center" title="Delete camera">
-                  <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Camera configuration */}
-      <div className="card p-8 space-y-8">
-        <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-accent flex items-center justify-center">
-            <Settings className="w-7 h-7 text-white" strokeWidth={1.75} />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold font-display text-ink">Camera configuration</h2>
-            <p className="text-ink-muted text-sm">Editing: {activeCamera.name}</p>
-          </div>
+        <div className="relative mb-4 max-w-md">
+          <Search className="w-4 h-4 text-ink-muted absolute left-3.5 top-1/2 -translate-y-1/2" strokeWidth={1.75} />
+          <input value={camSearch} onChange={(e) => { setCamSearch(e.target.value); setCamPage(0); }} placeholder="Search cameras by name, department or id..." aria-label="Search cameras" data-testid="settings-camera-search" className="input !pl-10 !pr-4 !py-2 text-sm" />
         </div>
 
+        <ul className="space-y-2" data-testid="settings-camera-list">
+          {pageCams.map((cam) => {
+            const open = openCameraId === cam.id && activeCameraId === cam.id;
+            return (
+              <li key={cam.id} className={cn('rounded-xl border transition-colors', open ? 'border-accent bg-surface' : 'border-border bg-surface-muted')}>
+                <div className="flex items-center gap-2 pr-2">
+                  <button
+                    onClick={() => toggleCamera(cam.id)}
+                    aria-expanded={open} aria-controls={`camera-config-${cam.id}`}
+                    data-testid={`settings-camera-${cam.id}`}
+                    className="flex-1 min-w-0 flex items-center gap-3 p-4 text-left"
+                  >
+                    {open ? <ChevronDown className="w-4 h-4 text-accent shrink-0" strokeWidth={1.75} /> : <ChevronRight className="w-4 h-4 text-ink-muted shrink-0" strokeWidth={1.75} />}
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold text-ink truncate">{cam.name}</span>
+                      <span className="block text-[10px] font-medium text-ink-muted truncate">{cam.useRemoteFeed ? 'Remote feed' : 'Local feed'}{cam.department ? ` · ${cam.department}` : ''}</span>
+                    </span>
+                  </button>
+                  {isAdmin && cameras.length > 1 && (
+                    <button onClick={() => onRemoveCamera(cam.id)} className="p-1.5 rounded-lg hover:bg-critical hover:text-white transition-all active:scale-95 min-w-[32px] min-h-[32px] flex items-center justify-center text-ink-muted" title="Delete camera" aria-label={`Delete ${cam.name}`}>
+                      <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+                    </button>
+                  )}
+                </div>
+                {open && (
+                  <div id={`camera-config-${cam.id}`} className="px-5 pb-6 pt-5 space-y-8 border-t border-border" data-testid="camera-config">
         <div className="space-y-4">
           <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest">Camera name</label>
           <input type="text" value={activeCamera.name} onChange={(e) => onUpdateActiveCamera({ name: e.target.value })} className="input text-lg font-bold" placeholder="e.g. Garden View" />
@@ -568,7 +582,28 @@ export default function SettingsTab(props: SettingsTabProps) {
           <input type="text" placeholder="https://your-api.com/webhooks/cam-1" value={activeCamera.webhookUrl} onChange={(e) => onUpdateActiveCamera({ webhookUrl: e.target.value })} className="input" />
         </div>
 
-        <div className="space-y-5 pt-6 border-t border-border">
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        {filteredCams.length === 0 && <p className="text-center text-xs text-ink-muted py-6">No cameras match "{camSearch}".</p>}
+        {filteredCams.length > CAMERA_PAGE_SIZE && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs" data-testid="settings-camera-pager">
+            <span className="text-ink-muted">Showing {camPageClamped * CAMERA_PAGE_SIZE + 1}–{Math.min((camPageClamped + 1) * CAMERA_PAGE_SIZE, filteredCams.length)} of {filteredCams.length}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setCamPage(Math.max(0, camPageClamped - 1))} disabled={camPageClamped === 0} className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40">Previous</button>
+              <span className="text-ink-muted font-medium whitespace-nowrap">Page {camPageClamped + 1} of {camPages}</span>
+              <button onClick={() => setCamPage(Math.min(camPages - 1, camPageClamped + 1))} disabled={camPageClamped >= camPages - 1} className="btn-secondary !py-1.5 !px-3 text-xs disabled:opacity-40">Next</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Known faces (shared by every camera, so not part of one camera's configuration) */}
+      <div className="card p-8">
+        <div className="space-y-5">
           <div className="flex items-center justify-between">
             <label className="text-[10px] font-bold text-ink-muted uppercase tracking-widest flex items-center gap-1.5"><Users className="w-3.5 h-3.5" strokeWidth={1.75} /> Known family/members</label>
             <div className="relative">

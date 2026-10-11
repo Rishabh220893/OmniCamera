@@ -47,7 +47,7 @@ Auto: `tests/federatedReport.test.ts`, `tests/vehicleTrail.test.ts`. Events > Re
 
 ## 5. Zone and line editor for the local detector
 
-Auto: `tests/detectorZones.test.ts`. Settings > a camera with **AI analysis off**.
+Auto: `tests/detectorZones.test.ts`. Settings > Camera management > open the camera's row (each camera is a dropdown row; 15 to a page, with a search) > untick **Analyze with AI**.
 1. **Expected:** the editor appears over the camera frame. Draw a zone (click points, close it), draw a line, name them, save.
 2. Reload: they are still there. Delete one; save; reload: gone.
 3. Drag a point mid-draw, then start another shape: no stale shape appears.
@@ -179,3 +179,10 @@ Auto: `tests/liveAnalysis.test.ts`. Needs the AI model configured. Feed > Full P
 ## 17. Known gaps to check by eye (not covered by anything)
 
 The wrong-camera tile in the pinned grid (root cause not found); admin screens (Federation, All departments, Report) opened signed-in against live Firebase; Postgres plate column (`platform_events_plate`) creation on Neon: run the Pg tests with `TEST_DATABASE_URL`.
+
+## 16f. Settings: camera list as dropdown rows
+
+1. Settings > **Camera management**: the cameras are a list, 15 to a page ("Showing 1–15 of N", Previous / Next), with a search on top (name, department, id). No grid of tiles.
+2. Click a row: it opens that camera's configuration right under it (one open at a time; click again to close). Edit a field: the row's title follows. Press **Save settings** at the bottom as before.
+3. Search narrows the list and returns to page 1; no match says so. Page 2 holds the rest.
+4. The Known faces section is now its own card below (it is shared by all cameras).
