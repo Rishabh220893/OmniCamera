@@ -3,7 +3,7 @@ import { summariseAnalysis } from '../lib/analysisStatus';
 import { motion } from 'motion/react';
 import {
   Settings2, Maximize2, Minimize2, SwitchCamera, RefreshCw, Clock, Activity,
-  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, Rows3, Search, Loader2, Sparkles,
+  AlertTriangle, Bell, ShieldCheck, ChevronRight, LayoutGrid, MonitorPlay, Rows3, Search, Loader2, Sparkles,
   Grid2X2, PanelsTopLeft
 } from 'lucide-react';
 import { cn, sentimentEmoji } from '../lib/utils';
@@ -13,6 +13,7 @@ import { useMediaConfig, mediaFailedCameras, mediaPathId } from '../lib/mediaSer
 import { CameraConfig, LogEntry, CameraMediaRefs, TabId, ViewMode } from '../types';
 import CameraFeed, { FeedStatus } from './CameraFeed';
 import CameraTrendChart from './CameraTrendChart';
+import WallView from './WallView';
 import FullPanel from './FullPanel';
 import type { TrackAlert, TrackingController } from '../lib/tracking';
 
@@ -452,6 +453,8 @@ interface MonitorTabProps {
   panelAlert: TrackAlert | null;
   onPanelOpenCamera: (id: string) => void;
   onPanelCloseCamera: () => void;
+  /** Administrators may create video walls. */
+  isAdmin?: boolean;
 }
 
 export default function MonitorTab({
@@ -460,7 +463,7 @@ export default function MonitorTab({
   isFullscreen, onToggleFullscreen, onToggleCameraFacing, mediaRefs, onCameraError,
   onFallbackToSimulated, onChangeTab, streamAccessPassword, streamAccessEmail,
   analysisCameraIds, analyzingCameraIds, onToggleAnalysisCamera, onJumpToLog, onCameraStatusChange,
-  tracking, panelOpenCameraId, panelAlert, onPanelOpenCamera, onPanelCloseCamera
+  tracking, panelOpenCameraId, panelAlert, onPanelOpenCamera, onPanelCloseCamera, isAdmin = false
 }: MonitorTabProps) {
   const activeCamera = cameras.find(c => c.id === activeCameraId) || cameras[0];
   const [gridFilter, setGridFilter] = useState('');
@@ -497,7 +500,7 @@ export default function MonitorTab({
   const pagedIds = useMemo(() => new Set(pagedCameras.map(c => c.id)), [pagedCameras]);
   const mountedCameras = useMemo(() => {
     // The Full Panel loads nothing by itself; only cameras selected for the browser's analysis stay mounted (out of sight).
-    if (viewMode === 'focus' || viewMode === 'panel') {
+    if (viewMode === 'focus' || viewMode === 'panel' || viewMode === 'wall') {
       // The camera in focus is shown whether or not it is being analysed; analysed cameras stay mounted (out of sight) beside it.
       return cameras.filter(c => c.id === activeCameraId || analysisCameraIds.has(c.id));
     }
@@ -551,6 +554,15 @@ export default function MonitorTab({
       <PanelsTopLeft className="w-3.5 h-3.5" strokeWidth={1.75} />
       <span className="hidden sm:inline">Full Panel</span>
     </button>
+    <button
+      onClick={() => onChangeViewMode('wall')}
+      className={cn('btn-ghost !px-3 !py-1.5 !rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all active:scale-95 whitespace-nowrap', viewMode === 'wall' ? 'bg-surface text-ink shadow-xs' : 'text-ink-muted hover:text-ink')}
+      title="Control wall: a shared wall display with layouts, viewers and one controller"
+      data-testid="view-wall"
+    >
+      <MonitorPlay className="w-3.5 h-3.5" strokeWidth={1.75} />
+      <span className="hidden sm:inline">Control Wall</span>
+    </button>
   </div>
   );
 
@@ -576,7 +588,14 @@ export default function MonitorTab({
         </div>
       )}
 
-      <div className={cn('grid grid-cols-1 xl:grid-cols-4 gap-8', viewMode === 'panel' && 'hidden')}>
+      {viewMode === 'wall' && (
+        <div className="space-y-4">
+          <div className="flex justify-end">{viewSwitcher}</div>
+          <WallView cameras={cameras} streamAccessEmail={streamAccessEmail} streamAccessPassword={streamAccessPassword} isAdmin={isAdmin} />
+        </div>
+      )}
+
+      <div className={cn('grid grid-cols-1 xl:grid-cols-4 gap-8', (viewMode === 'panel' || viewMode === 'wall') && 'hidden')}>
       <div className="min-w-0 xl:col-span-3 space-y-6">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar lg:hidden">

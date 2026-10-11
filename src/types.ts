@@ -131,7 +131,7 @@ export interface RoutePoint { lat: number; lng: number; label: string; timestamp
 
 export type TabId = 'monitor' | 'analytics' | 'events' | 'settings' | 'map' | 'guide';
 
-export type ViewMode = 'focus' | 'matrix' | 'grid' | 'panel';
+export type ViewMode = 'focus' | 'matrix' | 'grid' | 'panel' | 'wall';
 export type GuardScope = 'active' | 'selected' | 'all';
 
 /** DOM nodes a focused CameraFeed instance exposes so the capture/analysis

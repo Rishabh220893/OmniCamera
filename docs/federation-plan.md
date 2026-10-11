@@ -67,7 +67,7 @@ Verdicts: **have** = built and tested (with fakes where stated); **partial**; **
 | A7 | **Federation service**: connector/department identities, routing, quotas, sharing policy, session caps | 2, 3 | **partly built** (2026-10-11, `docs/federation-service.md`): API-key client identities with a fixed department, event push, event/day quotas, session leases and caps, admin API; tested over real HTTP with fakes. Settings screen and Redis-backed counters added the same day (Redis never run). **Not built:** mTLS, routing / sharing policy between departments |
 | A8 | **Correlation engine** and incidents | 3 (and 1 for tracking) | **built** (docs/incidents.md): three rules (one plate on 2+ cameras, watchlist hit, two systems on one camera), department-scoped visibility, Events > Incidents screen; tested with synthetic events, the Postgres store test not yet run, never run on real cameras |
 | A9 | **Search API** (events, sightings, tags; Postgres, engine hidden) and tag editing | 1, 2, 3 | missing |
-| A10 | **Video wall** layouts and session control | all | missing |
+| A10 | **Video wall** layouts and session control | all | **built** (2026-10-11, `docs/video-wall.md`): presets/custom grids/tours, saved and shared layouts, walls with viewer cap, one controller, forced takeover, audit, Feed > Control Wall screen; API tested, screen checked with the API mocked; not with a real admin, second user or grid |
 | A11 | **Dashboard**: search, alerts, rules, incidents, health, report | all | missing (largest) |
 | A12 | ANPR metadata and watchlist | all | **have** (not on real feeds/GPU) |
 | A13 | Alerts, rules, webhooks, mock VAHAN/eGujCop/SARTHI | all | **have** (mock only) |
