@@ -17,8 +17,8 @@ How to check each feature yourself: first the automated test that covers it, the
 
 Auto: `tests/federation.test.ts`, `tests/federationUsage.test.ts`. Needs `FEDERATION_ENABLED=true`.
 1. Settings > Federation (admin). Create a client "test-dept" with department "traffic", a small quota (e.g. 5 events/minute) and a session cap of 2. **Expected:** the key is shown once; copy it.
-2. `curl -H "Authorization: Bearer <key>" localhost:3000/api/federation/me` **Expected:** your client, limits and usage.
-3. Post 6 events quickly to `/api/federation/events` (body per `docs/federation-service.md`). **Expected:** the sixth is refused (429) and usage shows 5.
+2. `curl.exe -H "Authorization: Bearer <key>" http://localhost:3000/api/federation/me` **Expected:** your client, limits and usage.
+3. Post 6 events in one batch to `/api/federation/events` (PowerShell, one line, with the plain key `fed_<id>.<secret>`: `$key = "<key>"; $body = @{ events = @( @{ camera = "gate-1"; type = "intrusion"; text = "Person at the gate" } ) } | ConvertTo-Json -Depth 5; Invoke-RestMethod -Method Post -Uri http://localhost:3000/api/federation/events -Headers @{ Authorization = "Bearer $key" } -ContentType "application/json" -Body $body`; send the same event again to see `ignored`). **Expected:** the sixth is refused (429) and usage shows 5.
 4. Open 3 sessions with `POST /api/federation/sessions`. **Expected:** the third is refused (cap); close one with DELETE and retry: accepted.
 5. Wrong key: **Expected** 401. Disabled client: 403.
 6. Rotate the key in the panel: the old key stops working at once, the new one works.
@@ -112,7 +112,7 @@ Auto: `tests/inferenceAnalyzers.test.ts`.
 ## 14. Security: headers, HTTPS, audit export, per-user video
 
 Auto: `tests/security.test.ts`, `tests/ops.test.ts`, `tests/mediaAuth.test.ts`, `tests/mediaServerEntrypoint.test.ts` (real MediaMTX).
-1. `curl -I localhost:3000/`: **Expected** CSP, `X-Content-Type-Options`, frame protection; with `FORCE_HTTPS=true` plain HTTP redirects (behind a proxy also set `TRUST_PROXY`).
+1. `curl.exe -I http://localhost:3000/`: **Expected** CSP, `X-Content-Type-Options`, frame protection; with `FORCE_HTTPS=true` plain HTTP redirects (behind a proxy also set `TRUST_PROXY`).
 2. `GET /api/access-log/export` (auditor/admin): sealed export; tamper with a line and verify fails.
 3. `METRICS_ENABLED=true`: `GET /metrics` (with `METRICS_TOKEN`) returns Prometheus text; `/healthz` and `/readyz` return 200.
 4. Per-user video (`MEDIA_AUTH_MODE=token`, `MEDIA_TOKEN_SECRET`, `MEDIA_AUTH_SECRET`): sign in, open a camera in your department: plays. Copy its stream URL and open it without the token or as a user from another department: refused. A token older than `MEDIA_TOKEN_TTL_MIN` stops working. **Not tried in a live browser.**
