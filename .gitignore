@@ -44,3 +44,7 @@ demo.local
 # Live-grid test reports: their network captures contain the camera grid's login
 live-grid-report-*/
 live-grid-report-*.zip
+
+# Runtime data (federation client key hashes, walls, webhook sources, sealed sources)
+.data/
+.data-verify/

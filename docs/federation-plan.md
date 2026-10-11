@@ -83,7 +83,7 @@ Verdicts: **have** = built and tested (with fakes where stated); **partial**; **
 | A23 | **Kubernetes** deployment (manifests/Helm), autoscaling workers, health probes | 1 | missing |
 | A24 | **Load-test report** for 80,000 cameras (control plane **done**; add storage/bandwidth/event-rate/search models and a clear statement of what was not testable) | 1 | partial |
 | A25 | Documents: connector/adapter guide, "departments unaffected", security architecture, DR design, deployment modes | all | missing |
-| A26 | Federated analytics report | 3 | missing |
+| A26 | Federated analytics report | 3 | **built** (2026-10-11, `docs/federated-report.md`): per-department and cross-department figures, plates across departments, incidents, systems, retention, JSON / CSV / printable page, visibility by department; on in-memory stores and real HTTP; not Postgres, real data or a browser |
 
 ## 5. Order of work
 
