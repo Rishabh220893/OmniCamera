@@ -17,7 +17,7 @@ for lang in "${@:-en hi}"; do for l in $lang; do
     -c:a aac -b:a 160k -c:s mov_text \
     -metadata:s:a:0 language=$([ "$l" = en ] && echo eng || echo hin) \
     -metadata:s:s:0 language=$([ "$l" = en ] && echo eng || echo hin) -metadata:s:s:1 language=$([ "$other" = en ] && echo eng || echo hin) \
-    -disposition:s:0 0 -disposition:s:1 0 -movflags +faststart -shortest "out/$l/omnicamera-explainer-$l.mp4"
+    -disposition:s:0 0 -disposition:s:1 0 -movflags +faststart "out/$l/omnicamera-explainer-$l.mp4"
   rm -rf ".frames/$l"
   echo "built out/$l/omnicamera-explainer-$l.mp4"
 done; done
