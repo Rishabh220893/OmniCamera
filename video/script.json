@@ -1,0 +1,150 @@
+{
+  "voices": {
+    "en": "en-IN-NeerjaNeural",
+    "hi": "hi-IN-SwaraNeural"
+  },
+  "rate": "+15%",
+  "scenes": [
+    {
+      "id": "s1",
+      "cues": [
+        {
+          "id": "c1",
+          "en": "Nine forty p.m. A hit and run. The car is gone. All anyone remembers is part of the number plate.",
+          "en_say": "Nine forty P M. A hit and run. The car is gone. All anyone remembers is part of the number plate.",
+          "hi": "रात के नौ चालीस। एक हिट एंड रन। गाड़ी भाग चुकी है। लोगों को नंबर प्लेट का बस एक हिस्सा याद है।"
+        },
+        {
+          "id": "c2",
+          "en": "Two hundred cameras saw it. But ordinary cameras only record. Finding that car means days of footage.",
+          "hi": "दो सौ कैमरों ने यह देखा। पर आम कैमरे सिर्फ़ रिकॉर्ड करते हैं। गाड़ी ढूँढने में कई दिन लगते हैं।"
+        }
+      ]
+    },
+    {
+      "id": "s2",
+      "cues": [
+        {
+          "id": "c3",
+          "en": "With OmniCamera, you type the plate once, and every camera is searched in the background.",
+          "en_say": "With Omni Camera, you type the plate once, and every camera is searched in the background.",
+          "hi": "OmniCamera में नंबर एक बार टाइप कीजिए, और हर कैमरा अपने आप खोजा जाता है।",
+          "hi_say": "ओमनी कैमरा में नंबर एक बार टाइप कीजिए, और हर कैमरा अपने आप खोजा जाता है।"
+        },
+        {
+          "id": "c4",
+          "en": "In seconds, a red alert opens the right camera, and the car's route appears stop by stop, with time and speed, ready to export as evidence.",
+          "hi": "कुछ सेकंड में लाल अलर्ट सही कैमरा खोलता है, और गाड़ी का पूरा रास्ता समय और रफ़्तार के साथ दिखता है, सबूत के लिए तैयार।"
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "cues": [
+        {
+          "id": "c5",
+          "en": "And you don't replace a single camera. OmniCamera connects to what you have: IP cameras, ONVIF devices, Hikvision and Dahua recorders, even analog cameras behind a DVR.",
+          "en_say": "And you don't replace a single camera. Omni Camera connects to what you have: I P cameras, Onvif devices, Hikvision and Dahua recorders, even analog cameras behind a D V R.",
+          "hi": "और एक भी कैमरा बदलना नहीं पड़ता। OmniCamera आपके मौजूदा IP कैमरों, ONVIF डिवाइस, Hikvision और Dahua रिकॉर्डर, और DVR वाले एनालॉग कैमरों से जुड़ता है।",
+          "hi_say": "और एक भी कैमरा बदलना नहीं पड़ता। ओमनी कैमरा आपके मौजूदा आई पी कैमरों, ऑनविफ़ डिवाइस, हाइकविज़न और दाहुआ रिकॉर्डर, और डी वी आर वाले एनालॉग कैमरों से जुड़ता है।"
+        }
+      ]
+    },
+    {
+      "id": "s4",
+      "cues": [
+        {
+          "id": "c6",
+          "en": "Every frame becomes information: a plain summary, people and vehicle counts, number plates, known faces, and the mood of the scene, from calm to critical.",
+          "hi": "हर फ़्रेम जानकारी बनता है: सरल सारांश, लोगों और वाहनों की गिनती, नंबर प्लेट, पहचाने चेहरे, और माहौल, शांत से गंभीर तक।"
+        },
+        {
+          "id": "c7",
+          "en": "If a lens is blocked or goes dark, you are told.",
+          "hi": "लेंस ढक जाए या अँधेरा हो, तो आपको पता चलता है।"
+        }
+      ]
+    },
+    {
+      "id": "s5",
+      "cues": [
+        {
+          "id": "c8",
+          "en": "Every camera gets its own rules. Write them in plain words, draw a zone or a line, and set sensitivity, quiet hours and how often it checks.",
+          "hi": "हर कैमरे के अपने नियम हैं। उन्हें सीधे शब्दों में लिखिए, ज़ोन या लाइन खींचिए, और संवेदनशीलता, शांत घंटे और जाँच का अंतराल तय कीजिए।"
+        },
+        {
+          "id": "c9",
+          "en": "Alerts arrive by email, SMS or webhook, and repeats are folded, so nobody is flooded.",
+          "en_say": "Alerts arrive by email, S M S or webhook, and repeats are folded, so nobody is flooded.",
+          "hi": "अलर्ट ईमेल, SMS या वेबहुक से आते हैं, और दोहराए गए अलर्ट जोड़ दिए जाते हैं।",
+          "hi_say": "अलर्ट ईमेल, एस एम एस या वेबहुक से आते हैं, और दोहराए गए अलर्ट जोड़ दिए जाते हैं।"
+        },
+        {
+          "id": "c10",
+          "en": "Small details matter. A zero misread as the letter O is offered as a possible match, and unchanged scenes are skipped to save cost.",
+          "hi": "छोटी बातें भी अहम हैं। शून्य को अक्षर O पढ़ा जाए, तो वह संभावित मिलान बनता है, और बिना बदलाव वाले दृश्य छोड़कर खर्च बचता है।",
+          "hi_say": "छोटी बातें भी अहम हैं। शून्य को अक्षर ओ पढ़ा जाए, तो वह संभावित मिलान बनता है, और बिना बदलाव वाले दृश्य छोड़कर खर्च बचता है।"
+        }
+      ]
+    },
+    {
+      "id": "s6",
+      "cues": [
+        {
+          "id": "c11",
+          "en": "For crime teams: track a wanted vehicle or face across the city, with related sightings joined into one incident.",
+          "hi": "अपराध शाखा के लिए: वांछित गाड़ी या चेहरे को पूरे शहर में ट्रैक कीजिए, और जुड़ी घटनाएँ एक इंसिडेंट में देखिए।"
+        },
+        {
+          "id": "c12",
+          "en": "For government: traffic counts, crowd monitoring and a single control wall across departments.",
+          "hi": "सरकार के लिए: ट्रैफ़िक गिनती, भीड़ की निगरानी, और सभी विभागों की एक कंट्रोल वॉल।"
+        },
+        {
+          "id": "c13",
+          "en": "For offices, know who came in after hours. And at home, know when a stranger is at your gate.",
+          "hi": "दफ़्तर में जानिए कि समय के बाद कौन आया। घर पर जानिए कि गेट पर अजनबी कब है।"
+        }
+      ]
+    },
+    {
+      "id": "s7",
+      "cues": [
+        {
+          "id": "c14",
+          "en": "Every camera sits in a central registry and on a live map, showing its health, its department, and the areas no camera covers.",
+          "hi": "हर कैमरा केंद्रीय रजिस्ट्री और लाइव नक्शे पर है, अपनी स्थिति, विभाग, और बिना कवरेज वाले इलाकों के साथ।"
+        },
+        {
+          "id": "c15",
+          "en": "Federation links departments without disturbing their systems. Each keeps its own video, while events flow on one shared bus.",
+          "hi": "फ़ेडरेशन विभागों को उनके सिस्टम छेड़े बिना जोड़ता है। वीडियो विभाग के पास रहता है, इवेंट एक साझा बस पर चलते हैं।"
+        },
+        {
+          "id": "c16",
+          "en": "So a plate read by Traffic and by Police becomes one trail, and each department sees only what it may.",
+          "hi": "ट्रैफ़िक और पुलिस की पढ़ी प्लेट एक ही ट्रेल बनती है, और हर विभाग वही देखता है जिसकी उसे अनुमति है।"
+        },
+        {
+          "id": "c17",
+          "en": "Add role based access, signed evidence, regional gateways, and connectors ready for VAHAN and police records.",
+          "en_say": "Add role based access, signed evidence, regional gateways, and connectors ready for Vaahan and police records.",
+          "hi": "साथ में: रोल आधारित एक्सेस, साइन किए सबूत, रीजनल गेटवे, और वाहन तथा पुलिस रिकॉर्ड के लिए तैयार कनेक्टर।"
+        }
+      ]
+    },
+    {
+      "id": "s8",
+      "cues": [
+        {
+          "id": "c18",
+          "en": "OmniCamera. Your cameras already see. Now, they understand.",
+          "en_say": "Omni Camera. Your cameras already see. Now, they understand.",
+          "hi": "OmniCamera. आपके कैमरे पहले से देखते हैं। अब वे समझते भी हैं।",
+          "hi_say": "ओमनी कैमरा। आपके कैमरे पहले से देखते हैं। अब वे समझते भी हैं।"
+        }
+      ]
+    }
+  ]
+}

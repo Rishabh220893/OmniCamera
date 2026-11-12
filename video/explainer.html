@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OmniCamera explainer</title>
+<!--
+  The picture of the explainer video. It is drawn from a timeline (out/<lang>/timeline.json, made by build_audio.py), so the
+  same page follows the English or the Hindi narration. render.cjs loads it, calls window.seek(seconds) for every frame and
+  takes a picture. Open it in a browser with ?play=en to watch it roughly in real time (needs a local web server for the fetch).
+
+  Timing of an element:  data-a="name@when[:seconds]; ..."   name is a key of KF below.
+  when:  c5+1.2  (1.2 s after cue c5 starts)   c5e-0.5 (before it ends)   c5%40 (40% through it)   s3+0.3 (scene start)
+-->
+<style>
+:root{--bg:#060a14;--panel:#0d1526;--panel2:#111c33;--line:#1f2b45;--txt:#e6ecf7;--mut:#8b9ab8;--dim:#56658a;
+  --blue:#3b82f6;--cyan:#22d3ee;--red:#ef4444;--amber:#f59e0b;--green:#22c55e;--violet:#a78bfa}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--bg);color:var(--txt);font-family:Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:'JetBrains Mono',monospace}
+#stage{position:absolute;inset:0;overflow:hidden;background:
+  radial-gradient(1200px 700px at 78% -10%,rgba(59,130,246,.16),transparent 60%),
+  radial-gradient(900px 600px at 0% 110%,rgba(34,211,238,.08),transparent 60%),var(--bg)}
+#stage::before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(148,163,184,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.045) 1px,transparent 1px);background-size:60px 60px}
+.scene{position:absolute;inset:0;display:none}
+/* persistent chrome */
+#brand{position:absolute;left:64px;top:44px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:26px;letter-spacing:-.01em;z-index:50}
+#brand svg{width:44px;height:44px}
+#chapter{position:absolute;right:64px;top:52px;font-size:17px;letter-spacing:.22em;color:var(--mut);z-index:50}
+#chapter b{color:var(--blue);font-weight:600;margin-right:14px}
+#bar{position:absolute;left:0;bottom:0;height:5px;background:linear-gradient(90deg,var(--blue),var(--cyan));width:0;z-index:50}
+h1{font-size:64px;line-height:1.08;font-weight:800;letter-spacing:-.025em}
+h2{font-size:46px;line-height:1.12;font-weight:800;letter-spacing:-.02em}
+.kicker{font-size:18px;letter-spacing:.24em;text-transform:uppercase;color:var(--blue);font-weight:600}
+.sub{font-size:28px;color:var(--mut);line-height:1.35}
+.card{position:absolute;background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+.chip{display:inline-flex;align-items:center;gap:10px;padding:10px 18px;border-radius:999px;border:1px solid var(--line);background:rgba(15,23,42,.85);font-size:20px;font-weight:500;white-space:nowrap}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--green);flex:none}
+.plate{display:inline-block;background:#fff;color:#0b1220;border:3px solid #0b1220;border-radius:8px;padding:4px 14px;font-family:'JetBrains Mono',monospace;font-weight:800;letter-spacing:.06em;box-shadow:0 0 0 2px #fff}
+.abs{position:absolute}
+.hl{color:var(--blue)} .red{color:var(--red)} .amber{color:var(--amber)} .green{color:var(--green)} .cyan{color:var(--cyan)}
+svg{overflow:visible}
+
+/* ---------- s1 ---------- */
+#cctv{left:110px;top:150px;width:1100px;height:720px;border-radius:18px;overflow:hidden;border:2px solid #24314f;background:linear-gradient(180deg,#0b1020 0%,#111a30 46%,#1a2236 46%,#0d1220 100%)}
+#cctv .osd{position:absolute;font-size:22px;color:#dbe4f5;text-shadow:0 2px 6px #000}
+#cctv .lamp{position:absolute;top:60px;width:260px;height:520px;background:radial-gradient(closest-side at 50% 0,rgba(255,214,140,.35),transparent 100%)}
+#cctv .lane{position:absolute;left:0;right:0;top:560px;height:8px;background:repeating-linear-gradient(90deg,#c9d2e3 0 90px,transparent 90px 190px);opacity:.55}
+#cctv .scan{position:absolute;inset:0;background:repeating-linear-gradient(180deg,rgba(255,255,255,.03) 0 2px,transparent 2px 5px)}
+#s1car{position:absolute;left:330px;top:300px;width:440px}
+#s1side{left:1270px;top:170px;width:560px}
+#note{left:1270px;top:500px;width:560px;padding:34px 36px}
+#note .plate{font-size:54px}
+#tiles{left:110px;top:330px;width:1700px;display:grid;grid-template-columns:repeat(25,1fr);gap:10px}
+#tiles i{height:52px;border-radius:7px;background:#0f1930;border:1px solid #1d2a47;position:relative}
+#tiles i::after{content:"";position:absolute;right:6px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--red)}
+#review{left:110px;top:870px;width:1700px}
+#review .track{height:16px;border-radius:8px;background:#111c33;border:1px solid var(--line);overflow:hidden;margin-top:14px}
+#review .fill{height:100%;width:9%;background:var(--amber);transform-origin:left}
+
+/* ---------- s2 ---------- */
+#track{left:80px;top:270px;width:900px;height:750px;padding:28px}
+.tabs{display:flex;gap:12px}
+.tab{padding:13px 20px;border-radius:12px;border:1px solid var(--line);font-size:20px;font-weight:600;color:var(--mut)}
+.tab.on{background:var(--blue);border-color:var(--blue);color:#fff}
+#search{margin-top:22px;height:84px;border-radius:14px;border:2px solid var(--blue);background:#0a1122;display:flex;align-items:center;padding:0 26px;font-size:40px;font-weight:700;letter-spacing:.08em}
+#search .caret{width:3px;height:44px;background:var(--blue);margin-left:6px}
+#watch{margin-top:16px;font-size:20px;color:var(--mut);display:flex;align-items:center;gap:12px}
+#grid2{margin-top:22px;display:grid;grid-template-columns:repeat(8,1fr);gap:10px}
+#grid2 i{height:62px;border-radius:9px;background:#0f1930;border:1px solid #1d2a47;font-style:normal;font-size:14px;color:var(--dim);display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+#grid2 i b{position:absolute;inset:0;background:rgba(59,130,246,.38)}
+#grid2 i.hit{z-index:2}
+#grid2 i.hit u{position:absolute;inset:0;background:var(--red);border-radius:8px;color:#fff;text-decoration:none;font-weight:700;display:flex;align-items:center;justify-content:center}
+#alert{left:80px;top:140px;width:1760px;border-radius:16px;background:var(--red);padding:20px 28px;display:flex;gap:20px;align-items:center;box-shadow:0 20px 60px rgba(239,68,68,.45);z-index:5}
+#alert .t{font-size:27px;font-weight:800}
+#alert .d{font-size:19px;opacity:.92;margin-top:4px}
+#s2copy{left:1040px;top:400px;width:800px}
+#map2{left:1020px;top:270px;width:820px;height:750px;overflow:hidden}
+.stop{position:absolute;display:flex;align-items:center;gap:12px;font-size:19px;white-space:nowrap}
+.stop .n{width:38px;height:38px;border-radius:50%;background:var(--blue);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;border:3px solid #fff;flex:none}
+.stop small{display:block;color:var(--mut);font-size:16px}
+.leg{position:absolute;font-size:15px;padding:5px 11px;border-radius:999px;background:#0a1122;border:1px solid var(--line);color:#c6d2ea;white-space:nowrap}
+
+/* ---------- s3 ---------- */
+.dev{position:absolute;left:90px;width:480px;height:112px;padding:0 26px;display:flex;align-items:center;gap:22px}
+.dev svg{width:58px;height:58px;flex:none;stroke:var(--mut);fill:none;stroke-width:2.2}
+.dev b{font-size:26px;display:block} .dev span{font-size:18px;color:var(--mut)}
+.outp{position:absolute;left:1370px;width:460px;height:112px;padding:0 26px;display:flex;align-items:center;gap:20px;font-size:25px;font-weight:600}
+.outp svg{width:44px;height:44px;flex:none;stroke:var(--cyan);fill:none;stroke-width:2.2}
+#hub{left:805px;top:420px;width:310px;height:310px;border-radius:50%;background:radial-gradient(circle,#13224a,#0a1226);border:2px solid var(--blue);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;box-shadow:0 0 90px rgba(59,130,246,.45)}
+#hub svg{width:96px;height:96px} #hub b{font-size:28px}
+#hubring{left:775px;top:390px;width:370px;height:370px;border-radius:50%;border:2px solid rgba(59,130,246,.5)}
+
+/* ---------- s4 ---------- */
+#frame4{left:80px;top:170px;width:1020px;height:640px;overflow:hidden;border-radius:18px;border:2px solid #24314f;background:linear-gradient(180deg,#9ec5e8 0,#cfe1ee 38%,#7f8a99 38%,#59626f 62%,#3d4450 62%,#2e343f 100%)}
+.bx{position:absolute;border:3px solid var(--blue);border-radius:6px}
+.bx em{position:absolute;left:-3px;top:-30px;font-style:normal;font-size:16px;font-weight:700;padding:3px 9px;border-radius:5px;background:var(--blue);color:#fff;white-space:nowrap}
+.bx.v{border-color:var(--cyan)} .bx.v em{background:var(--cyan);color:#04202a}
+.bx.f{border-color:var(--green)} .bx.f em{background:var(--green);color:#04210f}
+.bx.p{border-color:var(--amber)} .bx.p em{background:var(--amber);color:#2a1a00}
+#an{left:1140px;top:170px;width:700px;height:810px;padding:30px 34px}
+.row{padding:17px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border:0}
+.row label{font-size:15px;letter-spacing:.2em;color:var(--mut);text-transform:uppercase;display:block;margin-bottom:9px}
+.row .v{font-size:24px;line-height:1.35}
+.big{font-size:54px;font-weight:800;line-height:1}
+.mood{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.mood div{height:46px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;background:#101a31;color:var(--dim);position:relative;overflow:hidden}
+.mood div b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#06101f}
+#dark{inset:0;background:#02040a}
+#tamper{left:210px;top:420px;width:760px;padding:26px 30px;border-radius:18px;background:#2a1a00;border:2px solid var(--amber);display:flex;gap:20px;align-items:center}
+
+/* ---------- s5 ---------- */
+#set{left:80px;top:230px;width:830px;height:780px;padding:30px 34px}
+#rules{margin-top:10px;min-height:104px;border-radius:12px;border:1px solid var(--line);background:#0a1122;padding:16px 20px;font-size:25px;line-height:1.4}
+#zone{position:relative;margin-top:18px;height:320px;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#7fa3c4 0,#a9c0d2 40%,#5c6674 40%,#3a414d 100%)}
+.sl{display:grid;grid-template-columns:210px 1fr 150px;align-items:center;gap:18px;margin-top:26px;font-size:22px}
+.sl .tr{height:8px;border-radius:4px;background:#1a2540;position:relative}
+.sl .tr i{position:absolute;left:0;top:0;bottom:0;border-radius:4px;background:var(--blue);transform-origin:left}
+.sl .val{text-align:right;color:var(--cyan);font-weight:600}
+.camrule{position:absolute;left:950px;width:890px;height:84px;padding:0 24px;display:flex;align-items:center;gap:18px;font-size:22px}
+.camrule b{width:230px;flex:none} .camrule span{color:#c6d2ea}
+.chan{position:absolute;top:548px;width:204px;height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;font-size:22px;font-weight:600}
+.chan svg{width:52px;height:52px;stroke:var(--cyan);fill:none;stroke-width:2.2}
+.det{position:absolute;top:740px;width:435px;height:270px;padding:24px 26px}
+.det h4{font-size:15px;letter-spacing:.2em;color:var(--mut);text-transform:uppercase;font-weight:600;margin-bottom:16px}
+.gate{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:6px}
+.gate i{height:62px;border-radius:7px;background:#16223d;position:relative;overflow:hidden}
+.gate i.a{background:#1d3a6e;border:2px solid var(--blue)}
+.gate i s{position:absolute;inset:0;background:rgba(6,10,20,.72);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--mut);text-decoration:none}
+
+/* ---------- s6 ---------- */
+.uc{position:absolute;top:290px;width:420px;height:690px;padding:34px 32px;--c:var(--blue);border-top:5px solid var(--c)}
+.uc .ic{width:92px;height:92px;border-radius:22px;background:color-mix(in srgb,var(--c) 18%,transparent);display:flex;align-items:center;justify-content:center}
+.uc .ic svg{width:54px;height:54px;stroke:var(--c);fill:none;stroke-width:2.2}
+.uc h3{font-size:33px;margin-top:26px;letter-spacing:-.01em}
+.uc p{font-size:17px;letter-spacing:.2em;text-transform:uppercase;color:var(--c);margin-top:8px;font-weight:600}
+.uc ul{list-style:none;margin-top:28px}
+.uc li{font-size:23px;line-height:1.3;padding:15px 0 15px 34px;border-top:1px solid var(--line);position:relative;color:#d5def0}
+.uc li::before{content:"";position:absolute;left:4px;top:25px;width:12px;height:12px;border-radius:50%;background:var(--c)}
+.uc .eg{position:absolute;left:32px;right:32px;bottom:30px;padding:14px 16px;border-radius:12px;background:#0a1122;border:1px solid var(--line);font-size:17px;line-height:1.45;color:#c6d2ea}
+.uc .eg b{color:var(--c);display:block;font-size:14px;letter-spacing:.16em;margin-bottom:4px}
+.uc .glow{position:absolute;inset:-2px;border-radius:22px;border:2px solid var(--c);box-shadow:0 0 70px color-mix(in srgb,var(--c) 45%,transparent)}
+
+/* ---------- s7 ---------- */
+#reg{left:80px;top:250px;width:800px;height:760px;padding:26px 30px}
+table{width:100%;border-collapse:collapse;font-size:20px;margin-top:10px}
+th{font-size:14px;letter-spacing:.18em;color:var(--mut);text-transform:uppercase;text-align:left;font-weight:600;padding:10px 8px;border-bottom:1px solid var(--line)}
+td{padding:14px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tag{font-size:16px;padding:4px 11px;border-radius:999px;font-weight:600}
+#gis{left:920px;top:250px;width:920px;height:760px;overflow:hidden}
+.pin{position:absolute;width:22px;height:22px;border-radius:50%;border:3px solid #fff;margin:-11px 0 0 -11px;box-shadow:0 0 0 7px color-mix(in srgb,currentColor 22%,transparent);background:currentColor}
+#gap{position:absolute;left:560px;top:390px;width:250px;height:250px;border-radius:50%;border:3px dashed var(--amber);background:rgba(245,158,11,.1);display:flex;align-items:center;justify-content:center;text-align:center;font-size:19px;font-weight:700;color:var(--amber)}
+.dept{position:absolute;left:90px;width:400px;height:96px;padding:0 24px;display:flex;align-items:center;gap:18px}
+.dept .sw{width:14px;height:52px;border-radius:7px;flex:none}
+.dept b{font-size:25px;display:block} .dept span{font-size:17px;color:var(--mut)}
+.dept svg{width:30px;height:30px;stroke:var(--mut);fill:none;stroke-width:2.2;margin-left:auto}
+#bus{left:660px;top:250px;width:150px;height:444px;border-radius:20px;border:2px solid var(--cyan);background:rgba(34,211,238,.08);display:flex;align-items:center;justify-content:center}
+#bus span{transform:rotate(-90deg);white-space:nowrap;font-size:22px;letter-spacing:.24em;color:var(--cyan);font-weight:700}
+#fed{left:1010px;top:250px;width:830px;height:444px;padding:30px 34px}
+#trail{left:90px;top:728px;width:1750px;height:140px;padding:0 30px;display:flex;align-items:center;gap:20px;font-size:21px}
+.hop{padding:12px 18px;border-radius:14px;border:1px solid var(--line);background:#0a1122;line-height:1.3}
+.hop small{display:block;color:var(--mut);font-size:16px}
+#fed .hop{font-size:25px;padding:16px 20px} #fed .hop small{font-size:18px;margin-top:4px}
+.arr{color:var(--dim);font-size:30px}
+.feat{position:absolute;top:900px;height:92px;width:420px;display:flex;align-items:center;gap:16px;padding:0 24px;font-size:23px;font-weight:600}
+.feat svg{width:38px;height:38px;stroke:var(--cyan);fill:none;stroke-width:2.2;flex:none}
+
+/* ---------- s8 ---------- */
+#end{inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+#end svg{width:190px;height:190px}
+#end h1{font-size:112px;margin-top:26px}
+#end .tagline{font-size:44px;margin-top:22px;color:#c6d2ea;font-weight:500}
+#end .chips{margin-top:54px;display:flex;gap:12px;justify-content:center}
+#end .chips .chip{font-size:19px;padding:10px 16px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="logo" viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="29" fill="#0d1a3a" stroke="#3b82f6" stroke-width="3"/>
+      <circle cx="32" cy="32" r="17" fill="none" stroke="#22d3ee" stroke-width="3"/>
+      <circle cx="32" cy="32" r="7" fill="#3b82f6"/>
+      <path d="M32 3v9M32 52v9M3 32h9M52 32h9" stroke="#3b82f6" stroke-width="3" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-cam" viewBox="0 0 48 48"><rect x="5" y="15" width="26" height="18" rx="4"/><path d="M31 21l11-6v18l-11-6"/><circle cx="14" cy="24" r="3"/></symbol>
+    <symbol id="i-dome" viewBox="0 0 48 48"><path d="M8 20h32M12 20a12 12 0 0024 0"/><circle cx="24" cy="24" r="4"/><path d="M24 8v12"/></symbol>
+    <symbol id="i-nvr" viewBox="0 0 48 48"><rect x="5" y="12" width="38" height="10" rx="3"/><rect x="5" y="26" width="38" height="10" rx="3"/><path d="M11 17h2M11 31h2M19 17h16M19 31h16"/></symbol>
+    <symbol id="i-dvr" viewBox="0 0 48 48"><rect x="5" y="24" width="38" height="12" rx="3"/><path d="M12 30h2M20 30h14M14 24V12M34 24V12M10 12h8M30 12h8"/></symbol>
+    <symbol id="i-web" viewBox="0 0 48 48"><rect x="15" y="5" width="18" height="38" rx="4"/><circle cx="24" cy="15" r="4"/><path d="M21 37h6"/></symbol>
+    <symbol id="i-wall" viewBox="0 0 48 48"><rect x="5" y="8" width="38" height="26" rx="3"/><path d="M24 8v26M5 21h38M16 42h16M24 34v8"/></symbol>
+    <symbol id="i-ai" viewBox="0 0 48 48"><path d="M24 5l4 11 11 4-11 4-4 11-4-11-11-4 11-4z"/><path d="M38 31l1.6 4.4L44 37l-4.4 1.6L38 43l-1.6-4.4L32 37l4.4-1.6z"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 48 48"><path d="M12 34h24l-3-6V20a9 9 0 00-18 0v8zM20 39a4 4 0 008 0"/></symbol>
+    <symbol id="i-search" viewBox="0 0 48 48"><circle cx="21" cy="21" r="12"/><path d="M30 30l12 12"/></symbol>
+    <symbol id="i-mail" viewBox="0 0 48 48"><rect x="5" y="10" width="38" height="28" rx="4"/><path d="M5 14l19 13 19-13"/></symbol>
+    <symbol id="i-sms" viewBox="0 0 48 48"><path d="M7 9h34v24H21l-9 8v-8H7z"/><path d="M15 21h2M23 21h2M31 21h2"/></symbol>
+    <symbol id="i-hook" viewBox="0 0 48 48"><circle cx="12" cy="34" r="5"/><circle cx="36" cy="34" r="5"/><circle cx="24" cy="12" r="5"/><path d="M21 16l-7 14M27 16l7 14M17 34h14"/></symbol>
+    <symbol id="i-hold" viewBox="0 0 48 48"><rect x="7" y="12" width="34" height="24" rx="4"/><circle cx="24" cy="24" r="6"/><path d="M24 21v3l2 2"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 48 48"><path d="M24 4l17 6v12c0 11-7 18-17 22C14 40 7 33 7 22V10z"/><path d="M16 24l6 6 10-12"/></symbol>
+    <symbol id="i-gov" viewBox="0 0 48 48"><path d="M5 18L24 6l19 12zM9 18v18M19 18v18M29 18v18M39 18v18M5 40h38"/></symbol>
+    <symbol id="i-office" viewBox="0 0 48 48"><rect x="9" y="5" width="30" height="38" rx="2"/><path d="M17 14h4M27 14h4M17 22h4M27 22h4M17 30h4M27 30h4M21 43v-6h6v6"/></symbol>
+    <symbol id="i-home" viewBox="0 0 48 48"><path d="M5 23L24 6l19 17M10 19v22h28V19M19 41V29h10v12"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 48 48"><rect x="9" y="21" width="30" height="21" rx="4"/><path d="M15 21v-6a9 9 0 0118 0v6"/></symbol>
+    <symbol id="i-key" viewBox="0 0 48 48"><circle cx="15" cy="24" r="9"/><path d="M24 24h20M36 24v8M42 24v6"/></symbol>
+    <symbol id="i-sign" viewBox="0 0 48 48"><path d="M11 5h18l9 9v29H11zM29 5v9h9"/><path d="M17 31l5 5 9-11"/></symbol>
+    <symbol id="i-gw" viewBox="0 0 48 48"><circle cx="24" cy="24" r="6"/><circle cx="8" cy="10" r="4"/><circle cx="40" cy="10" r="4"/><circle cx="8" cy="38" r="4"/><circle cx="40" cy="38" r="4"/><path d="M11 13l9 7M37 13l-9 7M11 35l9-7M37 35l-9-7"/></symbol>
+    <symbol id="i-db" viewBox="0 0 48 48"><ellipse cx="24" cy="11" rx="15" ry="6"/><path d="M9 11v26c0 3 7 6 15 6s15-3 15-6V11M9 24c0 3 7 6 15 6s15-3 15-6"/></symbol>
+    <symbol id="i-person" viewBox="0 0 40 100"><circle cx="20" cy="13" r="11"/><path d="M6 30h28l-3 34h-6v34h-4V64h-2v34h-4V64H9z"/></symbol>
+    <symbol id="i-car" viewBox="0 0 220 120"><path d="M30 46l18-32h124l18 32 18 8v40H12V54z"/><path d="M56 22h108l12 24H44z" fill="#b9d3e6"/><rect x="26" y="94" width="34" height="22" rx="5" fill="#111"/><rect x="160" y="94" width="34" height="22" rx="5" fill="#111"/></symbol>
+  </defs>
+</svg>
+
+<div id="stage">
+  <div id="brand"><svg><use href="#logo"/></svg>OmniCamera</div>
+  <div id="chapter" class="mono"></div>
+
+  <!-- ============ s1: the case an ordinary camera cannot solve ============ -->
+  <section class="scene" id="s1" data-ch="01|THE PROBLEM">
+    <div class="abs" data-a="out@c2+0.1:0.5" style="inset:0">
+      <div id="cctv" class="abs" data-a="in@s1+0.1:0.6">
+        <div class="lamp" style="left:120px"></div><div class="lamp" style="left:700px"></div>
+        <div class="lane"></div>
+        <svg id="s1car" viewBox="0 0 220 120" data-a="carGo@c1%34:0.9"><use href="#i-car" fill="#7c1f24"/><rect x="34" y="60" width="26" height="12" rx="3" fill="#ff3b30"/><rect x="160" y="60" width="26" height="12" rx="3" fill="#ff3b30"/><rect x="82" y="66" width="56" height="20" rx="3" fill="#e8edf5"/></svg>
+        <div class="scan"></div>
+        <div class="osd mono" style="left:26px;top:22px">CAM 14 &nbsp;RING ROAD JUNCTION</div>
+        <div class="osd mono" style="right:26px;top:22px">21:40:17 &nbsp;<span class="red" data-loop="blink:1.1">●</span> REC</div>
+        <div class="osd mono" style="left:26px;bottom:22px;color:#8b9ab8">ordinary camera · records only</div>
+      </div>
+      <div id="s1side" class="abs">
+        <div class="kicker" data-a="up@c1+0.1">Case file</div>
+        <h1 style="margin-top:18px" data-a="up@c1+0.3">21:40<br><span class="red">Hit and run.</span></h1>
+        <div class="sub" style="margin-top:18px" data-a="up@c1%36">The car is gone.</div>
+      </div>
+      <div id="note" class="card" data-a="up@c1%55">
+        <div class="kicker" style="color:var(--mut)">All a witness remembers</div>
+        <div style="margin-top:22px"><span class="plate">GJ05 <span data-loop="blink:0.7" style="color:#9aa3b5">?? ????</span></span></div>
+        <div class="sub" style="font-size:22px;margin-top:20px">a part of the number plate</div>
+      </div>
+    </div>
+    <div class="abs" style="inset:0">
+      <div class="abs" style="left:110px;top:150px;width:1700px">
+        <h1 data-a="up@c2+0.0"><span class="hl">200 cameras</span> saw it.</h1>
+        <div class="sub" style="margin-top:14px;font-size:34px" data-a="up@c2%34">Ordinary cameras only record. They cannot answer a question.</div>
+      </div>
+      <div id="tiles" class="abs"></div>
+      <div id="review" class="abs" data-a="up@c2%62">
+        <div style="display:flex;justify-content:space-between;font-size:24px"><b>Manual footage review</b><span class="amber mono">Day 3 · 9% of footage watched</span></div>
+        <div class="track"><div class="fill" data-a="growX@c2%62:3.2"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ s2: the same case with OmniCamera ============ -->
+  <section class="scene" id="s2" data-ch="02|THE SAME CASE, WITH OMNICAMERA">
+    <div class="abs mono" style="left:84px;top:176px;font-size:22px;color:var(--mut);letter-spacing:.12em" data-a="in@s2+0.3;out@c4+0.0:0.3">FEED › FULL PANEL &nbsp;·&nbsp; <span class="hl">200 CAMERAS</span></div>
+    <div id="track" class="card">
+      <div class="tabs"><div class="tab on">Track License Plate</div><div class="tab">Track Face</div><div class="tab">Set own rules</div></div>
+      <div id="search" class="mono"><span data-type="GJ05AB1234@c3%14:1.3"></span><span class="caret" data-loop="blink:0.9"></span></div>
+      <div id="watch"><span class="dot" style="background:var(--blue)" data-loop="blink:1"></span><span data-a="in@c3%45">Watching every camera in the background · plate reader on each frame</span></div>
+      <div id="grid2"></div>
+    </div>
+    <div id="alert" class="abs" data-a="drop@c4+0.15:0.45">
+      <svg width="54" height="54" viewBox="0 0 48 48" fill="none" stroke="#fff" stroke-width="3"><path d="M24 6l20 36H4z"/><path d="M24 20v10M24 35v1"/></svg>
+      <div><div class="t">ALERT: PLATE GJ05AB1234 FOUND</div><div class="d">CAM07 · Hero Showroom · 22:04 · 99.8% sure · plate reader · camera opened full screen</div></div>
+    </div>
+    <div id="s2copy" class="abs" data-a="out@c4%22:0.4">
+      <div class="kicker" data-a="up@s2+0.3">One search</div>
+      <h1 style="margin-top:18px" data-a="up@c3+0.1">Type the plate <span class="hl">once.</span></h1>
+      <div class="sub" style="margin-top:22px;font-size:34px" data-a="up@c3%50">Every camera is searched in the background, whether or not anyone is watching.</div>
+    </div>
+    <div id="map2" class="card" data-a="right@c4%24:0.6">
+      <div style="padding:26px 30px 18px;position:relative;z-index:2;background:linear-gradient(180deg,var(--panel2) 80%,transparent)"><div class="kicker">Vehicle trail</div>
+        <div style="display:flex;align-items:center;gap:16px;margin-top:10px"><span class="plate" style="font-size:26px">GJ05AB1234</span><span class="sub" style="font-size:21px">4 stops · 9.6 km · 24 min</span></div></div>
+      <svg class="abs" style="left:0;top:90px" width="820" height="620" viewBox="0 0 820 620" fill="none">
+        <g stroke="#1b2743" stroke-width="16" stroke-linecap="round"><path d="M-20 520C200 470 330 500 520 420S760 300 850 320"/><path d="M90 -10C150 200 260 330 300 640"/><path d="M-20 200C240 240 470 150 850 120"/><path d="M620 -10C580 190 640 400 700 640"/></g>
+        <path pathLength="1" stroke-dasharray="1" data-a="draw@c4%34:2.6" d="M120 500C210 430 250 380 290 300S420 210 500 190S640 250 660 400" stroke="#3b82f6" stroke-width="6" stroke-linecap="round"/>
+      </svg>
+      <div class="stop" style="left:101px;top:571px" data-a="pop@c4%34"><span class="n">1</span><div>Ring Road Junction<small>CAM14 · 21:40</small></div></div>
+      <div class="stop" style="left:271px;top:371px" data-a="pop@c4%46"><span class="n">2</span><div>Paldi Circle<small>CAM04 · 21:46</small></div></div>
+      <div class="stop" style="left:481px;top:261px" data-a="pop@c4%56"><span class="n">3</span><div>O.N.G.C. Office<small>CAM03 · 21:53</small></div></div>
+      <div class="stop" style="right:141px;top:471px;flex-direction:row-reverse;text-align:right" data-a="pop@c4%66"><span class="n" style="background:var(--red)">4</span><div>Hero Showroom<small>CAM07 · 22:04</small></div></div>
+      <div class="leg mono" style="left:40px;top:470px" data-a="in@c4%48">2.8 km · 6 min · 28 km/h</div>
+      <div class="leg mono" style="left:150px;top:300px" data-a="in@c4%58">3.1 km · 7 min · 27 km/h</div>
+      <div class="leg mono" style="left:560px;top:330px" data-a="in@c4%68">3.7 km · 11 min · 20 km/h</div>
+      <div class="abs" style="left:30px;right:30px;bottom:26px;display:flex;gap:14px" data-a="up@c4%80">
+        <div class="chip" style="background:var(--blue);border-color:var(--blue);font-weight:700">Export route CSV</div>
+        <div class="chip"><span class="dot"></span>Every sighting kept as evidence</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ s3: upgrade what is installed ============ -->
+  <section class="scene" id="s3" data-ch="03|UPGRADE WHAT YOU ALREADY HAVE">
+    <div class="abs" style="left:90px;top:140px;width:1740px">
+      <h1 data-a="up@c5+0.0">Keep every camera. <span class="hl">Add the intelligence.</span></h1>
+    </div>
+    <svg class="abs" style="left:0;top:0" width="1920" height="1080" fill="none" stroke-width="3" stroke-linecap="round">
+      <g stroke="#3b82f6" stroke-dasharray="4 14">
+        <path data-a="in@c5%40" data-loop="flow:0.9" d="M570 336C700 336 700 540 805 560"/>
+        <path data-a="in@c5%50" data-loop="flow:0.9" d="M570 468C690 468 700 560 805 568"/>
+        <path data-a="in@c5%60" data-loop="flow:0.9" d="M570 600C680 600 720 580 805 576"/>
+        <path data-a="in@c5%72" data-loop="flow:0.9" d="M570 732C690 732 700 590 805 584"/>
+        <path data-a="in@c5%86" data-loop="flow:0.9" d="M570 864C700 864 700 610 805 592"/>
+      </g>
+      <g stroke="#22d3ee" stroke-dasharray="4 14" data-a="in@c5%30">
+        <path data-loop="flow:0.9" d="M1115 560C1230 540 1230 400 1370 400"/>
+        <path data-loop="flow:0.9" d="M1115 570C1240 560 1240 534 1370 534"/>
+        <path data-loop="flow:0.9" d="M1115 580C1240 590 1240 668 1370 668"/>
+        <path data-loop="flow:0.9" d="M1115 590C1230 610 1230 802 1370 802"/>
+      </g>
+    </svg>
+    <div class="dev card" style="top:280px" data-a="left@c5%38"><svg><use href="#i-cam"/></svg><div><b>IP cameras</b><span>RTSP · HLS · WebRTC · MJPEG</span></div></div>
+    <div class="dev card" style="top:412px" data-a="left@c5%48"><svg><use href="#i-dome"/></svg><div><b>ONVIF devices</b><span>found on the network, profiles read</span></div></div>
+    <div class="dev card" style="top:544px" data-a="left@c5%58"><svg><use href="#i-nvr"/></svg><div><b>Hikvision · Dahua recorders</b><span>a whole NVR onboarded in one job</span></div></div>
+    <div class="dev card" style="top:676px" data-a="left@c5%70"><svg><use href="#i-dvr"/></svg><div><b>Analog cameras</b><span>through the DVR or encoder channel</span></div></div>
+    <div class="dev card" style="top:808px" data-a="left@c5%84"><svg><use href="#i-web"/></svg><div><b>Webcam or phone</b><span>for a home or a small office</span></div></div>
+    <div id="hubring" class="abs" data-loop="pulse:2.2"></div>
+    <div id="hub" class="abs" data-a="pop@c5%22"><svg><use href="#logo"/></svg><b>OmniCamera</b></div>
+    <div class="outp card" style="top:344px" data-a="right@c5%30"><svg><use href="#i-wall"/></svg>Live view and walls</div>
+    <div class="outp card" style="top:478px" data-a="right@c5%34"><svg><use href="#i-ai"/></svg>AI analysis of every frame</div>
+    <div class="outp card" style="top:612px" data-a="right@c5%38"><svg><use href="#i-bell"/></svg>Rules and alerts</div>
+    <div class="outp card" style="top:746px" data-a="right@c5%42"><svg><use href="#i-search"/></svg>Search and evidence</div>
+    <div class="abs chip" style="left:760px;top:960px;font-size:22px" data-a="up@c5%12"><span class="dot"></span>No camera is replaced</div>
+  </section>
+
+  <!-- ============ s4: what the AI reads from a frame ============ -->
+  <section class="scene" id="s4" data-ch="04|EVERY FRAME BECOMES INFORMATION">
+    <div id="frame4" class="abs">
+      <div class="abs" style="left:0;right:0;top:380px;height:6px;background:repeating-linear-gradient(90deg,#e7ecf3 0 70px,transparent 70px 150px);opacity:.7"></div>
+      <div class="abs" style="left:640px;top:60px;width:330px;height:190px;background:#c4b59b;border-radius:4px"></div>
+      <div class="abs" style="left:60px;top:90px;width:260px;height:160px;background:#a9b6c4;border-radius:4px"></div>
+      <svg class="abs" style="left:150px;top:300px" width="250" height="136"><use href="#i-car" fill="#9b2c2c"/><rect x="80" y="76" width="66" height="20" rx="3" fill="#fff" transform="scale(1.13)"/></svg>
+      <svg class="abs" style="left:520px;top:330px" width="290" height="158"><use href="#i-car" fill="#e2e8f0"/></svg>
+      <svg class="abs" style="left:440px;top:150px" width="34" height="86" fill="#1f2937"><use href="#i-person"/></svg>
+      <svg class="abs" style="left:868px;top:168px" width="38" height="96" fill="#374151"><use href="#i-person"/></svg>
+      <svg class="abs" style="left:560px;top:160px" width="36" height="92" fill="#4b3a2a"><use href="#i-person"/></svg>
+      <div class="bx" style="left:428px;top:142px;width:58px;height:102px" data-a="pop@c6%30"><em>person</em></div>
+      <div class="bx f" style="left:856px;top:160px;width:62px;height:112px" data-a="pop@c6%62"><em>known · staff</em></div>
+      <div class="bx" style="left:548px;top:152px;width:60px;height:108px" data-a="pop@c6%32"><em>person</em></div>
+      <div class="bx v" style="left:140px;top:292px;width:270px;height:152px" data-a="pop@c6%38"><em>vehicle</em></div>
+      <div class="bx v" style="left:510px;top:322px;width:310px;height:174px" data-a="pop@c6%40"><em>vehicle</em></div>
+      <div class="bx p" style="left:236px;top:382px;width:86px;height:30px" data-a="pop@c6%50"><em style="top:auto;bottom:-32px">GJ05AB1234</em></div>
+      <div class="abs mono" style="left:22px;top:18px;font-size:20px;color:#fff;text-shadow:0 2px 6px #000">CAM07 &nbsp;MAIN GATE</div>
+      <div class="abs mono" style="right:22px;top:18px;font-size:20px;color:#fff;text-shadow:0 2px 6px #000"><span class="red" data-loop="blink:1.1">●</span> LIVE</div>
+      <div id="dark" class="abs" data-a="in@c7+0.0:0.5"></div>
+      <div id="tamper" class="abs" data-a="pop@c7%25">
+        <svg width="60" height="60" viewBox="0 0 48 48" fill="none" stroke="#f59e0b" stroke-width="3"><path d="M24 6l20 36H4z"/><path d="M24 20v10M24 35v1"/></svg>
+        <div><div style="font-size:30px;font-weight:800" class="amber">Camera blocked or dark</div><div style="font-size:21px;color:#e9d9b8;margin-top:4px">Flagged from the picture itself. No model call needed.</div></div>
+      </div>
+    </div>
+    <div class="abs" style="left:80px;top:840px;width:1020px">
+      <h2 data-a="up@c6+0.0">One frame in. <span class="hl">Answers out.</span></h2>
+      <div class="sub" style="margin-top:10px;font-size:25px" data-a="up@c6%10">Scene analysis and a dedicated plate reader run side by side.</div>
+    </div>
+    <div id="an" class="card" data-a="right@c6+0.1">
+      <div class="row" data-a="in@c6%14"><label>Summary</label><div class="v" style="min-height:98px"><span data-type="Two cars at the main gate. Three people on the footpath, one recognised as staff. Nothing unusual.@c6%14:2.2"></span></div></div>
+      <div class="row" style="display:grid;grid-template-columns:1fr 1fr">
+        <div data-a="in@c6%30"><label>People</label><div class="big hl" data-count="0,3@c6%30:0.6">0</div></div>
+        <div data-a="in@c6%38"><label>Vehicles</label><div class="big cyan" data-count="0,2@c6%38:0.6">0</div></div>
+      </div>
+      <div class="row" data-a="in@c6%50"><label>Number plates · ANPR</label><div class="v"><span class="plate" style="font-size:24px">GJ05AB1234</span> &nbsp;<span class="mono" style="font-size:18px;color:var(--mut)">99.8% · plate reader</span></div></div>
+      <div class="row" data-a="in@c6%62"><label>Known faces</label><div class="v"><span class="chip" style="border-color:var(--green)"><span class="dot"></span>Staff · security guard</span> &nbsp;<span class="chip">2 unknown</span></div></div>
+      <div class="row" data-a="in@c6%70"><label>Unusual activity</label><div class="v"><span class="chip" style="border-color:var(--green)"><span class="dot"></span>Nothing unusual</span> &nbsp;<span class="mono" style="font-size:18px;color:var(--mut)">saved to Logs · searchable</span></div></div>
+      <div class="row" data-a="in@c6%76"><label>Mood of the scene</label>
+        <div class="mood">
+          <div>calm<b style="background:var(--green)" data-a="in@c6%78:0.25;out@c6%84:0.25;in@c6e+0.0:0.3">calm</b></div>
+          <div>neutral<b style="background:var(--cyan)" data-a="in@c6%84:0.25;out@c6%89:0.25">neutral</b></div>
+          <div>tense<b style="background:var(--amber)" data-a="in@c6%89:0.25;out@c6%94:0.25">tense</b></div>
+          <div>critical<b style="background:var(--red);color:#fff" data-a="in@c6%94:0.25;out@c6e+0.0:0.3">critical</b></div>
+        </div></div>
+    </div>
+  </section>
+
+  <!-- ============ s5: rules per camera and the small things ============ -->
+  <section class="scene" id="s5" data-ch="05|RULES FOR EACH CAMERA">
+    <div class="abs" style="left:80px;top:130px;width:1760px"><h1 data-a="up@c8+0.0">Every camera gets <span class="hl">its own rules.</span></h1></div>
+    <div id="set" class="card" data-a="up@c8+0.1">
+      <div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:27px">CAM07 · Main gate</b><span class="chip" style="font-size:16px"><span class="dot"></span>online</span></div>
+      <div class="kicker" style="margin-top:18px;font-size:14px;color:var(--mut)">Suspicious rules, in plain words</div>
+      <div id="rules"><span data-type="A person climbing over the wall. A bag left unattended.@c8%22:2.0"></span><span class="caret" style="display:inline-block;width:2px;height:26px;background:var(--blue);vertical-align:-4px;margin-left:3px" data-loop="blink:0.9"></span></div>
+      <div id="zone">
+        <svg class="abs" style="inset:0" width="762" height="320" viewBox="0 0 762 250" preserveAspectRatio="none" fill="none">
+          <path pathLength="1" stroke-dasharray="1" data-a="draw@c8%44:1.1" d="M70 210L190 70L470 60L560 200Z" stroke="#22d3ee" stroke-width="4" fill="rgba(34,211,238,.16)"/>
+          <path pathLength="1" stroke-dasharray="1" data-a="draw@c8%56:0.7" d="M600 40L720 220" stroke="#f59e0b" stroke-width="5" stroke-linecap="round"/>
+        </svg>
+        <span class="abs chip" style="left:150px;top:152px;font-size:17px;padding:6px 12px;border-color:var(--cyan)" data-a="pop@c8%50">zone to watch</span>
+        <span class="abs chip" style="left:540px;top:18px;font-size:17px;padding:6px 12px;border-color:var(--amber)" data-a="pop@c8%60">line to cross</span>
+      </div>
+      <div class="sl" data-a="in@c8%66"><span>Sensitivity</span><div class="tr"><i style="right:0" data-a="sx70@c8%66:0.8"></i></div><span class="val mono">high</span></div>
+      <div class="sl" data-a="in@c8%76"><span>Quiet hours</span><div class="tr"><i style="right:0" data-a="sx45@c8%76:0.8"></i></div><span class="val mono">23:00–06:00</span></div>
+      <div class="sl" data-a="in@c8%88"><span>Checks every</span><div class="tr"><i style="right:0" data-a="sx25@c8%88:0.8"></i></div><span class="val mono">15 s</span></div>
+    </div>
+    <div class="camrule card" style="top:230px" data-a="right@c8%8"><b>CAM03 · Lobby</b><span>“Anyone inside after 8 pm”</span></div>
+    <div class="camrule card" style="top:326px" data-a="right@c8%14"><b>CAM12 · Parking</b><span>“A vehicle stopped in the fire lane”</span></div>
+    <div class="camrule card" style="top:422px" data-a="right@c8%20"><b>CAM21 · Warehouse</b><span>“Shutter open with nobody near it”</span></div>
+
+    <div class="chan card" style="left:950px" data-a="pop@c9%8"><svg><use href="#i-mail"/></svg>E-mail</div>
+    <div class="chan card" style="left:1170px" data-a="pop@c9%20"><svg><use href="#i-sms"/></svg>SMS</div>
+    <div class="chan card" style="left:1390px" data-a="pop@c9%32"><svg><use href="#i-hook"/></svg>Webhook</div>
+    <div class="chan card" style="left:1610px;width:230px;border-color:var(--blue)" data-a="pop@c9%55"><span class="big hl" style="font-size:46px">7 → 1</span><span style="font-size:19px;color:var(--mut)">repeats folded</span></div>
+
+    <div class="det card" style="left:950px" data-a="up@c10%10">
+      <h4>Look-alike plates</h4>
+      <div class="mono" style="font-size:30px;font-weight:800;letter-spacing:.05em">GJ<span class="amber" style="text-decoration:underline">O</span>5AB1234</div>
+      <div style="font-size:19px;color:var(--mut);margin:8px 0 14px">letter O ↔ digit 0 · possible match</div>
+      <div style="display:flex;gap:10px" data-a="in@c10%38"><span class="chip" style="background:var(--blue);border-color:var(--blue);font-size:18px">Same vehicle</span><span class="chip" style="font-size:18px">Different</span></div>
+    </div>
+    <div class="det card" style="left:1405px" data-a="up@c10%58">
+      <h4>Unchanged scenes skipped</h4>
+      <div class="gate"><i class="a"></i><i><s data-a="in@c10%66">same</s></i><i><s data-a="in@c10%70">same</s></i><i class="a"></i><i><s data-a="in@c10%74">same</s></i><i><s data-a="in@c10%78">same</s></i></div>
+      <div style="font-size:19px;color:var(--mut);margin-top:16px">Only frames that changed go to the model, so the running cost stays low.</div>
+    </div>
+  </section>
+
+  <!-- ============ s6: who uses it ============ -->
+  <section class="scene" id="s6" data-ch="06|WHERE IT WORKS">
+    <div class="abs" style="left:90px;top:140px;width:1740px"><h1 data-a="up@s6+0.2">One platform. <span class="hl">Four kinds of watch.</span></h1></div>
+    <div class="uc card" style="left:90px;--c:var(--red)" data-a="up@c11+0.0">
+      <div class="glow" data-a="in@c11+0.0:0.4;out@c11e+0.0:0.4"></div>
+      <div class="ic"><svg><use href="#i-shield"/></svg></div><h3>Crime and police</h3><p>Investigation</p>
+      <ul><li>Track a wanted plate or face on every camera</li><li>Sightings on many cameras joined into one incident</li><li>Route, times and evidence export</li></ul>
+      <div class="eg mono"><b>ALERT</b>Wanted plate GJ05AB1234<br>CAM07 · 22:04 · 99.8%</div>
+    </div>
+    <div class="uc card" style="left:530px;--c:var(--blue)" data-a="up@c12+0.0">
+      <div class="glow" data-a="in@c12+0.0:0.4;out@c12e+0.0:0.4"></div>
+      <div class="ic"><svg><use href="#i-gov"/></svg></div><h3>Government and city</h3><p>Monitoring</p>
+      <ul><li>Traffic and people counts per camera</li><li>Crowd build-up and unusual counts flagged</li><li>One control wall across departments</li></ul>
+      <div class="eg mono"><b>COUNT</b>Paldi Circle · 412 vehicles/h<br>above the usual for this hour</div>
+    </div>
+    <div class="uc card" style="left:970px;--c:var(--cyan)" data-a="up@c13+0.0">
+      <div class="glow" data-a="in@c13+0.0:0.4;out@c13%50:0.4"></div>
+      <div class="ic"><svg><use href="#i-office"/></svg></div><h3>Offices</h3><p>Premises</p>
+      <ul><li>Who came in after hours</li><li>Known staff and unknown visitors</li><li>Your own rules, such as an unattended bag</li></ul>
+      <div class="eg mono"><b>RULE</b>CAM03 Lobby · 21:12<br>“Anyone inside after 8 pm”</div>
+    </div>
+    <div class="uc card" style="left:1410px;--c:var(--green)" data-a="up@c13%50">
+      <div class="glow" data-a="in@c13%50:0.4"></div>
+      <div class="ic"><svg><use href="#i-home"/></svg></div><h3>Homes</h3><p>Family</p>
+      <ul><li>A stranger at the gate</li><li>Family and staff as known faces</li><li>Alert by SMS or e-mail, with the picture</li></ul>
+      <div class="eg mono"><b>GATE</b>Unknown person · 14:05<br>not among your known faces</div>
+    </div>
+  </section>
+
+  <!-- ============ s7: registry, GIS, federation ============ -->
+  <section class="scene" id="s7" data-ch="07|REGISTRY · GIS · FEDERATION">
+    <div class="abs" style="inset:0" data-a="out@c15-0.25:0.4">
+      <div class="abs" style="left:80px;top:130px;width:1760px"><h1 data-a="up@c14+0.0">One registry. <span class="hl">One live map.</span></h1></div>
+      <div id="reg" class="card" data-a="up@c14+0.1">
+        <div class="kicker">Central camera registry</div>
+        <table>
+          <tr><th>Camera</th><th>Department</th><th>Source</th><th>Health</th></tr>
+          <tr data-a="in@c14%10"><td>CAM04 Paldi Circle</td><td><span class="tag" style="background:rgba(59,130,246,.18);color:#93c5fd">Traffic</span></td><td class="mono" style="color:var(--mut)">RTSP</td><td><span class="green">● online</span></td></tr>
+          <tr data-a="in@c14%16"><td>CAM07 Hero Showroom</td><td><span class="tag" style="background:rgba(239,68,68,.18);color:#fca5a5">Police</span></td><td class="mono" style="color:var(--mut)">ONVIF</td><td><span class="green">● online</span></td></tr>
+          <tr data-a="in@c14%22"><td>CAM12 Civic Centre</td><td><span class="tag" style="background:rgba(34,197,94,.18);color:#86efac">Municipal</span></td><td class="mono" style="color:var(--mut)">NVR ch 4</td><td><span class="amber">● degraded</span></td></tr>
+          <tr data-a="in@c14%28"><td>CAM18 Check Post</td><td><span class="tag" style="background:rgba(167,139,250,.18);color:#c4b5fd">Excise</span></td><td class="mono" style="color:var(--mut)">DVR ch 2</td><td><span class="red">● offline</span></td></tr>
+          <tr data-a="in@c14%34"><td>CAM21 Bus Depot</td><td><span class="tag" style="background:rgba(59,130,246,.18);color:#93c5fd">Traffic</span></td><td class="mono" style="color:var(--mut)">RTSP</td><td><span class="green">● online</span></td></tr>
+          <tr data-a="in@c14%38"><td>CAM25 Station Road</td><td><span class="tag" style="background:rgba(239,68,68,.18);color:#fca5a5">Police</span></td><td class="mono" style="color:var(--mut)">RTSP</td><td><span class="green">● online</span></td></tr>
+          <tr data-a="in@c14%42"><td>CAM30 Market Yard</td><td><span class="tag" style="background:rgba(34,197,94,.18);color:#86efac">Municipal</span></td><td class="mono" style="color:var(--mut)">ONVIF</td><td><span class="green">● online</span></td></tr>
+          <tr data-a="in@c14%46"><td>CAM33 Toll Plaza</td><td><span class="tag" style="background:rgba(59,130,246,.18);color:#93c5fd">Traffic</span></td><td class="mono" style="color:var(--mut)">NVR ch 1</td><td><span class="green">● online</span></td></tr>
+        </table>
+        <div style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap" data-a="up@c14%50">
+          <span class="chip">Bulk import by CSV</span><span class="chip">Self-healing streams</span><span class="chip">Registry API</span><span class="chip">Every change audited</span>
+        </div>
+      </div>
+      <div id="gis" class="card" data-a="up@c14+0.25">
+        <svg class="abs" style="inset:0" width="920" height="760" fill="none">
+          <g stroke="#1b2743" stroke-width="18" stroke-linecap="round"><path d="M-20 600C240 540 380 590 600 480S860 330 950 360"/><path d="M120 -10C180 240 300 400 340 780"/><path d="M-20 240C280 290 520 180 950 140"/><path d="M700 -10C650 220 720 480 790 780"/></g>
+          <path d="M-20 420C200 380 420 430 950 560" stroke="#12304a" stroke-width="34" stroke-linecap="round"/>
+        </svg>
+        <div class="abs" style="left:26px;top:22px"><div class="kicker">GIS view</div></div>
+        <span class="pin" style="left:150px;top:190px;color:var(--blue)" data-a="pop@c14%44"></span>
+        <span class="pin" style="left:330px;top:300px;color:var(--red)" data-a="pop@c14%47"></span>
+        <span class="pin" style="left:250px;top:520px;color:var(--green)" data-a="pop@c14%50"></span>
+        <span class="pin" style="left:480px;top:180px;color:var(--blue)" data-a="pop@c14%53"></span>
+        <span class="pin" style="left:420px;top:560px;color:var(--red)" data-a="pop@c14%56"></span>
+        <span class="pin" style="left:760px;top:250px;color:var(--violet)" data-a="pop@c14%59"></span>
+        <span class="pin" style="left:140px;top:650px;color:var(--green)" data-a="pop@c14%62"></span>
+        <span class="pin" style="left:820px;top:680px;color:var(--blue)" data-a="pop@c14%65"></span>
+        <span class="pin" style="left:560px;top:320px;color:var(--red)" data-a="pop@c14%68"></span>
+        <div id="gap" data-a="pop@c14%78" ><span>No camera<br>covers this area</span></div>
+        <div class="abs" style="left:26px;bottom:22px;display:flex;gap:10px" data-a="in@c14%44">
+          <span class="chip" style="font-size:16px"><span class="dot" style="background:var(--blue)"></span>Traffic</span><span class="chip" style="font-size:16px"><span class="dot" style="background:var(--red)"></span>Police</span><span class="chip" style="font-size:16px"><span class="dot"></span>Municipal</span><span class="chip" style="font-size:16px"><span class="dot" style="background:var(--violet)"></span>Excise</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="abs" style="inset:0" data-a="in@c15-0.1:0.4">
+      <div class="abs" style="left:80px;top:130px;width:1760px"><h1>Federation: <span class="hl">connected, not merged.</span></h1></div>
+      <svg class="abs" style="left:0;top:0" width="1920" height="1080" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="4 14">
+        <g stroke="#22d3ee" data-a="in@c15%55">
+          <path data-loop="flow:0.9" d="M490 298H660"/><path data-loop="flow:0.9" d="M490 414H660"/><path data-loop="flow:0.9" d="M490 530H660"/><path data-loop="flow:0.9" d="M490 646H660"/>
+          <path data-loop="flow:0.9" d="M810 472H1010"/>
+        </g>
+      </svg>
+      <div class="dept card" style="top:250px" data-a="left@c15%4"><span class="sw" style="background:var(--red)"></span><div><b>Police</b><span>own system · own video</span></div><svg><use href="#i-lock"/></svg></div>
+      <div class="dept card" style="top:366px" data-a="left@c15%10"><span class="sw" style="background:var(--blue)"></span><div><b>Traffic</b><span>own system · own video</span></div><svg><use href="#i-lock"/></svg></div>
+      <div class="dept card" style="top:482px" data-a="left@c15%16"><span class="sw" style="background:var(--green)"></span><div><b>Municipal</b><span>own system · own video</span></div><svg><use href="#i-lock"/></svg></div>
+      <div class="dept card" style="top:598px" data-a="left@c15%22"><span class="sw" style="background:var(--violet)"></span><div><b>Excise</b><span>own system · own video</span></div><svg><use href="#i-lock"/></svg></div>
+      <div id="bus" class="abs" data-a="pop@c15%55"><span>SHARED EVENT BUS</span></div>
+      <div id="fed" class="card" data-a="right@c15%62">
+        <div style="display:flex;align-items:center;gap:16px"><svg width="60" height="60"><use href="#logo"/></svg><b style="font-size:30px">OmniCamera federation</b></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:26px;font-size:22px">
+          <div class="hop"><b>Correlation</b><small>events on many cameras become one incident</small></div>
+          <div class="hop"><b>Federated report</b><small>departments side by side</small></div>
+          <div class="hop"><b>Connectors</b><small>recorder events, ONVIF, webhooks</small></div>
+          <div class="hop"><b>Client keys and quotas</b><small>each caller metered</small></div>
+        </div>
+        <div class="sub" style="font-size:22px;margin-top:24px">The departments' systems are read, never changed.</div>
+      </div>
+      <div id="trail" class="card" data-a="up@c16+0.0">
+        <span class="plate" style="font-size:26px">GJ05AB1234</span>
+        <span class="arr">→</span>
+        <div class="hop" data-a="pop@c16%14"><b style="color:#93c5fd">Traffic</b> · CAM04<small>21:46 Paldi Circle</small></div>
+        <span class="arr" data-a="in@c16%28">→</span>
+        <div class="hop" data-a="pop@c16%30"><b style="color:#fca5a5">Police</b> · CAM07<small>22:04 Hero Showroom</small></div>
+        <span class="arr" data-a="in@c16%44">=</span>
+        <div class="hop" style="border-color:var(--blue)" data-a="pop@c16%46"><b class="hl">One trail</b><small>2 departments · 1 incident</small></div>
+        <div class="hop" style="margin-left:auto;display:flex;gap:14px;align-items:center" data-a="pop@c16%66"><svg width="30" height="30" stroke="#8b9ab8" fill="none" stroke-width="2.4"><use href="#i-lock"/></svg><div>also read in Excise (3)<small>shown as a count only to others</small></div></div>
+      </div>
+      <div class="feat card" style="left:90px" data-a="up@c17%6"><svg><use href="#i-key"/></svg>Role-based access</div>
+      <div class="feat card" style="left:533px" data-a="up@c17%26"><svg><use href="#i-sign"/></svg>Signed evidence exports</div>
+      <div class="feat card" style="left:976px" data-a="up@c17%46"><svg><use href="#i-gw"/></svg>Regional gateways</div>
+      <div class="feat card" style="left:1419px" data-a="up@c17%64"><svg><use href="#i-db"/></svg>VAHAN-ready connectors</div>
+    </div>
+  </section>
+
+  <!-- ============ s8: close ============ -->
+  <section class="scene" id="s8" data-ch="">
+    <div id="end" class="abs">
+      <svg data-a="pop@s8+0.2:0.7"><use href="#logo"/></svg>
+      <h1 data-a="up@c18+0.0">OmniCamera</h1>
+      <div class="tagline" data-a="up@c18%30">Your cameras already see. <span class="hl" data-a="in@c18%62">Now they understand.</span></div>
+      <div class="chips" data-a="up@c18%70">
+        <span class="chip">ANPR</span><span class="chip">Known faces</span><span class="chip">People and vehicle counts</span><span class="chip">Scene summary and mood</span><span class="chip">Rules per camera</span><span class="chip">Vehicle trail</span><span class="chip">GIS registry</span><span class="chip">Federation</span>
+      </div>
+    </div>
+  </section>
+  <div id="bar"></div>
+</div>
+
+<script>
+const EASE = 'cubic-bezier(.2,.8,.2,1)';
+const KF = {
+  in:    [{opacity:0},{opacity:1}],
+  out:   [{opacity:1},{opacity:0}],
+  up:    [{opacity:0,transform:'translateY(46px)'},{opacity:1,transform:'none'}],
+  left:  [{opacity:0,transform:'translateX(-70px)'},{opacity:1,transform:'none'}],
+  right: [{opacity:0,transform:'translateX(70px)'},{opacity:1,transform:'none'}],
+  drop:  [{opacity:0,transform:'translateY(-120px)'},{opacity:1,transform:'none'}],
+  pop:   [{opacity:0,transform:'scale(.55)'},{opacity:1,transform:'scale(1.08)',offset:.7},{opacity:1,transform:'scale(1)'}],
+  draw:  [{strokeDashoffset:1},{strokeDashoffset:0}],
+  growX: [{transform:'scaleX(0)'},{transform:'scaleX(1)'}],
+  sx70:  [{transform:'scaleX(0)'},{transform:'scaleX(.7)'}],
+  sx45:  [{transform:'scaleX(0)'},{transform:'scaleX(.45)'}],
+  sx25:  [{transform:'scaleX(0)'},{transform:'scaleX(.25)'}],
+  carGo: [{transform:'none',filter:'blur(0)'},{transform:'translateX(160px) scale(.9)',filter:'blur(2px)',offset:.3},{transform:'translateX(1100px) scale(.55)',filter:'blur(9px)',opacity:1,offset:.95},{transform:'translateX(1200px) scale(.5)',opacity:0}],
+};
+const LOOP = {
+  blink: [{opacity:1},{opacity:.15,offset:.5},{opacity:1}],
+  flow:  [{strokeDashoffset:0},{strokeDashoffset:-18}],
+  pulse: [{transform:'scale(.92)',opacity:.9},{transform:'scale(1.25)',opacity:0}],
+};
+const DEFAULT_DUR = 0.6, FADE = 0.4;
+let TL, anims = [], hooks = [], scenes = [];
+
+function when(expr) {
+  const m = /^([cs])(\d+)(e)?(?:([+-][\d.]+)|%([\d.]+))?$/.exec(expr.trim());
+  if (!m) throw new Error('bad time: ' + expr);
+  const list = m[1] === 'c' ? TL.cues : TL.scenes, it = list.find(x => x.id === m[1] + m[2]);
+  if (!it) throw new Error('unknown: ' + expr);
+  if (m[5] !== undefined) return it.start + (it.end - it.start) * (+m[5] / 100);
+  return (m[3] ? it.end : it.start) + (m[4] ? +m[4] : 0);
+}
+function spec(s) { const [nameAt, d] = s.trim().split(':'), [name, at] = nameAt.split('@'); return { name, at: when(at), dur: d ? +d : DEFAULT_DUR }; }
+
+function build(timeline) {
+  TL = timeline;
+  // generated tiles
+  const tiles = document.getElementById('tiles');
+  for (let i = 0; i < 200; i++) { const el = document.createElement('i'); el.dataset.a = `in@c2+${(0.15 + i * 0.006).toFixed(3)}:0.3`; tiles.appendChild(el); }
+  const g2 = document.getElementById('grid2'), HIT = 6;
+  for (let i = 0; i < 56; i++) {
+    const el = document.createElement('i'); el.textContent = 'CAM' + String(i + 1).padStart(2, '0');
+    const sweep = document.createElement('b'); el.appendChild(sweep);
+    const col = i % 8, row = Math.floor(i / 8), d = (col + row) * 0.11;
+    sweep.dataset.sweep = d;
+    if (i === HIT) { el.className = 'hit'; const u = document.createElement('u'); u.textContent = 'CAM07'; u.dataset.a = 'in@c4+0.0:0.25'; el.appendChild(u); }
+    g2.appendChild(el);
+  }
+  // the search sweep repeats from the moment the plate is typed until the alert
+  const s0 = when('c3%45'), s1 = when('c4+0.1');
+  document.querySelectorAll('[data-sweep]').forEach(b => {
+    const d = +b.dataset.sweep, period = 2.0;
+    hooks.push(t => { let o = 0; if (t > s0 && t < s1) { const p = ((t - s0 - d) % period + period) % period; o = t - s0 < d ? 0 : Math.max(0, 1 - p / 0.5); } b.style.opacity = o; });
+  });
+
+  document.querySelectorAll('[data-a]').forEach(el => {
+    el.dataset.a.split(';').forEach(s => {
+      const { name, at, dur } = spec(s);
+      const a = el.animate(KF[name], { delay: at * 1000, duration: dur * 1000, easing: name === 'carGo' ? 'cubic-bezier(.5,0,.9,.4)' : EASE, fill: name === 'out' ? 'forwards' : 'both' });
+      a.pause(); anims.push(a);
+    });
+  });
+  document.querySelectorAll('[data-loop]').forEach(el => {
+    const [name, d] = el.dataset.loop.split(':');
+    const a = el.animate(LOOP[name], { duration: +d * 1000, iterations: Infinity, easing: 'linear', composite: name === 'blink' ? 'replace' : 'replace' });
+    a.pause(); anims.push(a);
+  });
+  document.querySelectorAll('[data-type]').forEach(el => {
+    const i = el.dataset.type.lastIndexOf('@'), text = el.dataset.type.slice(0, i), { at, dur } = spec('x@' + el.dataset.type.slice(i + 1));
+    hooks.push(t => { const p = Math.min(1, Math.max(0, (t - at) / dur)); el.textContent = text.slice(0, Math.round(p * text.length)); });
+  });
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const i = el.dataset.count.lastIndexOf('@'), [a, b] = el.dataset.count.slice(0, i).split(',').map(Number), { at, dur } = spec('x@' + el.dataset.count.slice(i + 1));
+    hooks.push(t => { const p = Math.min(1, Math.max(0, (t - at) / dur)); el.textContent = Math.round(a + (b - a) * p); });
+  });
+  scenes = TL.scenes.map(s => ({ ...s, el: document.getElementById(s.id) }));
+  seek(0);
+}
+
+function seek(t) {
+  const chapter = document.getElementById('chapter');
+  scenes.forEach((s, i) => {
+    const first = i === 0, last = i === scenes.length - 1;
+    let o = 0;
+    if (t >= s.start && t < s.end) o = first ? 1 : Math.min(1, (t - s.start) / FADE);
+    else if (!last && t >= s.end && t < s.end + FADE) o = 1 - (t - s.end) / FADE;
+    if (last && t >= s.end) o = 1;
+    s.el.style.display = o > 0 ? 'block' : 'none';
+    s.el.style.opacity = o;
+    s.el.style.zIndex = t >= s.start && t < s.end ? 2 : 1;
+    if (t >= s.start && t < s.end) { const [n, label] = (s.el.dataset.ch || '').split('|'); chapter.innerHTML = label ? `<b>${n}</b>${label}` : ''; }
+  });
+  anims.forEach(a => { a.currentTime = t * 1000; });
+  hooks.forEach(h => h(t));
+  document.getElementById('bar').style.width = (100 * t / TL.total) + '%';
+}
+window.build = build; window.seek = seek;
+
+// preview in a browser: explainer.html?play=en
+const lang = new URLSearchParams(location.search).get('play');
+if (lang) fetch(`out/${lang}/timeline.json`).then(r => r.json()).then(tl => {
+  build(tl); const t0 = performance.now();
+  (function tick() { const t = (performance.now() - t0) / 1000; seek(Math.min(t, tl.total)); if (t < tl.total) requestAnimationFrame(tick); })();
+});
+</script>
+</body>
+</html>
